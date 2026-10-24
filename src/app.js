@@ -313,6 +313,8 @@ $('addManual').onclick = () => {
 // brush editing on the mask canvas (edits the region currently viewed)
 let painting = false;
 function paint(e) {
+  // no brushing where there are no regions to edit (on a tablet a scroll gesture would otherwise paint)
+  if (!S.intent.draft || ['auto', 'preserve'].includes(S.intent.draft.mode) || $('brushBar').hidden) return;
   const r = S.intent.draft.regions.find((x) => x.id === S.viewing);
   if (!r || r.kind === 'global') return;
   const c = $('maskCanvas'), b = c.getBoundingClientRect(), mh = maskH();

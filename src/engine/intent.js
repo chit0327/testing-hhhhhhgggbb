@@ -96,7 +96,13 @@ export function confirmIntent(draft) {
 }
 
 // ---- persistence ---------------------------------------------------------------------------------
-const b64 = (u8) => (u8 ? (typeof Buffer !== 'undefined' ? Buffer.from(u8).toString('base64') : btoa(String.fromCharCode(...u8))) : null);
+// chunked: spreading a whole mask into String.fromCharCode overflows the stack in WebKit (≈65k argument limit)
+function bytesToBinary(u8) {
+  let s = '';
+  for (let i = 0; i < u8.length; i += 0x8000) s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
+  return s;
+}
+const b64 = (u8) => (u8 ? (typeof Buffer !== 'undefined' ? Buffer.from(u8).toString('base64') : btoa(bytesToBinary(u8))) : null);
 const unb64 = (s) => (s ? (typeof Buffer !== 'undefined' ? new Uint8Array(Buffer.from(s, 'base64')) : Uint8Array.from(atob(s), (c) => c.charCodeAt(0))) : null);
 
 export function serializeIntent(it) {
