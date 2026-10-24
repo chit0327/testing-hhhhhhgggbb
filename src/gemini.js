@@ -33,7 +33,11 @@ async function call(path, key, init = {}) {
     const reason = JSON.stringify(body && body.error && body.error.details || '');
     if (res.status === 400 && /API_KEY_INVALID|API key not valid/i.test(msg + reason)) throw new GeminiError('API 金鑰無效，請檢查是否貼錯', 'bad_key');
     if (res.status === 403) throw new GeminiError(`這個金鑰沒有使用權限：${msg}`, 'forbidden');
-    if (res.status === 429) throw new GeminiError('Gemini 用量已達上限（免費額度或速率限制），請稍後再試', 'quota');
+    if (res.status === 429) { // tell "no free quota for this model" apart from a short-term rate limit
+      const retry = (reason.match(/"retryDelay":"(\d+)/) || [])[1];
+      if (/limit:\s*0\b/.test(msg)) throw new GeminiError(`這個模型沒有免費額度（Google 回覆額度上限為 0），需要在 Google AI Studio 為這個金鑰的專案啟用付費，或改選其他模型。Google 原文：${msg.slice(0, 200)}`, 'quota');
+      throw new GeminiError(`Gemini 用量已達上限${retry ? `，請約 ${retry} 秒後再試` : '，請稍後再試'}。Google 原文：${msg.slice(0, 200)}`, 'quota');
+    }
     throw new GeminiError(`Gemini 回報錯誤（${res.status}）：${msg}`, res.status === 400 ? 'bad_request' : 'upstream');
   }
   return body;
