@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>照樣調色</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header class="top">
+  <h1>照樣調色</h1>
+  <p class="sub">上傳參考圖片和要調色的影片，設定光暗意圖後，套用相同的色彩風格。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
+  <div class="status" id="status" data-state="idle">請先上傳參考圖片和目標影片</div>
+</header>
+
+<main>
+  <section class="uploads">
+    <article class="card" id="refCard">
+      <h2>1. 參考圖片</h2>
+      <label class="drop"><input type="file" id="refInput" accept="image/*"><span>選擇圖片（JPG、PNG、WebP）</span></label>
+      <div class="preview"><img id="refPreview" alt="參考圖片預覽" hidden></div>
+      <p class="info" id="refInfo"></p>
+    </article>
+    <article class="card" id="videoCard">
+      <h2>2. 目標影片</h2>
+      <label class="drop"><input type="file" id="videoInput" accept="video/*"><span>選擇影片（MP4、WebM、MOV）</span></label>
+      <div class="preview"><video id="videoPreview" controls muted playsinline hidden></video></div>
+      <p class="info" id="videoInfo"></p>
+    </article>
+  </section>
+
+  <section class="card" id="intentCard">
+    <h2>3. 光暗設定（Lighting Intent）</h2>
+    <p id="intentSummary" class="info">素材載入後會自動開啟設定視窗。</p>
+    <div class="row">
+      <button id="openIntent" disabled>重新設定光暗</button>
+      <span class="hash" id="intentHash"></span>
+    </div>
+  </section>
+
+  <section class="card" id="adjustCard" hidden>
+    <h2>4. 色彩與明暗微調</h2>
+    <div class="adjust">
+      <div class="adj-preview">
+        <canvas id="adjCanvas"></canvas>
+        <input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="前後分隔線">
+        <p class="info">左：原始　右：目前設定的實際處理結果（含已確認的光暗設定）。拖動滑桿移動分隔線。</p>
+      </div>
+      <div class="adj-controls">
+        <div class="adj-group">
+          <h3>調色來源</h3>
+          <div class="seg-choice" role="radiogroup" aria-label="調色來源">
+            <label><input type="radio" name="source" value="reference" checked> 參考圖自動轉移</label>
+            <label><input type="radio" name="source" value="ai" id="sourceAi" disabled> AI 調色圖</label>
+          </div>
+          <div class="row">
+            <button type="button" id="adjSuggest">恢復自動匹配</button>
+            <button type="button" id="claudeGrade" class="primary" hidden>Claude 看圖自動調色</button>
+            <button type="button" id="claudeStop" hidden>停止</button>
+          </div>
+          <p class="info" id="suggestInfo">素材載入後會自動依參考圖量化的對比、黑位、飽和度和亮部、暗部色偏設定下面的滑桿（參考色彩強度設為 0，所有變化都顯示在滑桿上）。</p>
+          <p class="info" id="claudeInfo"></p>
+        </div>
+        <div class="adj-group">
+          <h3>參考色彩</h3>
+          <label class="slider"><span>接近參考程度</span><input type="range" id="adj-match" min="0" max="100" value="50"><output id="adj-match-v">50%</output></label>
+          <label class="slider"><span>參考色彩強度</span><input type="range" id="adj-strength" min="0" max="100" value="100"><output id="adj-strength-v">100%</output></label>
+          <label class="check"><input type="checkbox" id="adj-protect" checked> 保護材質顏色（避免草地、皮膚等被染成別的顏色）</label>
+        </div>
+        <div class="adj-group">
+          <h3>明暗</h3>
+          <label class="slider"><span>曝光</span><input type="range" id="adj-exposure" min="-200" max="200" value="0"><output id="adj-exposure-v">0</output></label>
+          <label class="slider"><span>對比</span><input type="range" id="adj-contrast" min="-100" max="100" value="0"><output id="adj-contrast-v">0</output></label>
+          <label class="slider"><span>高光</span><input type="range" id="adj-highlights" min="-100" max="100" value="0"><output id="adj-highlights-v">0</output></label>
+          <label class="slider"><span>陰影</span><input type="range" id="adj-shadows" min="-100" max="100" value="0"><output id="adj-shadows-v">0</output></label>
+        </div>
+        <div class="adj-group">
+          <h3>色彩</h3>
+          <label class="slider"><span>飽和度</span><input type="range" id="adj-saturation" min="-100" max="100" value="0"><output id="adj-saturation-v">0</output></label>
+          <label class="slider"><span>色溫</span><input type="range" id="adj-temperature" min="-100" max="100" value="0"><output id="adj-temperature-v">0</output></label>
+          <label class="slider"><span>色調</span><input type="range" id="adj-tint" min="-100" max="100" value="0"><output id="adj-tint-v">0</output></label>
+        </div>
+        <div class="adj-group">
+          <h3>黑白位與分區色調</h3>
+          <label class="slider"><span>黑位提亮</span><input type="range" id="adj-black" min="0" max="40" value="0"><output id="adj-black-v">0</output></label>
+          <label class="slider"><span>白位</span><input type="range" id="adj-white" min="70" max="100" value="100"><output id="adj-white-v">100</output></label>
+          <div class="tone-row"><span>陰影</span><input type="range" class="hue" id="adj-shadowHue" min="0" max="359" value="60" aria-label="陰影色相"><input type="range" id="adj-shadowAmt" min="0" max="100" value="0" aria-label="陰影色彩量"><output id="adj-shadowAmt-v">0</output></div>
+          <div class="tone-row"><span>中間調</span><input type="range" class="hue" id="adj-midHue" min="0" max="359" value="60" aria-label="中間調色相"><input type="range" id="adj-midAmt" min="0" max="100" value="0" aria-label="中間調色彩量"><output id="adj-midAmt-v">0</output></div>
+          <div class="tone-row"><span>亮部</span><input type="range" class="hue" id="adj-hiHue" min="0" max="359" value="100" aria-label="亮部色相"><input type="range" id="adj-hiAmt" min="0" max="100" value="0" aria-label="亮部色彩量"><output id="adj-hiAmt-v">0</output></div>
+          <p class="info">每一列：左邊選顏色，右邊調整加入的份量。例如亮部選黃色、份量 30，亮部就會偏黃。</p>
+        </div>
+        <div class="row">
+          <button id="adjReset" type="button">全部歸零</button>
+          <button id="adjApply" type="button" class="primary">套用並處理影片</button>
+        </div>
+        <p class="info" id="adjState"></p>
+      </div>
+    </div>
+    <details class="ai-panel" id="aiPanel">
+      <summary>AI 調色圖（進階）：讓 AI 圖像模型調好一格，網站反推成調色設定</summary>
+      <section class="gemini" id="geminiBox">
+        <h3>自動生成：Google Gemini（使用你自己的 API 金鑰）</h3>
+        <p class="info">金鑰只保存在這個瀏覽器，直接送到 Google，不會經過其他伺服器。生成時會把代表影格和參考圖傳給 Google；免費額度和資料使用方式依 Google 的條款。在 claude.ai 網頁裏不能連線外部服務，請在本機或自己的網址開啟網站使用。</p>
+        <div class="row">
+          <input type="password" id="geminiKey" placeholder="貼上 Gemini API 金鑰" autocomplete="off" spellcheck="false" class="grow">
+          <button type="button" id="geminiConnect">連線並列出模型</button>
+        </div>
+        <label class="check"><input type="checkbox" id="geminiRemember"> 在這部裝置記住金鑰</label>
+        <div class="row">
+          <label>模型 <select id="geminiModel"><option value="">（先連線）</option></select></label>
+          <label>候選數 <select id="geminiCount"><option>1</option><option selected>2</option><option>3</option></select></label>
+        </div>
+        <label class="check"><input type="checkbox" id="geminiConsent"> 我同意把代表影格和參考圖傳送給 Google Gemini 處理</label>
+        <div class="row">
+          <button type="button" id="geminiRun" class="primary" disabled>用 Gemini 生成調色候選</button>
+          <button type="button" id="geminiStop" hidden>停止</button>
+        </div>
+        <p class="info" id="geminiInfo"></p>
+        <div class="cands" id="geminiCands"></div>
+      </section>
+      <h3 class="ai-manual">或手動：用任何 AI 圖像工具</h3>
+      <ol class="ai-steps">
+        <li>
+          <p>下載代表影格（目前預覽的這一格），連同參考圖一起交給你使用的 AI 圖像工具。</p>
+          <button type="button" id="aiDownload">下載代表影格</button>
+        </li>
+        <li>
+          <p>使用這段提示詞（依參考圖的量化數據自動產生，可以自行修改）：</p>
+          <textarea id="aiPrompt" rows="6"></textarea>
+          <button type="button" id="aiCopy">複製提示詞</button>
+        </li>
+        <li>
+          <p>把 AI 調好的圖片上傳到這裏。網站會核對構圖是否相同，再在瀏覽器內反推出調色設定，不會上傳任何檔案。</p>
+          <label class="drop"><input type="file" id="aiInput" accept="image/*"><span>上傳 AI 調色後的影格</span></label>
+          <p class="info" id="aiResult"></p>
+        </li>
+      </ol>
+    </details>
+  </section>
+
+  <section class="card" id="resultCard" hidden>
+    <h2>5. 處理結果</h2>
+    <div class="progress" id="progressWrap" hidden><div id="progressBar"></div><span id="progressText"></span></div>
+    <div class="compare-videos">
+      <figure><figcaption>原始影片</figcaption><video id="origVideo" controls muted playsinline></video></figure>
+      <figure><figcaption>處理後影片</figcaption><video id="outVideo" controls muted playsinline></video></figure>
+    </div>
+    <div class="row">
+      <button id="syncPlay" disabled>同步播放</button>
+      <label class="grow">同一時間點比較 <input type="range" id="cmpTime" min="0" max="1000" value="500" disabled></label>
+    </div>
+    <div class="wipe" id="wipe" hidden>
+      <canvas id="wipeCanvas"></canvas>
+      <input type="range" id="wipePos" min="0" max="100" value="50" aria-label="前後分隔線">
+      <p class="info">左：原始　右：處理後（拖動滑桿移動分隔線）</p>
+    </div>
+    <div class="row">
+      <button id="reprocess" disabled>以目前設定重新處理</button>
+      <button id="editIntent" disabled>返回修改光暗設定</button>
+      <button id="exportBtn" class="primary" disabled>匯出影片</button>
+    </div>
+    <p class="info" id="resultInfo"></p>
+  </section>
+</main>
+
+<dialog id="intentDialog">
+  <form method="dialog" class="dlg" id="intentForm">
+    <header class="dlg-head">
+      <h2>光暗設定（Lighting Intent）</h2>
+      <p>先決定哪些區域要變亮或變暗，確認後才開始調色。AI 只會提出候選區域，必須由你確認後才會套用。</p>
+    </header>
+    <div class="dlg-body">
+      <div class="dlg-left">
+        <div class="frames">
+          <figure><figcaption>代表影格（遮罩疊色）<span id="maskLabel"></span></figcaption><canvas id="maskCanvas"></canvas></figure>
+          <figure><figcaption>處理預覽（以目前已確認的選區實際運算）</figcaption><canvas id="previewCanvas"></canvas></figure>
+        </div>
+        <label class="row">代表影格時間 <input type="range" id="frameTime" min="0" max="1000" value="500" class="grow"></label>
+        <div class="brush row" id="brushBar">
+          <span>修正選區：</span>
+          <label><input type="radio" name="brush" value="add" checked> 加筆</label>
+          <label><input type="radio" name="brush" value="erase"> 擦除</label>
+          <label>筆刷大小 <input type="range" id="brushSize" min="2" max="40" value="12"></label>
+          <span class="info">在左邊影格上拖動，修改目前查看的選區</span>
+        </div>
+      </div>
+      <div class="dlg-right">
+        <fieldset>
+          <legend>光線調整意圖</legend>
+          <label><input type="radio" name="mode" value="auto" checked> 自動匹配參考圖的光暗（建議）</label>
+          <label><input type="radio" name="mode" value="brighten"> 變亮</label>
+          <label><input type="radio" name="mode" value="darken"> 變暗</label>
+          <label><input type="radio" name="mode" value="mixed"> 不同區域分別變亮或變暗</label>
+          <label><input type="radio" name="mode" value="preserve"> 保留原始光暗，只匹配參考色彩</label>
+          <p class="info" id="autoNote">自動：依參考圖量化的黑白位、對比、飽和度和偏色自動設定，不需要選區。之後仍可在「色彩與明暗微調」修改。</p>
+          <label class="check" id="claudeOpt" hidden><input type="checkbox" id="useClaude" checked> 確認後讓 Claude 看參考圖和影格，自動再微調（使用你自己的 Claude 用量）</label>
+        </fieldset>
+        <fieldset id="selectionSet">
+          <legend>調整區域選擇方式</legend>
+          <label><input type="radio" name="selection" value="ai" checked> AI 辨識後由我確認（預設）</label>
+          <label><input type="radio" name="selection" value="manual"> 手動選區</label>
+          <label><input type="radio" name="selection" value="global"> 整體光暗調整（整個畫面）</label>
+        </fieldset>
+        <fieldset id="strengthSet">
+          <legend>調整強度</legend>
+          <input type="range" id="strength" min="0" max="100" value="60">
+          <span id="strengthVal">60%</span>
+          <p class="info">100% = 曝光 ±1 檔；60% ≈ ±0.6 檔。高光會柔和壓縮，避免死白。</p>
+        </fieldset>
+        <fieldset id="regionSet">
+          <legend>區域 <span id="aiStatus" class="info"></span></legend>
+          <div id="regionList"></div>
+          <button type="button" id="addManual">新增手動選區</button>
+        </fieldset>
+      </div>
+    </div>
+    <footer class="dlg-foot">
+      <span id="confirmReason" class="warn"></span>
+      <button type="button" id="cancelIntent">稍後設定</button>
+      <button type="button" id="confirmIntent" class="primary">確認並開始調色</button>
+    </footer>
+  </form>
+</dialog>
+
+<script type="module" src="src/app.js"></script>
+</body>
+</html>
