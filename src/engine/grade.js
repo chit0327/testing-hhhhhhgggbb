@@ -277,6 +277,7 @@ export const DEFAULT_LOOK = {
   midHue: 60, midAmt: 0,        // ... midtones
   hiHue: 100, hiAmt: 0,         // ... highlights
   source: 'reference',          // 'reference' (natural transfer) | 'ai' (LUT distilled from an AI-graded frame)
+  amount: 1,                    // 整體調色強度: blend of the whole look with the original colour (0 = original)
 };
 export const TONE_COLOUR = 0.04; // OKLab chroma offset at amount 1
 
@@ -370,6 +371,10 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
   if (k.preserveLuminance) L = L0;
   lab[0] = L; lab[1] = a; lab[2] = bb;
   adjust(lab, k);
+  if (k.amount !== 1) { // overall strength: mix the finished look with the original, in OKLab
+    const t = Math.min(1, Math.max(0, k.amount));
+    lab[0] = L0 + t * (lab[0] - L0); lab[1] = a0 + t * (lab[1] - a0); lab[2] = b0 + t * (lab[2] - b0);
+  }
   return oklabToSrgb(lab[0], lab[1], lab[2], out);
 }
 

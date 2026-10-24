@@ -370,6 +370,7 @@ function describeLook(k) {
     if (k[`${key}Amt`]) parts.push(`${name} ${Math.round(k[`${key}Hue`])}° ${Math.round(k[`${key}Amt`] * 100)}`);
   }
   if (k.source === 'ai') parts.unshift('AI 調色圖');
+  if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
   if (!k.protect) parts.push('不保護材質顏色');
   return parts.join('、');
 }
@@ -385,6 +386,7 @@ function updateIntentCard() {
 // ------------------------------------------------------------------ processing / results / export
 // ------------------------------------------------------------------ colour & tone adjustments
 const ADJ = { // control id -> [look key, slider scale, display]
+  amount: ['amount', 100, (v) => `${v}%`],
   match: ['match', 100, (v) => `${v}%`], strength: ['strength', 100, (v) => `${v}%`],
   exposure: ['exposure', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], contrast: ['contrast', 100, (v) => `${v > 0 ? '+' : ''}${v}`],
   highlights: ['highlights', 100, (v) => `${v > 0 ? '+' : ''}${v}`], shadows: ['shadows', 100, (v) => `${v > 0 ? '+' : ''}${v}`],
@@ -435,7 +437,7 @@ for (const el of document.querySelectorAll('input[name=source]')) {
 function applyAutoLook() {
   const st = S.grade.stats;
   if (!st) return;
-  S.look.draft = { ...suggestLook(st.src, st.ref), source: 'reference' };
+  S.look.draft = { ...suggestLook(st.src, st.ref), source: 'reference', amount: S.look.draft.amount ?? 1 };
   S.look.auto = true;
   $('suggestInfo').textContent = `已依參考圖自動匹配：${describeLook(S.look.draft)}。可以再用滑桿微調。`;
   log('suggested', { look: { ...S.look.draft } });
@@ -556,7 +558,7 @@ function useAiPair(p) {
   S.aiPair = p;
   $('sourceAi').disabled = false;
   S.look.auto = false;
-  S.look.draft = { ...DEFAULT_LOOK, source: 'ai', pairId: p.id }; // the AI image is the target: start from neutral sliders
+  S.look.draft = { ...DEFAULT_LOOK, source: 'ai', pairId: p.id, amount: S.look.draft.amount ?? 1 }; // the AI image is the target: neutral sliders, the user's overall strength kept
   syncAdjustControls(); scheduleAdjPreview();
 }
 $('aiInput').addEventListener('change', async (e) => {
