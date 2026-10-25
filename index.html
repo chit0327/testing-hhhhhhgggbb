@@ -94,6 +94,14 @@
           <div class="tone-row"><span>亮部</span><input type="range" class="hue" id="adj-hiHue" min="0" max="359" value="100" aria-label="亮部色相"><input type="range" id="adj-hiAmt" min="0" max="100" value="0" aria-label="亮部色彩量"><output id="adj-hiAmt-v">0</output></div>
           <p class="info">每一列：左邊選顏色，右邊調整加入的份量。例如亮部選黃色、份量 30，亮部就會偏黃。</p>
         </div>
+        <div class="adj-group">
+          <h3>柔光與暗角</h3>
+          <label class="slider"><span>柔光</span><input type="range" id="adj-glow" min="0" max="100" value="0"><output id="adj-glow-v">0</output></label>
+          <label class="slider"><span>柔光範圍</span><input type="range" id="adj-glowRadius" min="0" max="100" value="50"><output id="adj-glowRadius-v">50</output></label>
+          <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
+          <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
+          <p class="info">柔光讓亮部向外擴散，帶來柔和、夢幻的感覺；暗角正值壓暗四周、負值提亮四周。這兩項不受「整體調色強度」影響。</p>
+        </div>
         <div class="row">
           <button id="adjReset" type="button">全部歸零</button>
           <button id="adjApply" type="button" class="primary">套用並處理影片</button>

@@ -5,7 +5,7 @@ import { fitGrade, bakeLUT } from './engine/grade.js';
 import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engine/intent.js';
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
-import { renderFrame } from './engine/render.js';
+import { renderFrame, FX_KEYS } from './engine/render.js';
 import { fitPairLUT } from './engine/pairfit.js';
 
 let model = null;
@@ -13,8 +13,11 @@ const pairs = new Map();       // pairId -> LUT distilled from an AI-graded fram
 const luts = new Map();      // key: look settings + preserve flag -> LUT (bounded cache)
 const jobs = new Map();      // jobId -> {intent, regions, hash, look, temporal}
 
+const fxOf = (look) => (look && FX_KEYS.some((k) => look[k] !== undefined) ? Object.fromEntries(FX_KEYS.map((k) => [k, look[k]])) : null);
+
 function lutFor(intent, look) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
+  for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
   const key = JSON.stringify(full);
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
@@ -78,7 +81,7 @@ self.onmessage = (e) => {
         const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
         ev = evField(j.regions, masks, mw, mh);
       }
-      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev);
+      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev, undefined, m.grade ? fxOf(j.look) : null);
       self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev }, [out.buffer]);
     }
   } catch (err) {

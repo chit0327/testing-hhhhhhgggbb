@@ -372,6 +372,8 @@ function describeLook(k) {
   }
   if (k.source === 'ai') parts.unshift('AI 調色圖');
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
+  if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
+  if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
   return parts.join('、');
 }
@@ -396,7 +398,12 @@ const ADJ = { // control id -> [look key, slider scale, display]
   black: ['black', 100, (v) => `${v}`], white: ['white', 100, (v) => `${v}`],
   shadowHue: ['shadowHue', 1, null], midHue: ['midHue', 1, null], hiHue: ['hiHue', 1, null],
   shadowAmt: ['shadowAmt', 100, (v) => `${v}`], midAmt: ['midAmt', 100, (v) => `${v}`], hiAmt: ['hiAmt', 100, (v) => `${v}`],
+  glow: ['glow', 100, (v) => `${v}`], glowRadius: ['glowRadius', 100, (v) => `${v}`],
+  vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
+// settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
+const KEEP = ['amount', 'glow', 'glowRadius', 'vignette', 'vignetteSize'];
+const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
   const stops = [];
@@ -438,7 +445,7 @@ for (const el of document.querySelectorAll('input[name=source]')) {
 function applyAutoLook() {
   const st = S.grade.stats;
   if (!st) return;
-  S.look.draft = { ...suggestLook(st.src, st.ref), source: 'reference', amount: S.look.draft.amount ?? 1 };
+  S.look.draft = { ...suggestLook(st.src, st.ref), source: 'reference', ...kept() };
   S.look.auto = true;
   $('suggestInfo').textContent = `已依參考圖自動匹配：${describeLook(S.look.draft)}。可以再用滑桿微調。`;
   log('suggested', { look: { ...S.look.draft } });
@@ -559,7 +566,7 @@ function useAiPair(p) {
   S.aiPair = p;
   $('sourceAi').disabled = false;
   S.look.auto = false;
-  S.look.draft = { ...DEFAULT_LOOK, source: 'ai', pairId: p.id, amount: S.look.draft.amount ?? 1 }; // the AI image is the target: neutral sliders, the user's overall strength kept
+  S.look.draft = { ...DEFAULT_LOOK, source: 'ai', pairId: p.id, ...kept() }; // the AI image is the target: neutral sliders, the user's strength and effects kept
   syncAdjustControls(); scheduleAdjPreview();
 }
 $('aiInput').addEventListener('change', async (e) => {
