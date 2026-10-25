@@ -11,6 +11,7 @@ import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure } from './engine/grade.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { keyStore, listImageModels, geminiRegrade, nearestRatio } from './gemini.js';
+import { pollinationsKeyStore, listEditModels, pollinationsRegrade } from './pollinations.js';
 import { suggestLook, promptFor } from './engine/suggest.js';
 import { oklabToSrgb } from './engine/color.js';
 
@@ -580,34 +581,58 @@ $('aiInput').addEventListener('change', async (e) => {
   } catch (err) { out.textContent = `無法使用這張圖：${err.message.replace(/）$/, '）。請確認上傳的是步驟 1 下載的那一格調色後的版本')}`; }
 });
 
-// ---- Gemini (the user's own API key): generate candidates, check, distil, rank, pick the closest
+// ---- Image AI with the user's own key (Gemini or Pollinations): generate candidates, check, distil, rank,
+// pick the closest. Element ids keep the gemini* prefix; the provider decides key storage, models and calls.
 const inClaudeViewer = !!(window.claude && window.claude.use); // claude.ai pages cannot reach other services
+const PROVIDERS = {
+  gemini: {
+    name: 'Google Gemini', store: keyStore, placeholder: '貼上 Gemini API 金鑰',
+    info: '金鑰只保存在這個瀏覽器，直接送到 Google。生成時會把代表影格和參考圖傳給 Google；圖像模型可能沒有免費額度，費用和資料使用方式依 Google 的條款。',
+    list: async (key) => (await listImageModels(key)).map((id) => ({ id, refs: 2 })),
+    run: (o) => geminiRegrade({ ...o, aspectRatio: nearestRatio(o.width, o.height) }),
+  },
+  pollinations: {
+    name: 'Pollinations', store: pollinationsKeyStore, placeholder: '貼上 Pollinations 的 sk_ 金鑰（enter.pollinations.ai）',
+    info: '金鑰只保存在這個瀏覽器，直接送到 Pollinations。每次生成會扣帳戶的 Pollen 點數（免費點數來自官方任務，不是無限免費），影格和參考圖會傳給 Pollinations 和它使用的模型供應商。',
+    list: listEditModels,
+    run: (o) => pollinationsRegrade(o),
+  },
+};
+const provider = () => PROVIDERS[$('genProvider').value] || PROVIDERS.gemini;
 let geminiCtl = null;
-$('geminiKey').value = keyStore.load();
-$('geminiRemember').checked = !!$('geminiKey').value;
+function syncProvider() {
+  const p = provider();
+  $('geminiKey').value = p.store.load(); $('geminiKey').placeholder = p.placeholder;
+  $('geminiRemember').checked = !!$('geminiKey').value;
+  $('genProviderInfo').textContent = p.info; $('genProviderName').textContent = p.name;
+  $('geminiModel').innerHTML = '<option value="">（先連線）</option>';
+  if (!inClaudeViewer) $('geminiInfo').textContent = '';
+}
+syncProvider();
+$('genProvider').addEventListener('change', () => { syncProvider(); geminiState(); });
 function geminiState() {
   const ok = $('geminiKey').value.trim() && $('geminiModel').value && $('geminiConsent').checked && !S.geminiBusy;
   $('geminiRun').disabled = !ok;
 }
 if (inClaudeViewer) {
-  for (const id of ['geminiKey', 'geminiConnect', 'geminiRemember', 'geminiModel', 'geminiCount', 'geminiConsent']) $(id).disabled = true;
-  $('geminiInfo').textContent = '目前在 claude.ai 網頁裏開啟，不能連線 Gemini。請在本機（npm start）或自己的網址開啟網站。';
+  for (const id of ['genProvider', 'geminiKey', 'geminiConnect', 'geminiRemember', 'geminiModel', 'geminiCount', 'geminiConsent']) $(id).disabled = true;
+  $('geminiInfo').textContent = '目前在 claude.ai 網頁裏開啟，不能連線外部的圖像 AI。請在本機（npm start）或自己的網址開啟網站。';
 }
-$('geminiRemember').addEventListener('change', (e) => { if (e.target.checked) keyStore.save($('geminiKey').value.trim()); else keyStore.clear(); });
-$('geminiKey').addEventListener('input', () => { if ($('geminiRemember').checked) keyStore.save($('geminiKey').value.trim()); geminiState(); });
+$('geminiRemember').addEventListener('change', (e) => { if (e.target.checked) provider().store.save($('geminiKey').value.trim()); else provider().store.clear(); });
+$('geminiKey').addEventListener('input', () => { if ($('geminiRemember').checked) provider().store.save($('geminiKey').value.trim()); geminiState(); });
 for (const id of ['geminiModel', 'geminiConsent']) $(id).addEventListener('change', geminiState);
 $('geminiConnect').onclick = async () => {
   const key = $('geminiKey').value.trim();
   if (!key) { $('geminiInfo').textContent = '請先貼上 API 金鑰。'; return; }
   $('geminiInfo').textContent = '連線中…';
   try {
-    const models = await listImageModels(key);
+    const models = await provider().list(key);
     const sel = $('geminiModel');
     sel.innerHTML = '';
-    for (const m of models) { const o = document.createElement('option'); o.value = o.textContent = m; sel.appendChild(o); }
+    for (const m of models) { const o = document.createElement('option'); o.value = o.textContent = m.id; o.dataset.refs = m.refs; sel.appendChild(o); }
     if (!models.length) { const o = document.createElement('option'); o.value = ''; o.textContent = '（這個金鑰沒有可用的圖像模型）'; sel.appendChild(o); }
-    $('geminiInfo').textContent = models.length ? `已連線，可用的圖像模型 ${models.length} 個。` : '已連線，但這個金鑰沒有可以輸出圖片的模型（可能要在 Google AI Studio 開通或付費）。';
-    log('gemini-models', { models });
+    $('geminiInfo').textContent = models.length ? `已連線，可用的修圖模型 ${models.length} 個。` : '已連線，但這個金鑰沒有可以修圖的模型（可能要開通或付費）。';
+    log('gemini-models', { provider: $('genProvider').value, models: models.map((m) => m.id) });
   } catch (err) { $('geminiInfo').textContent = `連線失敗：${err.message}`; }
   geminiState();
 };
@@ -622,7 +647,7 @@ function renderCandidates(cands, chosenId) {
   for (const c of cands) {
     const d = document.createElement('div');
     d.className = `cand${c.id && c.id === chosenId ? ' chosen' : ''}${c.ok ? '' : ' bad'}`;
-    if (c.url) { const img = document.createElement('img'); img.src = c.url; img.alt = `Gemini 候選 ${c.n}`; d.appendChild(img); }
+    if (c.url) { const img = document.createElement('img'); img.src = c.url; img.alt = `AI 候選 ${c.n}`; d.appendChild(img); }
     const p = document.createElement('p');
     p.textContent = c.ok ? `候選 ${c.n}：構圖相似度 ${c.score.toFixed(2)}，重現誤差 ${c.meanAbs.toFixed(1)}/255，與參考圖差距 ${c.dist.toFixed(3)}${c.warn.length ? `（${c.warn.join('；')}）` : ''}`
       : `候選 ${c.n}：不採用，${c.reason}`;
@@ -647,14 +672,17 @@ $('geminiRun').onclick = async () => {
   try {
     const { w, h } = fitSize(m.width, m.height, 1024);
     const frame = await toJpeg(await grabFrame(m.video, t, w, h), 1024), reference = await toJpeg(S.ref.bitmap, 1024);
-    const prompt = `第一張圖是要調色的影片影格，第二張圖是參考圖。請輸出第一張圖調色後的版本。\n${$('aiPrompt').value}`;
+    const refs = +($('geminiModel').selectedOptions[0] && $('geminiModel').selectedOptions[0].dataset.refs) || 1, p = provider();
+    // a model that takes one image only gets the frame; the style then comes from the prompt's description alone
+    const prompt = refs >= 2 ? `第一張圖是要調色的影片影格，第二張圖是參考圖。請輸出第一張圖調色後的版本。\n${$('aiPrompt').value}`
+      : `請輸出這張影片影格調色後的版本。\n${$('aiPrompt').value.replace(/請參考我附上的參考圖的色調和氛圍。?\n?/, '')}`;
     const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
     for (let n = 1; n <= count; n++) {
-      info.textContent = `Gemini 生成候選 ${n}/${count} 中…`;
+      info.textContent = `${p.name} 生成候選 ${n}/${count} 中…`;
       const c = { n, ok: false };
       cands.push(c);
       try {
-        const blob = await geminiRegrade({ key, model, prompt, frame, reference, aspectRatio: nearestRatio(m.width, m.height), signal: geminiCtl.signal });
+        const blob = await p.run({ key, model, refs, prompt, frame, reference, width: w, height: h, signal: geminiCtl.signal });
         c.url = URL.createObjectURL(blob);
         info.textContent = `檢查候選 ${n}/${count}…`;
         c.pair = await fitAiImage(await loadImage(blob), t, { crop: true });
@@ -671,13 +699,13 @@ $('geminiRun').onclick = async () => {
       renderCandidates(cands, null);
     }
     const good = cands.filter((c) => c.ok).sort((a, b) => a.dist - b.dist);
-    log('gemini-candidates', { model, results: cands.map((c) => ({ n: c.n, ok: c.ok, reason: c.reason || null, dist: c.dist ?? null })) });
+    log('gemini-candidates', { provider: $('genProvider').value, model, results: cands.map((c) => ({ n: c.n, ok: c.ok, reason: c.reason || null, dist: c.dist ?? null })) });
     if (good.length) {
       useAiPair(good[0].pair);
       renderCandidates(cands, good[0].id);
       info.textContent = `完成：${good.length}/${cands.length} 個候選可用，已自動選用最接近參考圖的候選 ${good[0].n}（調色來源已切換為「AI 調色圖」，滑桿已歸零）。按「套用並處理影片」產生影片。`;
     } else info.textContent = `沒有可用的候選：${cands.map((c) => `候選 ${c.n} ${c.reason}`).join('；')}`;
-  } catch (err) { info.textContent = `Gemini 生成失敗：${err.message}`; }
+  } catch (err) { info.textContent = `${provider().name} 生成失敗：${err.message}`; }
   finally { S.geminiBusy = false; $('geminiStop').hidden = true; geminiState(); }
 };
 $('adjApply').onclick = () => startProcessing();

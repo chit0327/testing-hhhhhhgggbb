@@ -104,8 +104,9 @@
     <details class="ai-panel" id="aiPanel">
       <summary>AI 調色圖（進階）：讓 AI 圖像模型調好一格，網站反推成調色設定</summary>
       <section class="gemini" id="geminiBox">
-        <h3>自動生成：Google Gemini（使用你自己的 API 金鑰）</h3>
-        <p class="info">金鑰只保存在這個瀏覽器，直接送到 Google，不會經過其他伺服器。生成時會把代表影格和參考圖傳給 Google；免費額度和資料使用方式依 Google 的條款。在 claude.ai 網頁裏不能連線外部服務，請在本機或自己的網址開啟網站使用。</p>
+        <h3>自動生成（使用你自己的 API 金鑰）</h3>
+        <div class="row"><label>服務 <select id="genProvider"><option value="gemini">Google Gemini</option><option value="pollinations">Pollinations</option></select></label></div>
+        <p class="info" id="genProviderInfo"></p>
         <div class="row">
           <input type="password" id="geminiKey" placeholder="貼上 Gemini API 金鑰" autocomplete="off" spellcheck="false" class="grow">
           <button type="button" id="geminiConnect">連線並列出模型</button>
@@ -115,9 +116,9 @@
           <label>模型 <select id="geminiModel"><option value="">（先連線）</option></select></label>
           <label>候選數 <select id="geminiCount"><option>1</option><option selected>2</option><option>3</option></select></label>
         </div>
-        <label class="check"><input type="checkbox" id="geminiConsent"> 我同意把代表影格和參考圖傳送給 Google Gemini 處理</label>
+        <label class="check"><input type="checkbox" id="geminiConsent"> 我同意把代表影格和參考圖傳送給 <span id="genProviderName">Google Gemini</span> 處理</label>
         <div class="row">
-          <button type="button" id="geminiRun" class="primary" disabled>用 Gemini 生成調色候選</button>
+          <button type="button" id="geminiRun" class="primary" disabled>生成調色候選</button>
           <button type="button" id="geminiStop" hidden>停止</button>
         </div>
         <p class="info" id="geminiInfo"></p>
