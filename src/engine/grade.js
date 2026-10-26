@@ -10,6 +10,7 @@
 //   * analyse only the central 70% of the reference (a vignette there is not part of the colour grade),
 //   * the grade is a pure function of colour -> one LUT, identical in preview and export.
 import { srgbToOklab, oklabToSrgb } from './color.js';
+import { compilePrim, isNeutralPrim } from './primary.js';
 
 const SCALE = [1, 2, 2]; // weight chroma a little more than lightness
 
@@ -280,7 +281,9 @@ export const DEFAULT_LOOK = {
   amount: 1,                    // 整體調色強度: blend of the whole look with the original colour (0 = original)
   glow: 0, glowRadius: 0.5,     // 柔光 (spatial: applied by the renderer, not the LUT)
   vignette: 0, vignetteSize: 0.5, // 暗角: + darkens / − lightens the edges (spatial)
+  prim: null,                   // pro stage (primary.js): wheels, curves, hue curves, skin protection; null = off
 };
+const primCache = new WeakMap(); // look.prim object -> compiled function (single-colour calls outside a bake)
 export const TONE_COLOUR = 0.04; // OKLab chroma offset at amount 1
 
 const interp = (x, xs, ys) => {
@@ -329,8 +332,9 @@ function adjust(lab, k) {
  *   reference ── blend by `strength` with the original ── hue protection ── preserve lightness
  *   (Lighting Intent "preserve") ── basic adjustments.
  */
-export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [0, 0, 0]) {
+export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [0, 0, 0], primFn) {
   const k = { ...DEFAULT_LOOK, ...look };
+  if (primFn === undefined && k.prim) { if (!primCache.has(k.prim)) primCache.set(k.prim, compilePrim(k.prim)); primFn = primCache.get(k.prim); }
   const lab = srgbToOklab(r, g, b, _lab);
   const L0 = lab[0], a0 = lab[1], b0 = lab[2];
   let L = L0, a = a0, bb = b0;
@@ -373,6 +377,11 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
   if (k.preserveLuminance) L = L0;
   lab[0] = L; lab[1] = a; lab[2] = bb;
   adjust(lab, k);
+  if (primFn) { // pro stage on the adjusted colour (display-referred sRGB, like a colour page's primaries)
+    const t = oklabToSrgb(lab[0], lab[1], lab[2], _primRGB);
+    primFn(t[0], t[1], t[2], _primRGB);
+    srgbToOklab(_primRGB[0], _primRGB[1], _primRGB[2], lab);
+  }
   if (k.amount !== 1) { // overall strength: mix the finished look with the original, in OKLab
     const t = Math.min(1, Math.max(0, k.amount));
     lab[0] = L0 + t * (lab[0] - L0); lab[1] = a0 + t * (lab[1] - a0); lab[2] = b0 + t * (lab[2] - b0);
@@ -380,7 +389,7 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
   return oklabToSrgb(lab[0], lab[1], lab[2], out);
 }
 
-const _pairRGB = [0, 0, 0], _pairLab = [0, 0, 0];
+const _pairRGB = [0, 0, 0], _pairLab = [0, 0, 0], _primRGB = [0, 0, 0];
 /** Trilinear lookup in {size, data} (index ((r*N+g)*N+b)*3). */
 export function lutLookup(lut, r, g, b, out = [0, 0, 0]) {
   const N = lut.size, D = lut.data, n1 = N - 1;
@@ -401,10 +410,11 @@ export function lutLookup(lut, r, g, b, out = [0, 0, 0]) {
 export function bakeLUT(model, look = {}, N = 33) {
   const lut = new Float32Array(N * N * N * 3), o = [0, 0, 0], t = [0, 0, 0];
   const k = { ...DEFAULT_LOOK, ...look };
-  const neutral = !model && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
+  const primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim);
+  const neutral = !model && !primFn && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
   for (let r = 0; r < N; r++) for (let g = 0; g < N; g++) for (let b = 0; b < N; b++) {
     if (neutral) { o[0] = r / (N - 1); o[1] = g / (N - 1); o[2] = b / (N - 1); }
-    else gradeColour(model, r / (N - 1), g / (N - 1), b / (N - 1), look, o, t);
+    else gradeColour(model, r / (N - 1), g / (N - 1), b / (N - 1), look, o, t, primFn);
     const i = ((r * N + g) * N + b) * 3;
     lut[i] = o[0]; lut[i + 1] = o[1]; lut[i + 2] = o[2];
   }

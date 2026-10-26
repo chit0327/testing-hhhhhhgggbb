@@ -26,6 +26,7 @@ export class EngineClient {
     return this.call({ type: 'fit-pair', src: a, ai: b, w: src.width, h: src.height, pairId }, [a, b]);
   }
   clearPair() { return this.call({ type: 'clear-pair' }); }
+  bake(look, intentJson) { return this.call({ type: 'bake', look, intent: intentJson }).then((m) => ({ size: m.size, data: new Float32Array(m.data) })); }
   startJob(jobId, intentJson, look) {
     return new Promise((resolve, reject) => { this.pending.set(`job:${jobId}`, { resolve, reject }); this.worker.postMessage({ type: 'start-job', jobId, intent: intentJson, look }); });
   }
@@ -33,7 +34,7 @@ export class EngineClient {
   render(img, opts) { // img: ImageData. Returns {imageData, intentHash, localApplied}
     const buf = img.data.slice().buffer;
     return this.call({ type: 'render', rgba: buf, w: img.width, h: img.height, ...opts }, [buf]).then((m) => ({
-      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, index: m.index,
+      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, index: m.index,
     }));
   }
 }
@@ -47,8 +48,8 @@ const once = (el, ev) => new Promise((res, rej) => {
 
 // WebKit (Safari, and every browser on iPad / iPhone) differs in two ways that otherwise give black frames:
 // a <video> outside the document may never decode a picture, and 'seeked' can fire before the new frame
-// is ready to draw. So the work video is kept in the page (invisible) and, on WebKit, every seek also
-// waits for the frame to be presented.
+// is ready to draw (Chromium does that too under load). So the work video is kept in the page (invisible)
+// and every seek also waits for the frame to be presented.
 const UA = typeof navigator !== 'undefined' ? navigator.userAgent : '';
 export const WEBKIT = typeof window !== 'undefined' && window.__webkitMode !== undefined ? !!window.__webkitMode
   : /AppleWebKit/.test(UA) && (!/Chrome\/|Chromium|Edg\//.test(UA) || /CriOS|FxiOS|EdgiOS/.test(UA));
@@ -96,10 +97,13 @@ const presented = (video, ms) => new Promise((res) => { // next presented frame,
 export async function seek(video, t) {
   if (Math.abs(video.currentTime - t) < 1e-4 && video.readyState >= 2) return;
   const p = once(video, 'seeked');
-  const shown = WEBKIT ? presented(video, 400) : null;
+  // wait for the new frame to be presented, in every browser: 'seeked' can fire before it is decoded (WebKit
+  // always, Chromium under load), and drawing then grabs the previous frame (non-deterministic fits,
+  // duplicated frames in the export)
+  const shown = presented(video, 400);
   video.currentTime = t;
   await p;
-  if (shown) await shown;
+  await shown;
 }
 
 function isBlank(d) { // every sampled pixel black (or fully transparent): the frame was not decoded yet

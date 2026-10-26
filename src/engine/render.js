@@ -41,8 +41,13 @@ function expose(lin, k) {
  * src: RGBA Uint8ClampedArray (w×h). lut: {size, data} or null (identity). ev: {data, w, h} stops or null.
  * Returns a new RGBA Uint8ClampedArray.
  */
-export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.length), fx = null) {
+/**
+ * skin (optional): {lut, mask: {data, w, h} 0..1, k} — inside the mask, mix towards a second LUT (the grade
+ * without its colour changes) by k: skin keeps its colour but follows the tone.
+ */
+export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.length), fx = null, skin = null) {
   const N = lut ? lut.size : 0, L = lut ? lut.data : null, n1 = N - 1;
+  const SL = skin && L ? skin.lut.data : null, sm = SL ? skin.mask : null, col2 = [0, 0, 0];
   let gain = null, gw = 0, gh = 0;
   if (ev) {
     gw = ev.w; gh = ev.h;
@@ -67,6 +72,20 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
           const c11 = L[i000 + sR + sG] + (L[i000 + sR + sG + 3] - L[i000 + sR + sG]) * db;
           const c0 = c00 + (c01 - c00) * dg, c1 = c10 + (c11 - c10) * dg;
           col[c] = c0 + (c1 - c0) * dr;
+        }
+        if (SL) { // skin protection: same lookup in the tone-only LUT, mixed in by the skin mask
+          const mx = Math.min(sm.w - 1, Math.max(0, Math.round((x + 0.5) * sm.w / w - 0.5))), my = Math.min(sm.h - 1, Math.max(0, Math.round((y + 0.5) * sm.h / h - 0.5)));
+          const m = sm.data[my * sm.w + mx] * skin.k;
+          if (m > 0.004) {
+            for (let c = 0; c < 3; c++) {
+              const i000 = ((r0 * N + g0) * N + b0) * 3 + c;
+              const c00 = SL[i000] + (SL[i000 + 3] - SL[i000]) * db, c01 = SL[i000 + sG] + (SL[i000 + sG + 3] - SL[i000 + sG]) * db;
+              const c10 = SL[i000 + sR] + (SL[i000 + sR + 3] - SL[i000 + sR]) * db, c11 = SL[i000 + sR + sG] + (SL[i000 + sR + sG + 3] - SL[i000 + sR + sG]) * db;
+              const c0 = c00 + (c01 - c00) * dg, c1 = c10 + (c11 - c10) * dg;
+              col2[c] = c0 + (c1 - c0) * dr;
+              col[c] += (col2[c] - col[c]) * m;
+            }
+          }
         }
       } else { col[0] = src[p] / 255; col[1] = src[p + 1] / 255; col[2] = src[p + 2] / 255; }
       if (gain) { // local exposure from the confirmed Lighting Intent

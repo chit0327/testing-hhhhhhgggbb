@@ -9,6 +9,8 @@ import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
 import { EngineClient, probeVideo, grabFrame, fitSize, loadImage, imageDataOf, processVideo, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure } from './engine/grade.js';
+import { neutralPrim, isNeutralPrim, sanitizePrim, HUE_ANCHORS, HUE_NAMES, CURVE_X } from './engine/primary.js';
+import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { keyStore, listImageModels, geminiRegrade, nearestRatio } from './gemini.js';
 import { pollinationsKeyStore, listEditModels, pollinationsRegrade } from './pollinations.js';
@@ -130,8 +132,12 @@ function fitGrade(key) {
     const ref = S.ref.imageData;
     const r = await engine.fit(frames, { data: ref.data, width: ref.width, height: ref.height });
     S.grade.stats = { src: r.src, ref: r.ref, palette: r.palette };
+    S.grade.cands = r.candidates || [];
+    S.grade.refBands = bandColours(S.ref.imageData.data, S.ref.imageData.width, S.ref.imageData.height, { centre: 0.7, skipWhite: true });
+    log('autofit', { ms: Math.round(r.autofitMs || 0), modes: S.grade.cands.map((c) => c.mode) });
     $('aiPrompt').value = promptFor(r.ref, r.palette);
     if (S.look.auto) applyAutoLook();
+    renderCands();
     log('grade-fitted', { ms: Math.round(r.ms) });
     return key;
   })();
@@ -372,6 +378,7 @@ function describeLook(k) {
   }
   if (k.source === 'ai') parts.unshift('AI 調色圖');
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
+  if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ natural: '自然', faithful: '忠實', bold: '濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
@@ -419,6 +426,7 @@ function syncAdjustControls() {
   const ai = S.look.draft.source === 'ai';
   for (const el of document.querySelectorAll('input[name=source]')) el.checked = el.value === S.look.draft.source;
   $('adj-match').disabled = ai; $('adj-protect').disabled = ai;
+  syncPro();
   updateAdjState();
 }
 function updateAdjState() {
@@ -442,22 +450,139 @@ for (const el of document.querySelectorAll('input[name=source]')) {
     syncAdjustControls(); scheduleAdjPreview();
   });
 }
-function applyAutoLook() {
+const candLook = (c) => ({ ...DEFAULT_LOOK, strength: 0, match: 0, source: 'reference', prim: sanitizePrim(c.prim), ...kept() });
+function applyAutoLook(mode = 'natural') {
   const st = S.grade.stats;
   if (!st) return;
-  S.look.draft = { ...suggestLook(st.src, st.ref), source: 'reference', ...kept() };
+  const c = (S.grade.cands || []).find((x) => x.mode === mode);
+  S.look.draft = c ? candLook(c) : { ...suggestLook(st.src, st.ref), source: 'reference', ...kept() };
+  S.candMode = c ? mode : null;
   S.look.auto = true;
   $('suggestInfo').textContent = `已依參考圖自動匹配：${describeLook(S.look.draft)}。可以再用滑桿微調。`;
   log('suggested', { look: { ...S.look.draft } });
   if (!$('adjustCard').hidden) { syncAdjustControls(); scheduleAdjPreview(); }
 }
-$('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(); syncAdjustControls(); scheduleAdjPreview(); };
+$('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.candMode || 'natural'); syncAdjustControls(); scheduleAdjPreview(); renderCands(); };
+
+// ---- automatic candidates: render each on the representative frame and measure it
+function skinMaskFor(img) { // AI skin grid resampled to the frame (for the skin ΔE report), or null
+  const seg = S.rep && S.rep.seg;
+  if (!seg || !seg.skin) return null;
+  const mw = MASK_W, mh = Math.round(seg.skin.length / mw), w = img.width, h = img.height, m = new Float32Array(w * h);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) m[y * w + x] = seg.skin[Math.min(mh - 1, Math.floor(y * mh / h)) * mw + Math.min(mw - 1, Math.floor(x * mw / w))];
+  return m;
+}
+async function renderCands() {
+  const box = $('candBox');
+  if (!S.rep || !(S.grade.cands || []).length || $('adjustCard').hidden) return;
+  await S.grade.ready;
+  const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
+  const img = S.rep.img, skinM = skinMaskFor(img);
+  box.innerHTML = '';
+  const results = [];
+  for (const c of S.grade.cands) {
+    const look = candLook(c);
+    const r = await engine.render(img, { intent, seg: S.rep.seg, grade: true, look });
+    const d = r.imageData.data, cl = clipping(d);
+    const m = {
+      mode: c.mode, de: bandDeltaE(bandColours(d, img.width, img.height), S.grade.refBands),
+      structure: structureScore(img.data, d, img.width, img.height), clip: cl.highlights + cl.shadows,
+      skin: skinM ? maskedDeltaE(img.data, d, skinM, img.width, img.height) : null,
+    };
+    results.push(m);
+    const card = document.createElement('div');
+    card.className = `acand${S.candMode === c.mode && S.look.draft.prim ? ' chosen' : ''}`;
+    card.dataset.mode = c.mode;
+    const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height; cv.getContext('2d').putImageData(r.imageData, 0, 0);
+    const p = document.createElement('p');
+    p.textContent = `${c.label}：與參考圖色差 ΔE ${m.de.toFixed(1)}｜結構保留 ${m.structure.toFixed(3)}${m.skin !== null ? `｜膚色變化 ΔE ${m.skin.toFixed(1)}` : ''}${m.clip > 0.01 ? `｜裁切 ${(m.clip * 100).toFixed(1)}%` : ''}`;
+    card.append(cv, p);
+    card.onclick = () => { applyAutoLook(c.mode); log('candidate-chosen', { mode: c.mode }); syncAdjustControls(); scheduleAdjPreview(); for (const el of box.children) el.classList.toggle('chosen', el.dataset.mode === c.mode); };
+    box.appendChild(card);
+  }
+  const ref0 = bandDeltaE(bandColours(img.data, img.width, img.height), S.grade.refBands);
+  $('candInfo').textContent = `原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調；結構保留 1.000 代表構圖與紋理完全未變；膚色變化越小越自然。`;
+  S.candResults = results;
+  log('candidates-rendered', { results, original: ref0 });
+}
+
+// ---- professional controls (wheels, curves, hue curves), bound to look.prim
+const PRO = []; // {el, get(prim), set(prim, v)}
+function proPrim() { if (!S.look.draft.prim) S.look.draft.prim = neutralPrim(); return S.look.draft.prim; }
+function proSlider(parent, { min, max, value, label, get, set }) {
+  const wrap = document.createElement('label'); wrap.className = 'pslider';
+  if (label) { const sp = document.createElement('span'); sp.className = 'lbl'; sp.textContent = label; wrap.appendChild(sp); }
+  const el = document.createElement('input'); el.type = 'range'; el.min = min; el.max = max; el.value = value; wrap.appendChild(el);
+  el.addEventListener('input', () => { S.look.auto = false; set(proPrim(), +el.value); updateAdjState(); scheduleAdjPreview(); });
+  parent.appendChild(wrap);
+  PRO.push({ el, get });
+  return el;
+}
+function buildPro() {
+  const root = $('proControls');
+  const h4 = (t) => { const e = document.createElement('h4'); e.textContent = t; root.appendChild(e); };
+  h4('色輪（Lift 暗部／Gamma 中間調／Gain 亮部／Offset 整體）');
+  for (const [k, name] of [['lift', 'Lift'], ['gamma', 'Gamma'], ['gain', 'Gain'], ['offset', 'Offset']]) {
+    const row = document.createElement('div'); row.className = 'wheel-row';
+    const t = document.createElement('span'); t.textContent = name; row.appendChild(t);
+    proSlider(row, { min: -100, max: 100, value: 0, label: '亮度', get: (p) => p[k].m * 100, set: (p, v) => { p[k].m = v / 100; } });
+    const hue = proSlider(row, { min: 0, max: 359, value: 0, label: '顏色', get: (p) => p[k].h, set: (p, v) => { p[k].h = v; } });
+    hue.classList.add('hue');
+    proSlider(row, { min: 0, max: 100, value: 0, label: '份量', get: (p) => p[k].a * 100, set: (p, v) => { p[k].a = v / 100; } });
+    root.appendChild(row);
+  }
+  h4('曲線（0%／25%／50%／75%／100% 的輸出）');
+  for (const [k, name] of [['luma', '亮度'], ['red', '紅'], ['green', '綠'], ['blue', '藍']]) {
+    const row = document.createElement('div'); row.className = 'curve-row';
+    const t = document.createElement('span'); t.textContent = name; row.appendChild(t);
+    CURVE_X.forEach((x, i) => proSlider(row, { min: -5, max: 105, value: x * 100, get: (p) => p[k][i] * 100, set: (p, v) => { p[k][i] = v / 100; } }));
+    root.appendChild(row);
+  }
+  h4('色相曲線（各顏色的色相偏移／飽和度／亮度）');
+  HUE_ANCHORS.forEach((h, i) => {
+    const row = document.createElement('div'); row.className = 'hue-row';
+    const t = document.createElement('span'); t.textContent = HUE_NAMES[i]; row.appendChild(t);
+    proSlider(row, { min: -60, max: 60, value: 0, label: '色相', get: (p) => p.hueHue[i], set: (p, v) => { p.hueHue[i] = v; } });
+    proSlider(row, { min: -100, max: 100, value: 0, label: '飽和', get: (p) => p.hueSat[i] * 100, set: (p, v) => { p.hueSat[i] = v / 100; } });
+    proSlider(row, { min: -15, max: 15, value: 0, label: '亮度', get: (p) => p.hueLum[i] * 100, set: (p, v) => { p.hueLum[i] = v / 100; } });
+    root.appendChild(row);
+  });
+  h4('其他');
+  const row = document.createElement('div'); row.className = 'hue-row';
+  row.appendChild(document.createElement('span'));
+  proSlider(row, { min: -100, max: 100, value: 0, label: '整體飽和度', get: (p) => p.sat * 100, set: (p, v) => { p.sat = v / 100; } });
+  proSlider(row, { min: 0, max: 100, value: 0, label: '膚色保護（AI 皮膚遮罩）', get: (p) => p.skin * 100, set: (p, v) => { p.skin = v / 100; } });
+  root.appendChild(row);
+  const stops = [];
+  for (let hh = 0; hh <= 360; hh += 30) { const c = oklabToSrgb(0.72, 0.12 * Math.cos(hh * Math.PI / 180), 0.12 * Math.sin(hh * Math.PI / 180)); stops.push(`rgb(${c.map((v) => Math.round(v * 255)).join(',')}) ${(hh / 360 * 100).toFixed(1)}%`); }
+  for (const el of root.querySelectorAll('input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
+}
+buildPro();
+function syncPro() {
+  const p = S.look.draft.prim || neutralPrim();
+  for (const c of PRO) c.el.value = Math.round(c.get(p));
+}
+$('exportCube').onclick = async () => {
+  try {
+    await S.grade.ready;
+    const lut = await engine.bake(S.look.draft, S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null), N = lut.size;
+    const lines = [`TITLE "zhaoyang"`, `LUT_3D_SIZE ${N}`];
+    for (let b = 0; b < N; b++) for (let g = 0; g < N; g++) for (let r = 0; r < N; r++) {
+      const i = ((r * N + g) * N + b) * 3;
+      lines.push(`${lut.data[i].toFixed(6)} ${lut.data[i + 1].toFixed(6)} ${lut.data[i + 2].toFixed(6)}`);
+    }
+    const name = `${(S.video.file ? S.video.file.name : 'look').replace(/\.[^.]+$/, '')}_look.cube`;
+    await saveBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }), name);
+    log('cube-exported', { size: N, name });
+    $('cubeInfo').textContent = `已匯出 ${name}（${N}³）。局部曝光、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。`;
+  } catch (err) { if (!(err && err.code === 'declined')) $('cubeInfo').textContent = `匯出失敗：${err.message || err.code}`; }
+};
 
 // ---- Claude looks at reference + frame + result and sets the sliders (artifact `sample` capability)
 let claudeCtl = null;
 claudeAvailable().then((sample) => {
   S.claude = sample;
-  $('claudeOpt').hidden = !sample; $('claudeGrade').hidden = !sample;
+  $('claudeOpt').hidden = !sample; $('claudeGrade').hidden = !sample; $('tweakRow').hidden = !sample;
   log('claude-availability', { available: !!sample });
 });
 const CLAUDE_ERR = {
@@ -465,7 +590,7 @@ const CLAUDE_ERR = {
   rate_limited: 'Claude 使用量已達上限，請稍後再試。', refused: 'Claude 拒絕了這次要求。', invalid_json: 'Claude 的回覆格式不正確，請再試一次。',
   images_unavailable: '這個檢視不能傳送圖片給 Claude。', session_expired: '請重新登入 claude.ai。',
 };
-async function runClaude() {
+async function runClaude(instruction = '') {
   if (!S.claude || !S.rep || S.claudeBusy) return false;
   await S.grade.ready;
   S.claudeBusy = true; claudeCtl = new AbortController();
@@ -481,7 +606,7 @@ async function runClaude() {
         const r = await engine.render(S.rep.img, { intent, seg: S.rep.seg, grade: true, look });
         return { image: r.imageData, stats: measure(r.imageData.data, w, h) };
       },
-      onStatus: (t) => { info.textContent = t; },
+      onStatus: (t) => { info.textContent = t; }, instruction, maxRounds: instruction ? 1 : 3,
     });
     S.look.draft = res.look; S.look.auto = false;
     info.textContent = `Claude 調整了 ${res.rounds} 輪：${res.notes.join(' ')}`;
@@ -491,7 +616,7 @@ async function runClaude() {
   } catch (e) {
     const code = e && e.code;
     if (['not_granted', 'sampling_disabled', 'not_declared', 'capability_disabled', 'capability_removed', 'images_unavailable'].includes(code)) {
-      S.claude = null; $('claudeOpt').hidden = true; $('claudeGrade').hidden = true;
+      S.claude = null; $('claudeOpt').hidden = true; $('claudeGrade').hidden = true; $('tweakRow').hidden = true;
     }
     info.textContent = code === 'cancelled' ? '已停止，保留原本的設定。' : `Claude 自動調色未完成：${CLAUDE_ERR[code] || (e && e.message) || '連線問題，請稍後再試。'}`;
     log('claude-failed', { code });
@@ -501,6 +626,8 @@ async function runClaude() {
   }
 }
 $('claudeGrade').onclick = () => runClaude();
+$('tweakBtn').onclick = () => { const t = $('tweakText').value.trim(); if (t) runClaude(t); };
+$('tweakText').addEventListener('keydown', (e) => { if (e.key === 'Enter') $('tweakBtn').click(); });
 $('claudeStop').onclick = () => claudeCtl && claudeCtl.abort();
 
 // ---- AI-graded frame: offer one frame + prompt, take the AI's version back, distil a LUT in the worker
@@ -745,7 +872,7 @@ function drawAdj() {
   ctx.putImageData(adjRendered, 0, 0, x, 0, w - x, h);
   ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
 }
-function showAdjustCard() { $('adjustCard').hidden = false; syncAdjustControls(); scheduleAdjPreview(); }
+function showAdjustCard() { $('adjustCard').hidden = false; syncAdjustControls(); scheduleAdjPreview(); renderCands(); }
 
 async function startProcessing() {
   const intent = S.intent.confirmed;
@@ -758,7 +885,8 @@ async function startProcessing() {
   $('resultCard').hidden = false; $('progressWrap').hidden = false;
   for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = true;
   const regs = effectiveRegions(intent);
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai');
+  // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
+  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(S.look.applied.prim && S.look.applied.prim.skin > 0);
   if (needsSeg) await initSegmenter();
   try {
     const res = await processVideo({

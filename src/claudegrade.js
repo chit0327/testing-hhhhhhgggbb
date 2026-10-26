@@ -7,6 +7,7 @@
 // visible on the sliders and can be undone there.
 import { hueName } from './engine/suggest.js';
 import { canvas2d } from './pipeline.js';
+import { sanitizePrim, neutralPrim } from './engine/primary.js';
 
 /** Slider ranges in look units (what the adjustment panel can show). */
 export const RANGES = {
@@ -36,6 +37,7 @@ export function sanitizeParams(params, base) {
     if (!Number.isFinite(v)) continue;
     out[k] = k.endsWith('Hue') ? Math.round(((v % 360) + 360) % 360) : Math.round(Math.min(hi, Math.max(lo, v)) * 100) / 100;
   }
+  if (params.prim && typeof params.prim === 'object') out.prim = sanitizePrim({ ...(base.prim || neutralPrim()), ...params.prim });
   return out;
 }
 
@@ -45,9 +47,10 @@ const fmt = (s) => {
   return `平均亮度 ${s.Lmean.toFixed(3)}，對比(亮度標準差) ${s.Lsd.toFixed(3)}，黑位 ${q(0).toFixed(3)}，白位 ${q(1).toFixed(3)}，平均彩度 ${s.chroma.toFixed(3)}，亮部偏色 ${cast(s.hiA, s.hiB)}，暗部偏色 ${cast(s.loA, s.loB)}`;
 };
 
-export function buildPrompt({ round, maxRounds, params, metrics }) {
+export function buildPrompt({ round, maxRounds, params, metrics, instruction = '' }) {
   const current = Object.fromEntries(Object.keys(RANGES).map((k) => [k, params[k]]));
-  return `你是專業調色師。任務：調整影片的色彩與光暗，讓它呈現參考圖的氛圍（色調、明暗、柔和度、飽和度、亮部與暗部的偏色）。
+  current.prim = params.prim || neutralPrim();
+  return `你是專業調色師。任務：調整影片的色彩與光暗，讓它呈現參考圖的氛圍（色調、明暗、柔和度、飽和度、亮部與暗部的偏色）。${instruction ? `\n使用者的要求（最優先）：「${instruction.slice(0, 300)}」——在目前設定的基礎上照這個要求修改，其他部分盡量不動。` : ''}
 附上三張圖：
 1. 參考圖（要模仿的風格）
 2. 影片原始影格
@@ -68,9 +71,15 @@ export function buildPrompt({ round, maxRounds, params, metrics }) {
 - black：黑位提亮 0..0.4（輸出亮度下限，霧面感）；white：白位 0.7..1（輸出亮度上限）
 - shadowHue/midHue/hiHue：陰影、中間調、亮部要加入的顏色，OKLab 色相角 0..359（約：30 紅、70 橙、100 黃、130 黃綠、160 綠、200 青綠、250 藍、300 紫、340 粉紅）
 - shadowAmt/midAmt/hiAmt：上面顏色的份量 0..1（1 約等於彩度 0.04）
+- prim：專業調色（與達文西調色頁相同的概念，優先用這組調整色調）：
+  - lift / gamma / gain / offset：色輪，各為 {"m": 亮度 -1..1, "h": 顏色的 OKLab 色相角 0..359, "a": 顏色份量 0..1}，分別作用於暗部、中間調、亮部、整體
+  - luma / red / green / blue：曲線，5 個輸出值，對應輸入 0、0.25、0.5、0.75、1（不改變時為 [0,0.25,0.5,0.75,1]）
+  - sat：整體飽和度 log2，-1..1
+  - hueHue / hueSat / hueLum：色相曲線，各 8 個值，依序對應 紅30°、橙70°、黃100°、綠145°、青195°、藍255°、紫300°、洋紅340°；hueHue 為色相偏移度數 -60..60，hueSat 為飽和度 log2 -1..1，hueLum 為亮度 -0.15..0.15
+  - skin：膚色保護 0..1（AI 皮膚遮罩內保留原膚色，只跟隨明暗）
 
 請比較圖 3 和圖 1，決定下一組參數（每次只做必要的修改）。如果圖 3 已經很接近參考圖的氛圍，done 設為 true。
-只回覆一個 JSON：{"params": {上面全部參數}, "done": true 或 false, "note": "一句繁體中文，說明這次調整了什麼、為什麼"}`;
+只回覆一個 JSON：{"params": {上面全部參數，含 prim}, "done": true 或 false, "note": "一句繁體中文，說明這次調整了什麼、為什麼"}`;
 }
 
 /** ImageData or ImageBitmap -> JPEG Blob (long side ≤ maxSide). */
@@ -89,14 +98,14 @@ export async function toJpeg(src, maxSide = 1024) {
  * Iterate: render the current look, show Claude reference + original + result, take its parameters.
  * render(look) -> {image: ImageData, stats}; returns {look, notes, rounds}.
  */
-export async function claudeGrade({ sample, refImage, frameImage, metrics, look0, render, onStatus = () => {}, signal, maxRounds = 3 }) {
+export async function claudeGrade({ sample, refImage, frameImage, metrics, look0, render, onStatus = () => {}, signal, maxRounds = 3, instruction = '' }) {
   const ref = await toJpeg(refImage), frame = await toJpeg(frameImage);
   let look = { ...look0 };
   const notes = [];
   for (let round = 1; round <= maxRounds; round++) {
     onStatus(`Claude 正在比較參考圖和目前結果（第 ${round}/${maxRounds} 輪）…`);
     const cur = await render(look);
-    const prompt = buildPrompt({ round, maxRounds, params: look, metrics: { ...metrics, cur: cur.stats } });
+    const prompt = buildPrompt({ round, maxRounds, params: look, metrics: { ...metrics, cur: cur.stats }, instruction });
     const r = await sample.json(prompt, { images: [ref, frame, await toJpeg(cur.image)], modelTier: 'default', signal });
     look = sanitizeParams(r && r.params, look);
     if (r && typeof r.note === 'string') notes.push(r.note.slice(0, 200));

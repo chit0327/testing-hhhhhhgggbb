@@ -1,12 +1,14 @@
 // Processing worker: fits the reference grade, bakes LUTs, builds region masks from the CONFIRMED
 // LightingIntent it receives, and renders frames. The page never renders pixels itself, so the dialog
 // preview, the result preview and the export all come out of this one code path.
-import { fitGrade, bakeLUT } from './engine/grade.js';
+import { fitGrade, bakeLUT, sampleOklab } from './engine/grade.js';
+import { fitCandidates } from './engine/autofit.js';
 import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engine/intent.js';
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
 import { renderFrame, FX_KEYS } from './engine/render.js';
 import { fitPairLUT } from './engine/pairfit.js';
+import { protectedPrim } from './engine/primary.js';
 
 let model = null;
 const pairs = new Map();       // pairId -> LUT distilled from an AI-graded frame (look.source === 'ai'); a few candidates
@@ -25,6 +27,18 @@ function lutFor(intent, look) {
     luts.set(key, bakeLUT(pair ? { ...model, pair } : model, full, 33));
   }
   return luts.get(key);
+}
+
+const skinRegion = (mh) => ({ id: '__skin', kind: 'ai-skin', enabled: true, status: 'confirmed', edits: { w: MASK_W, h: mh, add: null, erase: null } });
+/** Skin protection for this frame: the tone-only LUT and the (temporally smoothed) AI skin mask, or null. */
+function skinFor(intent, look, src, w, h, seg, temporal) {
+  const k = look && look.prim && look.prim.skin;
+  if (!k || !seg) return null;
+  const mh = Math.round(MASK_W * h / w);
+  if (!seg.skin || seg.skin.length !== MASK_W * mh) return null;
+  const evidence = { seg, L: lightnessGrid(src, w, h, MASK_W, mh) };
+  const mask = regionMasks([skinRegion(mh)], evidence, MASK_W, mh, 0.006, temporal)['__skin'];
+  return { lut: lutFor(intent, { ...look, prim: protectedPrim(look.prim) }), mask: { data: mask, w: MASK_W, h: mh }, k };
 }
 
 function lookHash(look) {
@@ -46,7 +60,19 @@ self.onmessage = (e) => {
       const t = performance.now();
       model = fitGrade(m.frames, m.reference);
       luts.clear();
-      self.postMessage({ type: 'fitted', id: m.id, ms: performance.now() - t, src: model.src, ref: model.ref, palette: model.palette });
+      // pro-stage candidates (自然 / 忠實 / 濃烈) from the same keyframes and the reference's central 70%
+      const unscale = (a) => { const o = new Float64Array(a.length); for (let i = 0; i < a.length; i++) o[i] = i % 3 ? a[i] / 2 : a[i]; return o; };
+      const parts = m.frames.map((f, i) => sampleOklab(f.data, f.width, f.height, 2000, { seed: 21 + i }));
+      const srcLab = new Float64Array(parts.reduce((n, q) => n + q.length, 0));
+      let off = 0; for (const q of parts) { srcLab.set(q, off); off += q.length; }
+      const refLab = sampleOklab(m.reference.data, m.reference.width, m.reference.height, 8000, { centre: 0.7, seed: 7 });
+      const t2 = performance.now();
+      const candidates = fitCandidates(unscale(srcLab), unscale(refLab)).map((c) => ({ mode: c.report.mode, label: c.report.label, prim: c.prim, residual: c.report.residual }));
+      self.postMessage({ type: 'fitted', id: m.id, ms: performance.now() - t, autofitMs: performance.now() - t2, src: model.src, ref: model.ref, palette: model.palette, candidates });
+    } else if (m.type === 'bake') { // the look as a LUT (for .cube export); spatial effects are not part of it
+      const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
+      const data = lut.data.slice();
+      self.postMessage({ type: 'baked', id: m.id, size: lut.size, data: data.buffer }, [data.buffer]);
     } else if (m.type === 'fit-pair') {
       const t = performance.now();
       const r = fitPairLUT(new Uint8ClampedArray(m.src), new Uint8ClampedArray(m.ai), m.w, m.h);
@@ -81,8 +107,9 @@ self.onmessage = (e) => {
         const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
         ev = evField(j.regions, masks, mw, mh);
       }
-      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev, undefined, m.grade ? fxOf(j.look) : null);
-      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev }, [out.buffer]);
+      const skin = m.grade ? skinFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : null;
+      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev, undefined, m.grade ? fxOf(j.look) : null, skin);
+      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, skinProtected: !!skin }, [out.buffer]);
     }
   } catch (err) {
     self.postMessage({ type: 'error', id: m.id, jobId: m.jobId, message: String(err && err.message || err) });

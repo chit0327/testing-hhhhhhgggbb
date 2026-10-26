@@ -48,6 +48,12 @@
       </div>
       <div class="adj-controls">
         <div class="adj-group">
+          <h3>自動調色候選</h3>
+          <p class="info">依參考圖自動算出三種詮釋（色輪、曲線、色相曲線），挑一個即可；數值為實際畫面的量測結果。</p>
+          <div class="cands3" id="candBox"></div>
+          <p class="info" id="candInfo"></p>
+        </div>
+        <div class="adj-group">
           <h3>整體調色強度</h3>
           <label class="slider"><span>強度</span><input type="range" id="adj-amount" min="0" max="100" value="100"><output id="adj-amount-v">100%</output></label>
           <p class="info">0% 是原片，100% 是完整效果。調到 50–70% 通常更自然、膚色更耐看。不影響光暗設定的局部曝光。</p>
@@ -65,6 +71,10 @@
           </div>
           <p class="info" id="suggestInfo">素材載入後會自動依參考圖量化的對比、黑位、飽和度和亮部、暗部色偏設定下面的滑桿（參考色彩強度設為 0，所有變化都顯示在滑桿上）。</p>
           <p class="info" id="claudeInfo"></p>
+          <div class="row" id="tweakRow" hidden>
+            <input type="text" id="tweakText" class="grow" placeholder="用文字微調，例如：暖一點、膚色更自然、暗部不要太黑">
+            <button type="button" id="tweakBtn">照文字微調</button>
+          </div>
         </div>
         <div class="adj-group">
           <h3>參考色彩</h3>
@@ -102,6 +112,12 @@
           <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
           <p class="info">柔光讓亮部向外擴散，帶來柔和、夢幻的感覺；暗角正值壓暗四周、負值提亮四周。這兩項不受「整體調色強度」影響。</p>
         </div>
+        <details class="adj-group pro" id="proPanel">
+          <summary>專業調色（進階）：色輪、曲線、色相曲線</summary>
+          <div id="proControls"></div>
+          <div class="row"><button type="button" id="exportCube">匯出 .cube LUT</button></div>
+          <p class="info" id="cubeInfo">匯出的 LUT 包含全畫面調色（可在 DaVinci Resolve、剪映等軟體套用）；局部曝光、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。</p>
+        </details>
         <div class="row">
           <button id="adjReset" type="button">全部歸零</button>
           <button id="adjApply" type="button" class="primary">套用並處理影片</button>

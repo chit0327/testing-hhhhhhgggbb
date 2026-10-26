@@ -84,3 +84,17 @@ input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radi
 .cand.chosen { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc); }
 .cand.bad { opacity: 0.6; }
 .cand p { margin: 4px 0; color: var(--mut); }
+.cands3 { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; }
+.cands3 .acand canvas { width: 100%; display: block; border-radius: 6px; background: #000; }
+.cands3 .acand { cursor: pointer; }
+.cands3 .acand p { font-size: 12px; margin: 4px 0 0; }
+@media (max-width: 520px) { .cands3 { grid-template-columns: 1fr; } }
+.pro summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.pro h4 { font-size: 13px; margin: 10px 0 4px; }
+.wheel-row { display: grid; grid-template-columns: 4.5em 1fr 1fr 1fr; gap: 6px; align-items: center; margin: 4px 0; font-size: 13px; }
+.wheel-row .lbl { color: var(--mut); font-size: 11px; display: block; }
+.hue-row { display: grid; grid-template-columns: 2.5em 1fr 1fr 1fr; gap: 6px; align-items: center; margin: 3px 0; font-size: 13px; }
+.curve-row { display: grid; grid-template-columns: 4em repeat(5, 1fr); gap: 6px; align-items: center; margin: 3px 0; font-size: 12px; }
+.pro input[type=range] { width: 100%; min-width: 0; }
+.acand { border: 1px solid var(--line); border-radius: 10px; padding: 6px; }
+.acand.chosen { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc); }
