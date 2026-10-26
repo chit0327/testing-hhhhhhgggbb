@@ -100,3 +100,13 @@ input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radi
 .pro input[type=range] { width: 100%; min-width: 0; }
 .acand { border: 1px solid var(--line); border-radius: 10px; padding: 6px; }
 .acand.chosen { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc); }
+
+.scopes { margin-top: 10px; }
+.scopes summary { cursor: pointer; font-weight: 600; font-size: 14px; }
+.scope-bar { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; margin: 8px 0; font-size: 13px; }
+.check-inline { display: inline-flex; gap: 6px; align-items: center; }
+.scope-pair { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.scope-pair figure { margin: 0; display: grid; gap: 4px; }
+.scope-pair canvas { width: 100%; height: auto; display: block; background: #000; border-radius: 6px; }
+.scope-pair figcaption { font-size: 12px; color: var(--mut); }
+@media (max-width: 520px) { .scope-pair { grid-template-columns: 1fr; } }

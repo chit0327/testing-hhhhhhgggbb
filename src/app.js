@@ -9,6 +9,7 @@ import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
 import { EngineClient, probeVideo, grabFrame, fitSize, loadImage, imageDataOf, processVideo, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure } from './engine/grade.js';
+import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
@@ -930,6 +931,7 @@ function scheduleAdjPreview() {
       if (seq !== adjSeq) return;
       adjRendered = r.imageData;
       drawAdj();
+      drawScopes();
       log('adjust-preview', { look: { ...S.look.draft } });
     } catch (err) { $('adjState').textContent = `預覽失敗：${err.message}`; }
   }, 80);
@@ -943,6 +945,41 @@ function drawAdj() {
   ctx.putImageData(adjRendered, 0, 0, x, 0, w - x, h);
   ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
 }
+// ---- scopes: current result (or the original) beside the reference, redrawn with every preview
+let refScopeImg = null;
+function refCentre() { // the part of the reference the grade analyses (central 70 %)
+  const r = S.ref && S.ref.imageData;
+  if (!r) return null;
+  if (refScopeImg && refScopeImg.src === r) return refScopeImg.img;
+  const x0 = Math.floor(r.width * 0.15), y0 = Math.floor(r.height * 0.15), w = r.width - 2 * x0, h = r.height - 2 * y0, d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) d.set(r.data.subarray(((y + y0) * r.width + x0) * 4, ((y + y0) * r.width + x0 + w) * 4), y * w * 4);
+  refScopeImg = { src: r, img: { data: d, width: w, height: h } };
+  return refScopeImg.img;
+}
+function drawScope(canvas, img) {
+  const kind = $('scopeKind').value, ctx = canvas.getContext('2d'), step = Math.max(1, Math.floor(Math.sqrt((img.width * img.height) / 90000)));
+  if (kind === 'vector') {
+    canvas.width = 256; canvas.height = 256;
+    drawVectorscope(ctx, vectorscopeData(img.data, img.width, img.height, { size: 256, step }), 256);
+  } else {
+    canvas.width = 384; canvas.height = 216;
+    drawWaveform(ctx, waveformData(img.data, img.width, img.height, { mode: kind, cols: kind === 'parade' ? 128 : 256, levels: 108, step }), 384, 216);
+  }
+}
+function drawScopes() {
+  if (!$('scopes').open || !S.rep) return;
+  const orig = $('scopeOrig').checked, img = orig || !adjRendered ? S.rep.img : adjRendered;
+  drawScope($('scopeMain'), img);
+  $('scopeMainCap').textContent = orig || !adjRendered ? '原片' : '目前結果';
+  const ref = refCentre(); if (ref) drawScope($('scopeRef'), ref);
+  const c = clipShares(img.data), pc = (v) => `${(v * 100).toFixed(1)}%`;
+  $('scopeInfo').textContent = `${orig ? '原片' : '目前結果'}：過曝（任一色版 ≥ 254）${pc(c.hi)}，死黑 ${pc(c.lo)}。${c.hi > 0.02 ? '亮部有明顯裁切。' : ''}${c.lo > 0.02 ? '暗部有明顯死黑。' : ''}`;
+  log('scopes-drawn', { kind: $('scopeKind').value, orig, clip: c });
+}
+$('scopes').addEventListener('toggle', drawScopes);
+$('scopeKind').addEventListener('change', drawScopes);
+$('scopeOrig').addEventListener('change', drawScopes);
+
 function showAdjustCard() { $('adjustCard').hidden = false; syncAdjustControls(); scheduleAdjPreview(); renderCands(); }
 
 async function startProcessing() {

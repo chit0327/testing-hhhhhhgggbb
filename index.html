@@ -45,6 +45,23 @@
         <canvas id="adjCanvas"></canvas>
         <input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="前後分隔線">
         <p class="info">左：原始　右：目前設定的實際處理結果（含已確認的光暗設定）。拖動滑桿移動分隔線。</p>
+        <details class="scopes" id="scopes">
+          <summary>示波器</summary>
+          <div class="scope-bar">
+            <label>類型 <select id="scopeKind">
+              <option value="luma">波形圖（亮度）</option>
+              <option value="parade">RGB 分量圖</option>
+              <option value="vector">向量圖</option>
+            </select></label>
+            <label class="check-inline"><input type="checkbox" id="scopeOrig"> 左邊改看原片</label>
+          </div>
+          <div class="scope-pair">
+            <figure><canvas id="scopeMain" width="320" height="180"></canvas><figcaption id="scopeMainCap">目前結果</figcaption></figure>
+            <figure><canvas id="scopeRef" width="320" height="180"></canvas><figcaption>參考圖（中央 70%）</figcaption></figure>
+          </div>
+          <p class="info" id="scopeInfo"></p>
+          <p class="info">波形圖：橫向是畫面位置，縱向是亮度 0–100%；貼到 100% 的平線代表過曝，貼到 0% 代表死黑。RGB 分量圖：紅、綠、藍分開顯示，三者在亮部高低不同就是偏色。向量圖：離中心越遠越飽和，方向代表色相；橙色線是膚色線，人的皮膚應該落在線附近。</p>
+        </details>
       </div>
       <div class="adj-controls">
         <div class="adj-group">
