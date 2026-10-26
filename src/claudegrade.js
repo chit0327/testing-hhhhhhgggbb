@@ -77,6 +77,7 @@ export function buildPrompt({ round, maxRounds, params, metrics, instruction = '
   - sat：整體飽和度 log2，-1..1
   - hueHue / hueSat / hueLum：色相曲線，各 8 個值，依序對應 紅30°、橙70°、黃100°、綠145°、青195°、藍255°、紫300°、洋紅340°；hueHue 為色相偏移度數 -60..60，hueSat 為飽和度 log2 -1..1，hueLum 為亮度 -0.15..0.15
   - skin：膚色保護 0..1（AI 皮膚遮罩內保留原膚色，只跟隨明暗）
+  - norm：第一步 LOG／平面素材還原（已自動偵測），一般請原樣保留；只有畫面明顯太灰或太強烈時才調整 norm.amt 0..1
 
 請比較圖 3 和圖 1，決定下一組參數（每次只做必要的修改）。如果圖 3 已經很接近參考圖的氛圍，done 設為 true。
 只回覆一個 JSON：{"params": {上面全部參數，含 prim}, "done": true 或 false, "note": "一句繁體中文，說明這次調整了什麼、為什麼"}`;

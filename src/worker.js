@@ -67,7 +67,14 @@ self.onmessage = (e) => {
       let off = 0; for (const q of parts) { srcLab.set(q, off); off += q.length; }
       const refLab = sampleOklab(m.reference.data, m.reference.width, m.reference.height, 8000, { centre: 0.7, seed: 7 });
       const t2 = performance.now();
-      const candidates = fitCandidates(unscale(srcLab), unscale(refLab)).map((c) => ({ mode: c.report.mode, label: c.report.label, prim: c.prim, residual: c.report.residual }));
+      const f0 = m.frames[Math.floor(m.frames.length / 2)], k = Math.min(1, 320 / f0.width); // texture-guard thumbnail
+      const tw = Math.max(16, Math.round(f0.width * k)), th = Math.max(16, Math.round(f0.height * k)), td = new Uint8ClampedArray(tw * th * 4);
+      for (let y = 0; y < th; y++) for (let x = 0; x < tw; x++) {
+        const s = (Math.min(f0.height - 1, Math.floor(y / k)) * f0.width + Math.min(f0.width - 1, Math.floor(x / k))) * 4, o = (y * tw + x) * 4;
+        td[o] = f0.data[s]; td[o + 1] = f0.data[s + 1]; td[o + 2] = f0.data[s + 2]; td[o + 3] = 255;
+      }
+      const candidates = fitCandidates(unscale(srcLab), unscale(refLab), { thumb: { data: td, width: tw, height: th } })
+        .map((c) => ({ mode: c.report.mode, label: c.report.label, prim: c.prim, residual: c.report.residual, norm: c.report.norm }));
       self.postMessage({ type: 'fitted', id: m.id, ms: performance.now() - t, autofitMs: performance.now() - t2, src: model.src, ref: model.ref, palette: model.palette, candidates });
     } else if (m.type === 'bake') { // the look as a LUT (for .cube export); spatial effects are not part of it
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);

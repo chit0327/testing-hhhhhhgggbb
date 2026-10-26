@@ -501,7 +501,9 @@ async function renderCands() {
     box.appendChild(card);
   }
   const ref0 = bandDeltaE(bandColours(img.data, img.width, img.height), S.grade.refBands);
-  $('candInfo').textContent = `原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調；結構保留 1.000 代表構圖與紋理完全未變；膚色變化越小越自然。`;
+  const nm = S.grade.cands && S.grade.cands[0] && S.grade.cands[0].norm;
+  const restore = nm && nm.amt > 0.02 ? `偵測到 LOG／平面素材（亮度範圍 ${nm.range.toFixed(2)}，正常約 0.6 以上），已先自動還原 ${Math.round(nm.amt * 100)}%，再匹配參考圖。` : '';
+  $('candInfo').textContent = `${restore}原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調；結構保留 1.000 代表構圖與紋理完全未變；膚色變化越小越自然。`;
   S.candResults = results;
   log('candidates-rendered', { results, original: ref0 });
 }
@@ -521,6 +523,11 @@ function proSlider(parent, { min, max, value, label, get, set }) {
 function buildPro() {
   const root = $('proControls');
   const h4 = (t) => { const e = document.createElement('h4'); e.textContent = t; root.appendChild(e); };
+  h4('第一步：LOG／平面素材還原（自動偵測；0 = 不還原）');
+  const nrow = document.createElement('div'); nrow.className = 'hue-row';
+  nrow.appendChild(document.createElement('span'));
+  proSlider(nrow, { min: 0, max: 100, value: 0, label: '還原強度', get: (p) => (p.norm ? p.norm.amt : 0) * 100, set: (p, v) => { p.norm = { ...(p.norm || { m: 0.5, Tm: 0.5, s: 1, sat: 1 }), amt: v / 100 }; } });
+  root.appendChild(nrow);
   h4('色輪（Lift 暗部／Gamma 中間調／Gain 亮部／Offset 整體）');
   for (const [k, name] of [['lift', 'Lift'], ['gamma', 'Gamma'], ['gain', 'Gain'], ['offset', 'Offset']]) {
     const row = document.createElement('div'); row.className = 'wheel-row';

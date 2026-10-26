@@ -22,8 +22,25 @@ export function neutralPrim() {
     hueSat: new Array(8).fill(0),            // log2 factor, ±1
     hueLum: new Array(8).fill(0),            // OKLab L, ±0.15
     skin: 0,                                 // 0..1: inside the AI skin mask, how much skin keeps its colour (renderer)
+    norm: neutralNorm(),                     // first node: LOG / flat-profile restoration (see estimateNorm)
   };
 }
+
+/**
+ * Restoration of LOG / flat-profile footage to a normal display image, the "CST node" before the creative
+ * grade. amt 0..1 blends it in; m: source median lightness, Tm: where the median goes, s: midtone slope,
+ * sat: chroma factor. The tone map is a two-sided tanh around the median, so contrast is restored in the
+ * midtones while the ends roll off softly towards lo/hi (no clipping, a filmic S-curve).
+ */
+export const NORM_LO = 0.05, NORM_HI = 0.995;
+export function neutralNorm() { return { amt: 0, m: 0.5, Tm: 0.5, s: 1, sat: 1 }; }
+export function normTone(n, L) {
+  const y = n.Tm + n.s * (L - n.m);
+  const g = y >= n.Tm ? n.Tm + (NORM_HI - n.Tm) * Math.tanh((y - n.Tm) / (NORM_HI - n.Tm))
+    : n.Tm - (n.Tm - NORM_LO) * Math.tanh((n.Tm - y) / (n.Tm - NORM_LO));
+  return L + n.amt * (g - L);
+}
+const isNeutralNorm = (n) => !n || !n.amt;
 
 const WHEEL_SCALE = { lift: 0.1, gamma: 0.25, gain: 0.15, offset: 0.08 }; // channel deviation at amount 1
 const MASTER_SCALE = { lift: 0.25, gamma: 1, gain: 0.5, offset: 0.2 };
@@ -85,7 +102,7 @@ const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a
 export function isNeutralPrim(p) {
   if (!p) return true;
   const w = (x) => !x.m && !x.a;
-  return w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
+  return isNeutralNorm(p.norm) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
     && [p.luma, p.red, p.green, p.blue].every(isIdentityCurve)
     && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x));
 }
@@ -100,9 +117,14 @@ export function compilePrim(p) {
   const hueOn = [p.hueHue, p.hueSat, p.hueLum].some((v) => v.some((x) => x));
   const satK = Math.pow(2, p.sat || 0);
   const lab = [0, 0, 0], rgb = [0, 0, 0];
+  const norm = isNeutralNorm(p.norm) ? null : p.norm, normSat = norm ? 1 + norm.amt * (norm.sat - 1) : 1;
   /** sRGB 0..1 in -> sRGB 0..1 out (out array). */
   return function apply(r, g, b, out) {
-    rgb[0] = r; rgb[1] = g; rgb[2] = b;
+    if (norm) { // restoration first, like a CST node ahead of the grade
+      srgbToOklab(r, g, b, lab);
+      oklabToSrgb(normTone(norm, lab[0]), lab[1] * normSat, lab[2] * normSat, rgb);
+      for (let c = 0; c < 3; c++) rgb[c] = Math.min(1, Math.max(0, rgb[c]));
+    } else { rgb[0] = r; rgb[1] = g; rgb[2] = b; }
     for (let c = 0; c < 3; c++) { // Lift / Gain, Gamma, Offset (per channel, display-referred like a colour page)
       let v = rgb[c] * (1 + K[c]) + L[c] * (1 - rgb[c]);
       v = v > 0 ? Math.pow(v, expo[c]) : v;
@@ -127,7 +149,7 @@ export function compilePrim(p) {
   };
 }
 
-/** The same grade without its colour changes (tone only): what protected skin receives. */
+/** The same grade without its colour changes (tone only, restoration kept): what protected skin receives. */
 export function protectedPrim(p) {
   const q = sanitizePrim(p);
   for (const k of ['lift', 'gamma', 'gain', 'offset']) q[k] = { m: q[k].m, h: q[k].h, a: 0 };
@@ -150,5 +172,9 @@ export function sanitizePrim(q) {
   const arr = (v, lo, hi) => (Array.isArray(v) && v.length === 8 ? v.map((x) => num(x, lo, hi, 0)) : new Array(8).fill(0));
   p.hueHue = arr(q.hueHue, -60, 60); p.hueSat = arr(q.hueSat, -1, 1); p.hueLum = arr(q.hueLum, -0.15, 0.15);
   p.skin = num(q.skin, 0, 1, 0);
+  if (q.norm && typeof q.norm === 'object') {
+    const n = q.norm;
+    p.norm = { amt: num(n.amt, 0, 1, 0), m: num(n.m, 0.05, 0.95, 0.5), Tm: num(n.Tm, 0.2, 0.8, 0.5), s: num(n.s, 0.5, 3, 1), sat: num(n.sat, 0.5, 5, 1) };
+  }
   return p;
 }
