@@ -23,6 +23,12 @@ export function neutralPrim() {
     hueLum: new Array(8).fill(0),            // OKLab L, ±0.15
     skin: 0,                                 // 0..1: inside the AI skin mask, how much skin keeps its colour (renderer)
     norm: neutralNorm(),                     // first node: LOG / flat-profile restoration (see estimateNorm)
+    // automatic local grading (see local.js): per AI region an OKLab adjustment applied after the grade.
+    // The renderer bakes one LUT per region and blends them by the region masks.
+    local: null,                             // {skin, hair, clothes, background: {L, a, b, sat}} or null
+    localAmt: 1,                             // strength of the local grade (pro panel)
+    keep: 0,                                 // 0..1 share of the colour change removed (tone kept): region layers only
+    post: null,                              // {L, a, b, sat}: the adjustment of the layer being baked
   };
 }
 
@@ -41,6 +47,9 @@ export function normTone(n, L) {
   return L + n.amt * (g - L);
 }
 const isNeutralNorm = (n) => !n || !n.amt;
+const isNeutralPost = (q) => !q || (!q.L && !q.a && !q.b && !q.sat);
+export const LOCAL_REGIONS = ['skin', 'hair', 'clothes', 'background'];
+export const LOCAL_NAMES = { skin: '皮膚', hair: '頭髮', clothes: '衣服', background: '背景' };
 
 const WHEEL_SCALE = { lift: 0.1, gamma: 0.25, gain: 0.15, offset: 0.08 }; // channel deviation at amount 1
 const MASTER_SCALE = { lift: 0.25, gamma: 1, gain: 0.5, offset: 0.2 };
@@ -102,7 +111,7 @@ const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a
 export function isNeutralPrim(p) {
   if (!p) return true;
   const w = (x) => !x.m && !x.a;
-  return isNeutralNorm(p.norm) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
+  return isNeutralNorm(p.norm) && !p.keep && isNeutralPost(p.post) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
     && [p.luma, p.red, p.green, p.blue].every(isIdentityCurve)
     && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x));
 }
@@ -110,6 +119,19 @@ export function isNeutralPrim(p) {
 /** Prepare closures for one parameter set (called once per LUT bake). */
 export function compilePrim(p) {
   if (isNeutralPrim(p)) return null;
+  if (p.keep || !isNeutralPost(p.post)) { // region layer: the grade, part of its colour change removed, then the region's own adjustment
+    const base = { ...p, keep: 0, post: null }, full = compilePrim(base), prot = p.keep ? compilePrim(protectedPrim(base)) : null;
+    const k = p.keep || 0, q = p.post || {}, satK = Math.pow(2, q.sat || 0), o1 = [0, 0, 0], o2 = [0, 0, 0], lb = [0, 0, 0], lp = [0, 0, 0];
+    return function layer(r, g, b, out) {
+      const c1 = full ? full(r, g, b, o1) : [r, g, b];
+      srgbToOklab(c1[0], c1[1], c1[2], lb);
+      if (prot) {
+        const c2 = prot(r, g, b, o2); srgbToOklab(c2[0], c2[1], c2[2], lp);
+        for (let i = 0; i < 3; i++) lb[i] += (lp[i] - lb[i]) * k;
+      }
+      return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), lb[1] * satK + (q.a || 0), lb[2] * satK + (q.b || 0), out);
+    };
+  }
   const L = wheelRGB(p.lift, 'lift'), G = wheelRGB(p.gamma, 'gamma'), K = wheelRGB(p.gain, 'gain'), O = wheelRGB(p.offset, 'offset');
   const expo = G.map((g) => Math.pow(2, -g));
   const rgbCurves = [p.red, p.green, p.blue].map((c) => (isIdentityCurve(c) ? null : curveFn(c)));
@@ -151,7 +173,7 @@ export function compilePrim(p) {
 
 /** The same grade without its colour changes (tone only, restoration kept): what protected skin receives. */
 export function protectedPrim(p) {
-  const q = sanitizePrim(p);
+  const q = sanitizePrim({ ...p, keep: 0, post: null });
   for (const k of ['lift', 'gamma', 'gain', 'offset']) q[k] = { m: q[k].m, h: q[k].h, a: 0 };
   q.red = CURVE_X.slice(); q.green = CURVE_X.slice(); q.blue = CURVE_X.slice();
   q.sat = 0; q.hueHue = new Array(8).fill(0); q.hueSat = new Array(8).fill(0); q.hueLum = new Array(8).fill(0);
@@ -176,5 +198,13 @@ export function sanitizePrim(q) {
     const n = q.norm;
     p.norm = { amt: num(n.amt, 0, 1, 0), m: num(n.m, 0.05, 0.95, 0.5), Tm: num(n.Tm, 0.2, 0.8, 0.5), s: num(n.s, 0.5, 3, 1), sat: num(n.sat, 0.5, 5, 1) };
   }
+  const adj = (v) => (v && typeof v === 'object' ? { L: num(v.L, -0.1, 0.1, 0), a: num(v.a, -0.06, 0.06, 0), b: num(v.b, -0.06, 0.06, 0), sat: num(v.sat, -0.6, 0.6, 0) } : null);
+  if (q.local && typeof q.local === 'object') {
+    p.local = {};
+    for (const r of LOCAL_REGIONS) p.local[r] = adj(q.local[r]) || { L: 0, a: 0, b: 0, sat: 0 };
+  }
+  p.localAmt = num(q.localAmt, 0, 1.5, 1);
+  p.keep = num(q.keep, 0, 1, 0);
+  p.post = adj(q.post);
   return p;
 }

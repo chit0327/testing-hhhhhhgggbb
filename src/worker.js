@@ -8,7 +8,8 @@ import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
 import { renderFrame, FX_KEYS } from './engine/render.js';
 import { fitPairLUT } from './engine/pairfit.js';
-import { protectedPrim } from './engine/primary.js';
+import { LOCAL_REGIONS } from './engine/primary.js';
+import { fitLocal, layerPrim } from './engine/local.js';
 
 let model = null;
 const pairs = new Map();       // pairId -> LUT distilled from an AI-graded frame (look.source === 'ai'); a few candidates
@@ -17,8 +18,12 @@ const jobs = new Map();      // jobId -> {intent, regions, hash, look, temporal}
 
 const fxOf = (look) => (look && FX_KEYS.some((k) => look[k] !== undefined) ? Object.fromEntries(FX_KEYS.map((k) => [k, look[k]])) : null);
 
+// the main LUT carries the background's local adjustment; persons get their own layers (layersFor)
+const basePrim = (prim) => (prim && prim.local ? { ...prim, local: null, post: scaled(prim, 'background') } : prim);
+const scaled = (prim, r) => { const q = prim.local && prim.local[r], k = prim.localAmt ?? 1; return q ? { L: q.L * k, a: q.a * k, b: q.b * k, sat: q.sat * k } : null; };
 function lutFor(intent, look) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
+  if (full.prim) full.prim = basePrim(full.prim);
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
   const key = JSON.stringify(full);
   if (!luts.has(key)) {
@@ -29,16 +34,30 @@ function lutFor(intent, look) {
   return luts.get(key);
 }
 
-const skinRegion = (mh) => ({ id: '__skin', kind: 'ai-skin', enabled: true, status: 'confirmed', edits: { w: MASK_W, h: mh, add: null, erase: null } });
-/** Skin protection for this frame: the tone-only LUT and the (temporally smoothed) AI skin mask, or null. */
-function skinFor(intent, look, src, w, h, seg, temporal) {
-  const k = look && look.prim && look.prim.skin;
-  if (!k || !seg) return null;
+const aiRegion = (kind, mh) => ({ id: `__${kind}`, kind, enabled: true, status: 'confirmed', edits: { w: MASK_W, h: mh, add: null, erase: null } });
+/**
+ * Region layers for this frame: skin protection and the automatic local grade. Each AI region (skin, hair,
+ * clothes) gets its own LUT — the grade with that region's adjustment — and its temporally smoothed mask;
+ * the background's adjustment lives in the main LUT. Returns [] when nothing is local.
+ */
+function layersFor(intent, look, src, w, h, seg, temporal) {
+  const prim = look && look.prim;
+  if (!prim || !seg) return [];
+  const local = !!prim.local && (prim.localAmt ?? 1) > 0;
+  if (!local && !prim.skin) return [];
   const mh = Math.round(MASK_W * h / w);
-  if (!seg.skin || seg.skin.length !== MASK_W * mh) return null;
-  const evidence = { seg, L: lightnessGrid(src, w, h, MASK_W, mh) };
-  const mask = regionMasks([skinRegion(mh)], evidence, MASK_W, mh, 0.006, temporal)['__skin'];
-  return { lut: lutFor(intent, { ...look, prim: protectedPrim(look.prim) }), mask: { data: mask, w: MASK_W, h: mh }, k };
+  if (!seg.skin || seg.skin.length !== MASK_W * mh) return [];
+  const regions = local && seg.hair ? ['skin', 'hair', 'clothes'] : ['skin'];
+  const regs = regions.map((r) => aiRegion(`ai-${r}`, mh));
+  const masks = regionMasks(regs, { seg, L: lightnessGrid(src, w, h, MASK_W, mh) }, MASK_W, mh, 0.006, temporal);
+  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), post: local ? scaled(prim, r) : null } }), mask: { data, w: MASK_W, h: mh }, k: 1 });
+  const out = [layer('skin', masks['__ai-skin'])];
+  if (regions.length > 1) { // hair and clothes share one layer (same adjustment): one LUT, one lookup per pixel
+    const hm = masks['__ai-hair'], cm = masks['__ai-clothes'], m = new Float32Array(hm.length);
+    for (let i = 0; i < m.length; i++) m[i] = Math.min(1, hm[i] + cm[i]);
+    out.push(layer('hair', m));
+  }
+  return out;
 }
 
 function lookHash(look) {
@@ -80,6 +99,12 @@ self.onmessage = (e) => {
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
       const data = lut.data.slice();
       self.postMessage({ type: 'baked', id: m.id, size: lut.size, data: data.buffer }, [data.buffer]);
+    } else if (m.type === 'fit-local') { // per-region adjustments for each candidate (rep frame vs reference)
+      const t = performance.now();
+      const src = { rgba: new Uint8ClampedArray(m.src.data), w: m.src.w, h: m.src.h, seg: m.src.seg };
+      const ref = { rgba: new Uint8ClampedArray(m.ref.data), w: m.ref.w, h: m.ref.h, seg: m.ref.seg };
+      const results = m.cands.map((c) => { const r = fitLocal(c.prim, src, ref, c.mode); return { mode: c.mode, local: r.local, report: r.report }; });
+      self.postMessage({ type: 'local-fitted', id: m.id, ms: performance.now() - t, results });
     } else if (m.type === 'fit-pair') {
       const t = performance.now();
       const r = fitPairLUT(new Uint8ClampedArray(m.src), new Uint8ClampedArray(m.ai), m.w, m.h);
@@ -114,9 +139,11 @@ self.onmessage = (e) => {
         const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
         ev = evField(j.regions, masks, mw, mh);
       }
-      const skin = m.grade ? skinFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : null;
-      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev, undefined, m.grade ? fxOf(j.look) : null, skin);
-      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, skinProtected: !!skin }, [out.buffer]);
+      const layers = m.grade ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
+      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev, undefined, m.grade ? fxOf(j.look) : null, layers);
+      const prim = j.look && j.look.prim;
+      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev,
+        skinProtected: layers.length > 0 && !!(prim && prim.skin), localGraded: layers.length > 1 }, [out.buffer]);
     }
   } catch (err) {
     self.postMessage({ type: 'error', id: m.id, jobId: m.jobId, message: String(err && err.message || err) });

@@ -24,6 +24,9 @@ export const KINDS = {
   'luma-shadows': { label: '暗部（亮度選區）', source: 'luma', tracked: true },
   manual: { label: '手動選區', source: 'manual', tracked: false },
   global: { label: '整個畫面', source: 'global', tracked: true },
+  // internal (automatic local grade only, never offered in the dialog)
+  'ai-hair': { label: '頭髮', source: 'ai', tracked: true, internal: true },
+  'ai-clothes': { label: '衣服', source: 'ai', tracked: true, internal: true },
 };
 
 let _id = 0;

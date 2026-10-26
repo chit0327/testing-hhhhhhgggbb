@@ -51,7 +51,7 @@ export async function initSegmenter() {
   return loading;
 }
 
-/** source: canvas / ImageData / video frame. Returns {person, skin, background} Float32 grids (mw×mh). */
+/** source: canvas / ImageData / video frame. Returns {person, skin, background, hair, clothes} Float32 grids (mw×mh). */
 export function segment(source, mw, mh) {
   if (!segmenter) throw new Error('segmenter not initialised');
   const res = segmenter.segment(source);
@@ -60,12 +60,16 @@ export function segment(source, mw, mh) {
     const w = masks[0].width, h = masks[0].height;
     const c = masks.map((m) => m.getAsFloat32Array());
     const n = w * h, person = new Float32Array(n), skin = new Float32Array(n), background = new Float32Array(n);
+    const hair = new Float32Array(n), clothes = new Float32Array(n);
     for (let i = 0; i < n; i++) {
       background[i] = c[0][i];
       person[i] = 1 - c[0][i];
       skin[i] = Math.min(1, c[2][i] + c[3][i]);
+      hair[i] = c[1][i];
+      clothes[i] = Math.min(1, c[4][i] + c[5][i]);
     }
-    return { person: resize(person, w, h, mw, mh), skin: resize(skin, w, h, mw, mh), background: resize(background, w, h, mw, mh) };
+    const r = (g) => resize(g, w, h, mw, mh);
+    return { person: r(person), skin: r(skin), background: r(background), hair: r(hair), clothes: r(clothes) };
   } finally {
     res.close();
   }

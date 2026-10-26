@@ -25,6 +25,10 @@ export class EngineClient {
     const a = src.data.slice().buffer, b = ai.data.slice().buffer;
     return this.call({ type: 'fit-pair', src: a, ai: b, w: src.width, h: src.height, pairId }, [a, b]);
   }
+  fitLocal(src, srcSeg, ref, refSeg, cands) { // src, ref: ImageData; seg: {w, h, skin, hair, clothes, background}
+    const a = src.data.slice().buffer, b = ref.data.slice().buffer;
+    return this.call({ type: 'fit-local', src: { data: a, w: src.width, h: src.height, seg: srcSeg }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg }, cands }, [a, b]);
+  }
   clearPair() { return this.call({ type: 'clear-pair' }); }
   bake(look, intentJson) { return this.call({ type: 'bake', look, intent: intentJson }).then((m) => ({ size: m.size, data: new Float32Array(m.data) })); }
   startJob(jobId, intentJson, look) {
@@ -34,7 +38,7 @@ export class EngineClient {
   render(img, opts) { // img: ImageData. Returns {imageData, intentHash, localApplied}
     const buf = img.data.slice().buffer;
     return this.call({ type: 'render', rgba: buf, w: img.width, h: img.height, ...opts }, [buf]).then((m) => ({
-      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, index: m.index,
+      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index,
     }));
   }
 }

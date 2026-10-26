@@ -9,7 +9,7 @@ import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
 import { EngineClient, probeVideo, grabFrame, fitSize, loadImage, imageDataOf, processVideo, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure } from './engine/grade.js';
-import { neutralPrim, isNeutralPrim, sanitizePrim, HUE_ANCHORS, HUE_NAMES, CURVE_X } from './engine/primary.js';
+import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { keyStore, listImageModels, geminiRegrade, nearestRatio } from './gemini.js';
@@ -139,6 +139,7 @@ function fitGrade(key) {
     if (S.look.auto) applyAutoLook();
     renderCands();
     log('grade-fitted', { ms: Math.round(r.ms) });
+    setTimeout(fitLocalGrade, 0);
     return key;
   })();
   S.grade.ready.then(() => { if (S.phase === 'analysing') setPhase(S.intent.confirmed ? 'confirmed' : 'draft'); })
@@ -174,15 +175,36 @@ async function loadRepFrame(t) {
   await runAI();
 }
 
+// LOG / flat footage is restored before segmentation (the model misses people in flat, grey frames).
+function currentNorm() {
+  const p = S.look.draft && S.look.draft.prim, c = S.grade.cands && S.grade.cands[0];
+  const n = (p && p.norm) || (c && c.prim && c.prim.norm);
+  return n && n.amt > 0.02 ? n : null;
+}
+function restoreCanvas(c, norm = currentNorm()) {
+  if (!norm) return c;
+  const f = compilePrim({ ...neutralPrim(), norm }), ctx = c.getContext('2d'), id = ctx.getImageData(0, 0, c.width, c.height), d = id.data, o = [0, 0, 0];
+  for (let i = 0; i < d.length; i += 4) { f(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255, o); d[i] = o[0] * 255 + 0.5; d[i + 1] = o[1] * 255 + 0.5; d[i + 2] = o[2] * 255 + 0.5; }
+  ctx.putImageData(id, 0, 0);
+  return c;
+}
+const segmentRestored = (c, mw, mh) => segment(restoreCanvas(c), mw, mh);
+
+async function runSegmentation() {
+  await initSegmenter();
+  const c = canvas2d(256, maskH());
+  c.getContext('2d').drawImage(await createImageBitmap(S.rep.img), 0, 0, c.width, c.height);
+  const norm = currentNorm();
+  S.rep.seg = segment(restoreCanvas(c, norm), MASK_W, maskH());
+  S.rep.segNorm = norm ? JSON.stringify(norm) : null;
+}
+
 async function runAI() {
   if (!S.rep) return;
   $('aiStatus').textContent = 'AI 辨識中…';
   S.ai.status = 'loading';
   try {
-    await initSegmenter();
-    const c = canvas2d(256, maskH());
-    c.getContext('2d').drawImage(await createImageBitmap(S.rep.img), 0, 0, c.width, c.height);
-    S.rep.seg = segment(c, MASK_W, maskH());
+    await runSegmentation();
     S.ai.status = 'ready';
     const cover = S.rep.seg.person.reduce((a, b) => a + b, 0) / S.rep.seg.person.length;
     $('aiStatus').textContent = `AI 已提出候選區域（人物約佔 ${Math.round(cover * 100)}%）`;
@@ -193,6 +215,43 @@ async function runAI() {
     log('ai-failed', { message: err.message });
   }
   renderRegionList(); drawOverlay(); schedulePreview();
+  fitLocalGrade();
+}
+
+// ---- automatic local grading: per-region adjustments (skin, background) fitted on the representative
+// frame against the reference; needs both segmentations, so it runs when the later of the two is ready
+async function referenceSeg() {
+  const ref = S.ref.imageData;
+  if (S.ref.seg && S.ref.segFor === ref) return S.ref.seg;
+  await initSegmenter();
+  const mh = Math.round(MASK_W * ref.height / ref.width), c = canvas2d(256, Math.round(256 * ref.height / ref.width));
+  c.getContext('2d').drawImage(await createImageBitmap(ref), 0, 0, c.width, c.height);
+  S.ref.seg = { w: MASK_W, h: mh, ...segment(c, MASK_W, mh) }; S.ref.segFor = ref;
+  return S.ref.seg;
+}
+// one fit per (frame, restoration, candidates); callers share the running promise
+async function fitLocalGrade() {
+  try {
+    if (!S.rep || S.ai.status !== 'ready' || !S.ref || !S.ref.imageData) return;
+    await S.grade.ready;
+    const cands = S.grade.cands || [];
+    if (!cands.length) return;
+    const norm = currentNorm(), nk = norm ? JSON.stringify(norm) : null;
+    if (S.rep.segNorm !== nk) { await runSegmentation(); drawOverlay(); schedulePreview(); } // re-segment the restored frame first
+    const key = `${S.rep.t}|${nk}|${cands.map((c) => JSON.stringify(c.prim.luma)).join()}`;
+    if (S.grade.localJob && S.grade.localJob.key === key) return S.grade.localJob.promise;
+    const job = { key, promise: null };
+    S.grade.localJob = job;
+    job.promise = (async () => {
+    const refSeg = await referenceSeg(), seg = { w: MASK_W, h: maskH(), ...S.rep.seg };
+    const r = await engine.fitLocal(S.rep.img, seg, S.ref.imageData, refSeg, cands.map((c) => ({ mode: c.mode, prim: { ...c.prim, local: null } })));
+    for (const res of r.results) { const c = cands.find((x) => x.mode === res.mode); if (c) { c.prim = { ...c.prim, local: res.local }; c.localReport = res.report; } }
+    log('local-fitted', { ms: Math.round(r.ms), results: r.results.map((x) => ({ mode: x.mode, local: x.local })) });
+    if (S.look.auto && S.candMode) applyAutoLook(S.candMode);
+    renderCands();
+    })();
+    return await job.promise;
+  } catch (err) { log('local-failed', { message: err.message }); }
 }
 
 function visibleRegions() {
@@ -378,7 +437,7 @@ function describeLook(k) {
   }
   if (k.source === 'ai') parts.unshift('AI 調色圖');
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
-  if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ natural: '自然', faithful: '忠實', bold: '濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}`);
+  if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ natural: '自然', faithful: '忠實', bold: '濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
@@ -476,13 +535,14 @@ async function renderCands() {
   const box = $('candBox');
   if (!S.rep || !(S.grade.cands || []).length || $('adjustCard').hidden) return;
   await S.grade.ready;
+  const run = S.candRun = (S.candRun || 0) + 1; // a newer run (e.g. after the local fit) replaces this one
   const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
   const img = S.rep.img, skinM = skinMaskFor(img);
-  box.innerHTML = '';
-  const results = [];
+  const results = [], cards = [];
   for (const c of S.grade.cands) {
     const look = candLook(c);
     const r = await engine.render(img, { intent, seg: S.rep.seg, grade: true, look });
+    if (run !== S.candRun) return;
     const d = r.imageData.data, cl = clipping(d);
     const m = {
       mode: c.mode, de: bandDeltaE(bandColours(d, img.width, img.height), S.grade.refBands),
@@ -498,12 +558,15 @@ async function renderCands() {
     p.textContent = `${c.label}：與參考圖色差 ΔE ${m.de.toFixed(1)}｜結構保留 ${m.structure.toFixed(3)}${m.skin !== null ? `｜膚色變化 ΔE ${m.skin.toFixed(1)}` : ''}${m.clip > 0.01 ? `｜裁切 ${(m.clip * 100).toFixed(1)}%` : ''}`;
     card.append(cv, p);
     card.onclick = () => { applyAutoLook(c.mode); log('candidate-chosen', { mode: c.mode }); syncAdjustControls(); scheduleAdjPreview(); for (const el of box.children) el.classList.toggle('chosen', el.dataset.mode === c.mode); };
-    box.appendChild(card);
+    cards.push(card);
   }
+  box.replaceChildren(...cards);
   const ref0 = bandDeltaE(bandColours(img.data, img.width, img.height), S.grade.refBands);
   const nm = S.grade.cands && S.grade.cands[0] && S.grade.cands[0].norm;
   const restore = nm && nm.amt > 0.02 ? `偵測到 LOG／平面素材（亮度範圍 ${nm.range.toFixed(2)}，正常約 0.6 以上），已先自動還原 ${Math.round(nm.amt * 100)}%，再匹配參考圖。` : '';
-  $('candInfo').textContent = `${restore}原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調；結構保留 1.000 代表構圖與紋理完全未變；膚色變化越小越自然。`;
+  const lr = S.grade.cands[0] && S.grade.cands[0].localReport;
+  const localTxt = lr ? `局部調色：${['skin', 'background'].filter((k) => lr[k] && lr[k].adj && (lr[k].adj.a || lr[k].adj.b)).map((k) => LOCAL_NAMES[k]).join('、') || '參考圖或影片缺少可對應的區域，未使用'}（頭髮、衣服保持整體調色）。` : '';
+  $('candInfo').textContent = `${restore}${localTxt}原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調；結構保留 1.000 代表構圖與紋理完全未變；膚色變化是和原片相比（LOG 還原和局部調色會刻意把膚色調向參考圖的自然膚色，所以不是越小越好，請以畫面判斷）。`;
   S.candResults = results;
   log('candidates-rendered', { results, original: ref0 });
 }
@@ -523,10 +586,11 @@ function proSlider(parent, { min, max, value, label, get, set }) {
 function buildPro() {
   const root = $('proControls');
   const h4 = (t) => { const e = document.createElement('h4'); e.textContent = t; root.appendChild(e); };
-  h4('第一步：LOG／平面素材還原（自動偵測；0 = 不還原）');
+  h4('自動步驟：LOG／平面素材還原（自動偵測，0 = 不還原）與局部調色');
   const nrow = document.createElement('div'); nrow.className = 'hue-row';
   nrow.appendChild(document.createElement('span'));
   proSlider(nrow, { min: 0, max: 100, value: 0, label: '還原強度', get: (p) => (p.norm ? p.norm.amt : 0) * 100, set: (p, v) => { p.norm = { ...(p.norm || { m: 0.5, Tm: 0.5, s: 1, sat: 1 }), amt: v / 100 }; } });
+  proSlider(nrow, { min: 0, max: 100, value: 100, label: '自動局部調色（皮膚、背景）', get: (p) => (p.localAmt ?? 1) * 100, set: (p, v) => { p.localAmt = v / 100; } });
   root.appendChild(nrow);
   h4('色輪（Lift 暗部／Gamma 中間調／Gain 亮部／Offset 整體）');
   for (const [k, name] of [['lift', 'Lift'], ['gamma', 'Gamma'], ['gain', 'Gain'], ['offset', 'Offset']]) {
@@ -886,6 +950,8 @@ async function startProcessing() {
   if (!intent) return;
   const token = ++S.job.token;
   await S.grade.ready;
+  // the automatic look includes the local grade: wait for it (bounded) if it is still being fitted
+  if (S.look.auto && S.ai.status === 'ready') await Promise.race([fitLocalGrade(), new Promise((r) => setTimeout(r, 20000))]);
   S.look.applied = { ...S.look.draft };
   setPhase('processing');
   updateAdjState();
@@ -893,11 +959,12 @@ async function startProcessing() {
   for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = true;
   const regs = effectiveRegions(intent);
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(S.look.applied.prim && S.look.applied.prim.skin > 0);
+  const ap = S.look.applied.prim;
+  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local));
   if (needsSeg) await initSegmenter();
   try {
     const res = await processVideo({
-      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segment, maskH: intent.maskH,
+      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH,
       look: S.look.applied, isCancelled: () => token !== S.job.token, keepFrames: window.__keepFrames || [],
       onProgress: ({ done, total, elapsed }) => {
         $('progressBar').style.width = `${(done / total) * 100}%`;

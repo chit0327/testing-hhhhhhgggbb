@@ -6,9 +6,9 @@ import { KINDS } from './intent.js';
 export function rawMask(region, evidence, mw, mh) {
   const n = mw * mh;
   switch (region.kind) {
-    case 'ai-person': case 'ai-skin': case 'ai-background': {
+    case 'ai-person': case 'ai-skin': case 'ai-background': case 'ai-hair': case 'ai-clothes': {
       const key = region.kind.slice(3);
-      if (!evidence.seg) throw new Error('AI segmentation is not available for this frame');
+      if (!evidence.seg || !evidence.seg[key]) throw new Error('AI segmentation is not available for this frame');
       return Float32Array.from(evidence.seg[key]);
     }
     case 'luma-highlights': case 'luma-shadows': return lumaKey(evidence.L, region.kind);

@@ -42,12 +42,13 @@ function expose(lin, k) {
  * Returns a new RGBA Uint8ClampedArray.
  */
 /**
- * skin (optional): {lut, mask: {data, w, h} 0..1, k} — inside the mask, mix towards a second LUT (the grade
- * without its colour changes) by k: skin keeps its colour but follows the tone.
+ * layers (optional): one {lut, mask: {data, w, h} 0..1, k} or an array of them — inside each mask the colour
+ * is mixed (by mask × k) towards that layer's LUT (same size as the main one): skin protection and the
+ * automatic local grade (one LUT per AI region).
  */
-export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.length), fx = null, skin = null) {
+export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.length), fx = null, layers = null) {
   const N = lut ? lut.size : 0, L = lut ? lut.data : null, n1 = N - 1;
-  const SL = skin && L ? skin.lut.data : null, sm = SL ? skin.mask : null, col2 = [0, 0, 0];
+  const LY = L && layers ? (Array.isArray(layers) ? layers : [layers]).filter((l) => l && l.lut && l.lut.size === N) : [], col2 = [0, 0, 0];
   let gain = null, gw = 0, gh = 0;
   if (ev) {
     gw = ev.w; gh = ev.h;
@@ -73,9 +74,10 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
           const c0 = c00 + (c01 - c00) * dg, c1 = c10 + (c11 - c10) * dg;
           col[c] = c0 + (c1 - c0) * dr;
         }
-        if (SL) { // skin protection: same lookup in the tone-only LUT, mixed in by the skin mask
+        for (let li = 0; li < LY.length; li++) { // region layers: same lookup in the layer's LUT, mixed in by its mask
+          const ly = LY[li], sm = ly.mask, SL = ly.lut.data;
           const mx = Math.min(sm.w - 1, Math.max(0, Math.round((x + 0.5) * sm.w / w - 0.5))), my = Math.min(sm.h - 1, Math.max(0, Math.round((y + 0.5) * sm.h / h - 0.5)));
-          const m = sm.data[my * sm.w + mx] * skin.k;
+          const m = sm.data[my * sm.w + mx] * ly.k;
           if (m > 0.004) {
             for (let c = 0; c < 3; c++) {
               const i000 = ((r0 * N + g0) * N + b0) * 3 + c;
