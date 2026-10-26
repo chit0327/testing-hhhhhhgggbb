@@ -12,7 +12,7 @@ import { srgbToOklab } from './color.js';
 import { compilePrim, sanitizePrim, LOCAL_REGIONS } from './primary.js';
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
-export const LOCAL_STRENGTH = { natural: 0.6, faithful: 1, bold: 1.2 };
+export const LOCAL_STRENGTH = { infer: 0.6, natural: 0.6, faithful: 1, bold: 1.2 };
 const MIN_SHARE = 0.015;            // region must cover ≥ 1.5 % of both images
 const CAP = { skin: 0.035, other: 0.025, satSkin: 0.4 };
 const SKIN_HUE = [25, 85], SKIN_C = [0.03, 0.12]; // OKLab: natural skin tones

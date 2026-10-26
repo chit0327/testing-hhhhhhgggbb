@@ -79,7 +79,7 @@ self.onmessage = (e) => {
       const t = performance.now();
       model = fitGrade(m.frames, m.reference);
       luts.clear();
-      // pro-stage candidates (自然 / 忠實 / 濃烈) from the same keyframes and the reference's central 70%
+      // pro-stage candidates (推斷風格 / 自然 / 忠實 / 濃烈) from the same keyframes and the reference's central 70%
       const unscale = (a) => { const o = new Float64Array(a.length); for (let i = 0; i < a.length; i++) o[i] = i % 3 ? a[i] / 2 : a[i]; return o; };
       const parts = m.frames.map((f, i) => sampleOklab(f.data, f.width, f.height, 2000, { seed: 21 + i }));
       const srcLab = new Float64Array(parts.reduce((n, q) => n + q.length, 0));

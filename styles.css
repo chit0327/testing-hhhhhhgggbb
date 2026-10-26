@@ -88,7 +88,9 @@ input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radi
 .cands3 .acand canvas { width: 100%; display: block; border-radius: 6px; background: #000; }
 .cands3 .acand { cursor: pointer; }
 .cands3 .acand p { font-size: 12px; margin: 4px 0 0; }
-@media (max-width: 520px) { .cands3 { grid-template-columns: 1fr; } }
+#candBox { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+@media (max-width: 760px) { #candBox { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 520px) { .cands3, #candBox { grid-template-columns: 1fr; } }
 .pro summary { cursor: pointer; font-weight: 600; font-size: 14px; }
 .pro h4 { font-size: 13px; margin: 10px 0 4px; }
 .wheel-row { display: grid; grid-template-columns: 4.5em 1fr 1fr 1fr; gap: 6px; align-items: center; margin: 4px 0; font-size: 13px; }
