@@ -12,7 +12,7 @@
 // the reference (refineToReference: sliced Wasserstein in OKLab, regularised towards the first pass).
 // The three interpretations are that refined grade at different strengths. Same input → same output, always.
 import { oklabToSrgb, srgbToOklab } from './color.js';
-import { neutralPrim, compilePrim, sanitizePrim, curveFn, normTone, HUE_ANCHORS, CURVE_X } from './primary.js';
+import { neutralPrim, compilePrim, sanitizePrim, curveFn, normTone, applyBal, HUE_ANCHORS, CURVE_X } from './primary.js';
 import { structureScore } from './metrics.js';
 
 export const MODES = {
@@ -94,7 +94,8 @@ function safeLuma(ys) {
 }
 
 /** srcLab, refLab: Float64Array of OKLab triples (reference already limited to its central area). */
-export function fitPrim(srcLab0, refLab, modeName = 'natural', { iters = 6, sample = 2500, norm = estimateNorm(srcLab0) } = {}) {
+export function fitPrim(srcLab0, refLab, modeName = 'natural', { iters = 6, sample = 2500, norm = estimateNorm(srcLab0), keepAbsent = false, tonePrior = false } = {}) {
+  const absent = []; // hue anchors the source has and the reference does not
   const md = MODES[modeName];
   const p = neutralPrim();
   // ---- restoration (LOG / flat footage) first; everything below analyses the restored source
@@ -106,11 +107,16 @@ export function fitPrim(srcLab0, refLab, modeName = 'natural', { iters = 6, samp
   for (let i = 0; i < refLab.length; i += 3) if (refLab[i] < 0.93) refL.push(refLab[i]);
   if (refL.length < refLab.length / 3 * 0.2) { refL.length = 0; for (let i = 0; i < refLab.length; i += 3) refL.push(refLab[i]); }
   const qs = quantiles(srcL), qr = quantiles(refL);
+  if (tonePrior) { // tone of the LOOK, not of the reference's content: typical photo -> reference, half strength
+    const sr = Float64Array.from(refL).sort(), qr2 = QS33.map((q) => sr[Math.min(sr.length - 1, Math.round(q * (sr.length - 1)))]);
+    p.luma = CURVE_X.map((x) => clamp(x + clamp(interp(x, TYPICAL.Lq, qr2) - x, -0.12, 0.12) * 0.5 * md.tone, 0, 1));
+  } else {
   p.luma = CURVE_X.map((x) => {
-    const d = clamp(interp(x, qs, qr) - x, -md.cap, md.cap) * md.tone;
-    const s = x === 0.25 ? -md.contrast : x === 0.75 ? md.contrast : 0;
-    return clamp(x + d + s, 0, 1); // never push black below 0 or white above 1 (crushed / clipped detail)
-  });
+      const d = clamp(interp(x, qs, qr) - x, -md.cap, md.cap) * md.tone;
+      const s = x === 0.25 ? -md.contrast : x === 0.75 ? md.contrast : 0;
+      return clamp(x + d + s, 0, 1); // never push black below 0 or white above 1 (crushed / clipped detail)
+    });
+  }
   p.luma = safeLuma(p.luma);
   // ---- saturation level
   const meanC = (lab) => { let s = 0, n = 0; for (let i = 0; i < lab.length; i += 3) { s += Math.hypot(lab[i + 1], lab[i + 2]); n++; } return s / Math.max(1, n); };
@@ -120,7 +126,7 @@ export function fitPrim(srcLab0, refLab, modeName = 'natural', { iters = 6, samp
   for (let i = 0; i < 8; i++) {
     const s = hueWindow(srcLab, HUE_ANCHORS[i], 30), r = hueWindow(refLab, HUE_ANCHORS[i], 50);
     if (s.share < 0.02) continue;
-    if (r.share < 0.25 * s.share) { p.hueSat[i] = md.mute; continue; } // colour the reference does not have
+    if (r.share < 0.25 * s.share) { p.hueSat[i] = keepAbsent ? md.mute * 0.3 : md.mute; absent.push(i); continue; } // colour the reference does not have
     p.hueHue[i] = clamp(angDiff(r.hue, s.hue) * md.hue, -md.maxShift, md.maxShift);
     p.hueSat[i] = clamp(Math.log2(Math.max(r.chroma, 1e-3) / Math.max(s.chroma, 1e-3)) * md.color - p.sat, -0.7, 0.7);
   }
@@ -180,7 +186,7 @@ export function fitPrim(srcLab0, refLab, modeName = 'natural', { iters = 6, samp
     }
   }
   const resid = achieved.map((a, i) => Math.hypot(target[i][0] - a[0], target[i][1] - a[1]));
-  return { prim: p, report: { mode: modeName, label: md.label, norm, satRatio: k, targetBands: target, achievedBands: achieved, residual: resid } };
+  return { prim: p, report: { mode: modeName, label: md.label, norm, absent, satRatio: k, targetBands: target, achievedBands: achieved, residual: resid } };
 }
 
 function toLab(c, out) { // sRGB 0..1 -> OKLab (local copy keeps this module free of the 8-bit table)
@@ -248,6 +254,147 @@ export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.
   solveWheels(p, bands, target, 5);
   p.skin = MODES.infer.skin;
   return { prim: p, report: { mode: 'infer', label: MODES.infer.label, norm, casts: delta } };
+}
+
+/**
+ * Grey balance after the grade: the source's near-neutral pixels (least colourful 20 % of each tonal band:
+ * whites, greys, shadows) are given the reference's neutral tint (median a/b of its least colourful 5 % per
+ * band) by re-solving the Lift / Gamma / Gain colour, the rest of the grade unchanged. Raters judged
+ * whites first ("whites a little bluer / more orange", "highlights too green"): this is what they saw.
+ */
+export function neutralBalance(p, srcLab, refLab, strength = 1) {
+  const norm = p.norm || { amt: 0 }, srcR = norm.amt ? applyNormLab(srcLab, norm) : srcLab;
+  const tint = bandCastsLow(refLab, 0.05);
+  const n = Math.min(2500, srcR.length / 3), st = Math.max(1, Math.floor(srcR.length / 3 / n)), rgb = [], sl = [];
+  for (let i = 0, j = 0; j < n; i += 3 * st, j++) { rgb.push(oklabToSrgb(srcLab[i], srcLab[i + 1], srcLab[i + 2])); sl.push(srcR[i], srcR[i + 1], srcR[i + 2]); }
+  const order = Array.from({ length: n }, (_, i) => i).sort((x, y) => sl[3 * x] - sl[3 * y]), band = new Uint8Array(n), keep = new Uint8Array(n);
+  const C = (i) => Math.hypot(sl[3 * i + 1], sl[3 * i + 2]);
+  for (let b = 0; b < 3; b++) {
+    const part = order.slice(Math.floor((b * n) / 3), Math.floor(((b + 1) * n) / 3));
+    for (const i of part) band[i] = b;
+    for (const i of part.sort((x, y) => C(x) - C(y)).slice(0, Math.floor(part.length * 0.2))) keep[i] = 1;
+  }
+  const lab = [0, 0, 0], out = [0, 0, 0];
+  const bands = (prim) => {
+    const f = compilePrim(prim), a = [[0, 0, 0], [0, 0, 0], [0, 0, 0]];
+    for (let j = 0; j < n; j++) {
+      if (!keep[j]) continue;
+      const c = f ? f(rgb[j][0], rgb[j][1], rgb[j][2], out) : rgb[j];
+      srgbToOklab(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), lab);
+      const t = a[band[j]]; t[0] += lab[1]; t[1] += lab[2]; t[2]++;
+    }
+    return a.map((t) => [t[0] / (t[2] || 1), t[1] / (t[2] || 1)]);
+  };
+  const now = bands(p), target = now.map((b, i) => [b[0] + (tint[i][0] - b[0]) * strength, b[1] + (tint[i][1] - b[1]) * strength]);
+  const q = sanitizePrim(p);
+  solveWheels(q, bands, target, 4);
+  return { prim: q, tint, before: now, target };
+}
+
+/**
+ * Correction: the shot's own colour cast, as white-balance gains (linear light, luminance kept). The light
+ * colour is estimated from grey pixels by shades of grey (Minkowski p = 6 mean per channel), iterated:
+ * correct with the current estimate, keep the pixels that are then near grey (chroma < 0.05; 0.08 on the
+ * first pass, unclipped, not dark), re-estimate. Saturated content (orange blocks, a green forest) never
+ * takes part. On the 8 test clips with a known added cast (warm, cool, green, magenta) this removed 95 % of
+ * it at full strength (worst 78 %); "least colourful pixels" removed 47 % (under warm light blue objects
+ * look grey), plain shades of grey 93 % but changed untouched clips by content. Confidence falls when
+ * fewer than 10 % of the pixels are grey candidates, and when the light colour is implausible (below). strength: share of the cast removed (geometric);
+ * gains capped at ±25 %.
+ */
+export function estimateBalance(srcLab, { strength = 0.75, p = 6 } = {}) {
+  const n = srcLab.length / 3, lin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((Math.max(v, 0) + 0.055) / 1.055, 2.4));
+  const enc = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+  const x = new Float64Array(srcLab.length);
+  for (let i = 0; i < n; i++) { const c = oklabToSrgb(srcLab[3 * i], srcLab[3 * i + 1], srcLab[3 * i + 2]); for (let k = 0; k < 3; k++) x[3 * i + k] = lin(Math.min(1, Math.max(0, c[k]))); }
+  const none = { bal: { r: 1, g: 1, b: 1 }, confidence: 0, cast: [0, 0] };
+  let e = [1, 1, 1], share = 0;
+  const l = [0, 0, 0];
+  for (let it = 0; it < 5; it++) {
+    const th = it === 0 ? 0.08 : 0.05, m = [0, 0, 0]; let cnt = 0;
+    for (let i = 0; i < n; i++) {
+      const r = x[3 * i], g = x[3 * i + 1], b = x[3 * i + 2];
+      if (Math.max(r, g, b) >= 0.98) continue;
+      srgbToOklab(enc(Math.min(1, r / e[0])), enc(Math.min(1, g / e[1])), enc(Math.min(1, b / e[2])), l);
+      if (l[0] < 0.2 || Math.hypot(l[1], l[2]) > th) continue;
+      m[0] += Math.pow(r, p); m[1] += Math.pow(g, p); m[2] += Math.pow(b, p); cnt++;
+    }
+    share = cnt / n;
+    if (share < 0.02) return it === 0 ? none : { ...none, confidence: 0 };
+    const ne = m.map((v) => Math.pow(v / cnt, 1 / p)), Y = 0.2126 * ne[0] + 0.7152 * ne[1] + 0.0722 * ne[2];
+    e = ne.map((v) => v / Y);
+  }
+  // plausibility: real light sources lie along the warm–cool axis (tungsten orange ↔ daylight blue, OKLab hue
+  // ≈ 73° / 253°); a light colour far off it (strong green / magenta) or very strong is content, not light
+  const mx = Math.max(...e), il = [0, 0, 0]; srgbToOklab(enc(e[0] / mx), enc(e[1] / mx), enc(e[2] / mx), il);
+  const ux = Math.cos((73 * Math.PI) / 180), uy = Math.sin((73 * Math.PI) / 180);
+  const off = Math.abs(-uy * il[1] + ux * il[2]), along = Math.abs(ux * il[1] + uy * il[2]);
+  const plausible = (1 - clamp((off - 0.03) / 0.03, 0, 1)) * (1 - clamp((along - 0.15) / 0.1, 0, 1));
+  const confidence = clamp(share / 0.1, 0, 1) * plausible, k = strength * confidence;
+  const g = e.map((v) => clamp(Math.pow(1 / v, k), 0.8, 1.25));
+  return { bal: { r: g[0], g: g[1], b: g[2] }, confidence, cast: [il[1], il[2]], greyShare: share };
+}
+/** OKLab samples through the balance (to analyse the source as the grade will see it). */
+export function balanceLab(lab, bal) {
+  const out = new Float64Array(lab.length), c = [0, 0, 0], l = [0, 0, 0];
+  for (let i = 0; i < lab.length; i += 3) { const s = oklabToSrgb(lab[i], lab[i + 1], lab[i + 2]); applyBal(bal, Math.min(1, Math.max(0, s[0])), Math.min(1, Math.max(0, s[1])), Math.min(1, Math.max(0, s[2])), c); srgbToOklab(c[0], c[1], c[2], l); out[i] = l[0]; out[i + 1] = l[1]; out[i + 2] = l[2]; }
+  return out;
+}
+
+/** The reference's white: mean a/b of its brightest near-neutral pixels (chroma < 0.06, not clipped), or null. */
+export function whiteOf(lab, top = 0.05) {
+  const n = lab.length / 3, idx = [];
+  for (let i = 0; i < n; i++) if (lab[3 * i] < 0.99 && Math.hypot(lab[3 * i + 1], lab[3 * i + 2]) < 0.06) idx.push(i);
+  if (idx.length < n * 0.01) return null;
+  idx.sort((x, y) => lab[3 * y] - lab[3 * x]);
+  const k = idx.slice(0, Math.max(1, Math.floor(n * top)));
+  let a = 0, b = 0; for (const i of k) { a += lab[3 * i + 1]; b += lab[3 * i + 2]; }
+  return [a / k.length, b / k.length];
+}
+/**
+ * White point after the grade: the source's whites (its brightest near-neutral pixels, after restoration)
+ * are pushed through the whole grade and the Gain colour alone is re-solved until they take on the
+ * reference's white. The tonal-band fit cannot do this: a band's mean is set by its grass, walls and
+ * clothes, and the hue curves act after the wheels, so whites drifted (round-1/2 notes: "highlight whites
+ * too green", "whites a little more orange").
+ */
+export function whitePoint(p, srcLab, refLab, strength = 1) {
+  const tw = whiteOf(refLab);
+  const norm = p.norm || { amt: 0 }, srcR = norm.amt ? applyNormLab(srcLab, norm) : srcLab;
+  const n = srcR.length / 3, idx = [];
+  for (let i = 0; i < n; i++) if (srcR[3 * i] < 0.99 && Math.hypot(srcR[3 * i + 1], srcR[3 * i + 2]) < 0.06) idx.push(i);
+  if (!tw || idx.length < n * 0.01) return { prim: p, skipped: true };
+  idx.sort((x, y) => srcR[3 * y] - srcR[3 * x]);
+  const sel = idx.slice(0, Math.max(1, Math.floor(n * 0.05))), st = Math.max(1, Math.floor(sel.length / 600));
+  const rgb = []; for (let j = 0; j < sel.length; j += st) { const i = sel[j]; rgb.push(oklabToSrgb(srcLab[3 * i], srcLab[3 * i + 1], srcLab[3 * i + 2])); }
+  const lab = [0, 0, 0], out = [0, 0, 0];
+  const white = (prim) => {
+    const f = compilePrim(prim); let a = 0, b = 0;
+    for (const c0 of rgb) { const c = f ? f(c0[0], c0[1], c0[2], out) : c0; srgbToOklab(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), lab); a += lab[1]; b += lab[2]; }
+    return [a / rgb.length, b / rgb.length];
+  };
+  const q = sanitizePrim(p), before = white(q), target = [before[0] + (tw[0] - before[0]) * strength, before[1] + (tw[1] - before[1]) * strength];
+  const t0 = (q.gain.h * Math.PI) / 180; let v = [Math.cos(t0) * q.gain.a, Math.sin(t0) * q.gain.a];
+  const setV = (x) => { const a = Math.hypot(x[0], x[1]); q.gain = { m: q.gain.m, h: ((Math.atan2(x[1], x[0]) * 180) / Math.PI + 360) % 360, a: clamp(a, 0, 1) }; };
+  const dist = (w) => Math.hypot(target[0] - w[0], target[1] - w[1]);
+  let cur = before, e = dist(cur);
+  for (let it = 0; it < 8 && e > 0.002; it++) {
+    const h = 0.1, probe = (dx, dy) => { setV([v[0] + dx, v[1] + dy]); return white(q); };
+    const wa = probe(h, 0), wb = probe(0, h); setV(v);
+    const M = [[(wa[0] - cur[0]) / h, (wb[0] - cur[0]) / h], [(wa[1] - cur[1]) / h, (wb[1] - cur[1]) / h]], det = M[0][0] * M[1][1] - M[0][1] * M[1][0];
+    if (Math.abs(det) < 1e-8) break;
+    const r = [target[0] - cur[0], target[1] - cur[1]];
+    let dx = (M[1][1] * r[0] - M[0][1] * r[1]) / det, dy = (-M[1][0] * r[0] + M[0][0] * r[1]) / det, moved = false;
+    const len = Math.hypot(dx, dy); if (len > 0.3) { dx *= 0.3 / len; dy *= 0.3 / len; }
+    for (let tries = 0; tries < 4; tries++, dx /= 2, dy /= 2) {
+      const nv = [v[0] + dx, v[1] + dy], a = Math.hypot(nv[0], nv[1]); if (a > 1) { nv[0] /= a; nv[1] /= a; }
+      setV(nv); const w = white(q), d = dist(w);
+      if (d < e) { v = nv; cur = w; e = d; moved = true; break; }
+    }
+    setV(v);
+    if (!moved) break;
+  }
+  return { prim: q, before, target, after: cur };
 }
 
 /** Damped Gauss-Seidel Newton on the Lift / Gamma / Gain colour so that bands(p) reaches target. */
@@ -327,7 +474,7 @@ const setP = (p, [k, i], v) => {
  * descent with fixed steps, deterministic. On the user's LOG → GRADE example this reached the same pixel
  * error as parameters fitted to the true graded frame.
  */
-export function refineToReference(prim0, srcRgb, refLab, { lambda = 0.005, rounds = 6, nq = 64 } = {}) {
+export function refineToReference(prim0, srcRgb, refLab, { lambda = 0.005, rounds = 6, nq = 64, freeze = [], freezeTone = false } = {}) {
   const dirs = sliceDirs(), R = sortedProjections(refLab, dirs, nq);
   const m = srcRgb.length / 3, outLab = new Float64Array(m * 3), c = [0, 0, 0], l = [0, 0, 0];
   const dist = (prim) => {
@@ -369,6 +516,8 @@ export function refineToReference(prim0, srcRgb, refLab, { lambda = 0.005, round
   for (let r = 0; r < rounds; r++) {
     const sc = r < rounds / 2 ? 1 : 0.5;
     for (const d of REFINE_PARAMS) for (const sgn of [1, -1]) for (let t = 0; t < 6; t++) {
+      if ((d[0] === 'hueHue' || d[0] === 'hueSat') && freeze.includes(d[1])) break; // colours the reference does not have
+      if (freezeTone && (d[0] === 'luma' || d[1] === 'm')) break; // tone comes from the look prior (v3)
       const q = sanitizePrim(p); setP(q, d, getP(q, d) + sgn * d[2] * sc);
       const qq = sanitizePrim(q);
       if (d[0] === 'luma') { qq.luma = safeLuma(qq.luma); if (qq.luma.every((v, j) => Math.abs(v - p.luma[j]) < 1e-9)) break; }
@@ -407,22 +556,30 @@ export function scalePrim(p, t) {
 }
 
 const STRENGTH = { natural: 0.65, faithful: 1, bold: 1.25 };
+const NEUTRAL = { natural: 0.8, faithful: 1, bold: 1 }; // grey balance towards the reference's neutral tint
+const WHITE = { natural: 1, faithful: 1, bold: 1 }; // white point: the reference's white, fully
 /**
  * All three interpretations, natural first: restoration → first pass (natural settings, the safest start)
  * → distribution refinement = 忠實; 自然 / 濃烈 are the same grade at 65 % / 125 % strength.
  */
-export function fitCandidates(srcLab, refLab, { refine = true, thumb = null } = {}) {
+export function fitCandidates(srcLab, refLab, { refine = true, thumb = null, v2 = false, v3 = false, white = true, balance = false } = {}) {
+  if (v3) v2 = true;
+  // correction first: the grade is fitted on the balanced source and the balance is prepended to every candidate
+  const bal = balance ? estimateBalance(srcLab) : null;
+  if (bal) srcLab = balanceLab(srcLab, bal.bal);
+  if (bal && thumb) { const d = new Uint8ClampedArray(thumb.data.length), c = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) { applyBal(bal.bal, thumb.data[i] / 255, thumb.data[i + 1] / 255, thumb.data[i + 2] / 255, c); d[i] = c[0] * 255 + 0.5; d[i + 1] = c[1] * 255 + 0.5; d[i + 2] = c[2] * 255 + 0.5; d[i + 3] = 255; } thumb = { data: d, width: thumb.width, height: thumb.height }; }
+  const withBal = (cands) => (bal ? cands.map((c) => ({ ...c, prim: { ...c.prim, bal: { ...bal.bal } }, report: { ...c.report, balance: { gains: bal.bal, confidence: bal.confidence, cast: bal.cast } } })) : cands);
   const norm = estimateNorm(srcLab);
   const inferred = fitInferred(srcLab, refLab, { norm });
-  if (!refine) return [inferred, ...['natural', 'faithful', 'bold'].map((m) => fitPrim(srcLab, refLab, m, { norm }))];
-  const first = fitPrim(srcLab, refLab, 'natural', { norm });
+  if (!refine) return withBal([inferred, ...['natural', 'faithful', 'bold'].map((m) => fitPrim(srcLab, refLab, m, { norm }))]);
+  const first = fitPrim(srcLab, refLab, 'natural', { norm, keepAbsent: v2, tonePrior: v3 });
   const pick = (lab, n) => { const k = lab.length / 3, st = Math.max(1, Math.floor(k / n)), o = []; for (let i = 0; i < k; i += st) o.push(lab[3 * i], lab[3 * i + 1], lab[3 * i + 2]); return Float64Array.from(o); };
   const srcPick = pick(srcLab, 2000), srcRgb = new Float64Array(srcPick.length);
   for (let i = 0; i < srcPick.length; i += 3) srcRgb.set(oklabToSrgb(srcPick[i], srcPick[i + 1], srcPick[i + 2]), i);
   const bright = []; // like the first pass: blown reference pixels (sky, sand) say nothing about the grade
   for (let i = 0; i < refLab.length; i += 3) if (refLab[i] < 0.93) bright.push(refLab[i], refLab[i + 1], refLab[i + 2]);
   const refUse = bright.length > refLab.length * 0.2 ? Float64Array.from(bright) : refLab;
-  const ref = refineToReference(first.prim, srcRgb, pick(refUse, 3000));
+  const ref = refineToReference(first.prim, srcRgb, pick(refUse, 3000), { freeze: v2 ? first.report.absent : [], freezeTone: v3 });
   // texture guard: on a real frame, the refined grade must keep structure ≥ 0.95 (it can recolour, not
   // flatten); otherwise it is moved back towards the first pass until it does
   let refined = ref.prim, back = 0;
@@ -435,9 +592,11 @@ export function fitCandidates(srcLab, refLab, { refine = true, thumb = null } = 
       refined = blendPrim(first.prim, ref.prim, a); back = 1 - a;
     }
   }
-  return [inferred, ...['natural', 'faithful', 'bold'].map((mode) => {
-    const prim = scalePrim(refined, STRENGTH[mode]);
+  return withBal([inferred, ...['natural', 'faithful', 'bold'].map((mode) => {
+    let prim = scalePrim(refined, STRENGTH[mode]);
+    if (v2) prim = neutralBalance(prim, srcLab, refUse, NEUTRAL[mode]).prim;
+    if (white) { prim = whitePoint(prim, srcLab, refLab, WHITE[mode]).prim; prim.whiteHold = 1; } // refLab: refUse drops the brightest pixels
     prim.skin = MODES[mode].skin;
     return { prim, report: { ...first.report, mode, label: MODES[mode].label, distance: { first: ref.before, refined: ref.after }, structureBack: back } };
-  })];
+  })]);
 }

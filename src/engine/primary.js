@@ -22,12 +22,14 @@ export function neutralPrim() {
     hueSat: new Array(8).fill(0),            // log2 factor, ±1
     hueLum: new Array(8).fill(0),            // OKLab L, ±0.15
     skin: 0,                                 // 0..1: inside the AI skin mask, how much skin keeps its colour (renderer)
+    bal: neutralBal(),                       // correction node, first of all: white balance as linear-light channel gains
     norm: neutralNorm(),                     // first node: LOG / flat-profile restoration (see estimateNorm)
     // automatic local grading (see local.js): per AI region an OKLab adjustment applied after the grade.
     // The renderer bakes one LUT per region and blends them by the region masks.
     local: null,                             // {skin, hair, clothes, background: {L, a, b, sat}} or null
     localAmt: 1,                             // strength of the local grade (pro panel)
     keep: 0,                                 // 0..1 share of the colour change removed (tone kept): region layers only
+    whiteHold: 0,                            // 0..1: the region adjustment fades out on whites (they keep the white point)
     post: null,                              // {L, a, b, sat}: the adjustment of the layer being baked
   };
 }
@@ -38,6 +40,19 @@ export function neutralPrim() {
  * sat: chroma factor. The tone map is a two-sided tanh around the median, so contrast is restored in the
  * midtones while the ends roll off softly towards lo/hi (no clipping, a filmic S-curve).
  */
+/**
+ * Correction (balance) of the source before anything else: white balance as linear-light channel gains,
+ * the colourist's first node, so the look is laid on a neutral image rather than on the shot's own cast.
+ */
+export function neutralBal() { return { r: 1, g: 1, b: 1 }; }
+const isNeutralBal = (q) => !q || (q.r === 1 && q.g === 1 && q.b === 1);
+const toLin = (v) => (v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4));
+const toEnc = (v) => (v <= 0.0031308 ? v * 12.92 : 1.055 * Math.pow(v, 1 / 2.4) - 0.055);
+/** One pixel through the balance (sRGB 0..1 in / out, clipped). */
+export function applyBal(q, r, g, b, out) {
+  out[0] = Math.min(1, toEnc(toLin(Math.max(0, r)) * q.r)); out[1] = Math.min(1, toEnc(toLin(Math.max(0, g)) * q.g)); out[2] = Math.min(1, toEnc(toLin(Math.max(0, b)) * q.b));
+  return out;
+}
 export const NORM_LO = 0.05, NORM_HI = 0.995;
 export function neutralNorm() { return { amt: 0, m: 0.5, Tm: 0.5, s: 1, sat: 1 }; }
 export function normTone(n, L) {
@@ -111,7 +126,7 @@ const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a
 export function isNeutralPrim(p) {
   if (!p) return true;
   const w = (x) => !x.m && !x.a;
-  return isNeutralNorm(p.norm) && !p.keep && isNeutralPost(p.post) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
+  return isNeutralBal(p.bal) && isNeutralNorm(p.norm) && !p.keep && isNeutralPost(p.post) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
     && [p.luma, p.red, p.green, p.blue].every(isIdentityCurve)
     && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x));
 }
@@ -121,7 +136,7 @@ export function compilePrim(p) {
   if (isNeutralPrim(p)) return null;
   if (p.keep || !isNeutralPost(p.post)) { // region layer: the grade, part of its colour change removed, then the region's own adjustment
     const base = { ...p, keep: 0, post: null }, full = compilePrim(base), prot = p.keep ? compilePrim(protectedPrim(base)) : null;
-    const k = p.keep || 0, q = p.post || {}, satK = Math.pow(2, q.sat || 0), o1 = [0, 0, 0], o2 = [0, 0, 0], lb = [0, 0, 0], lp = [0, 0, 0];
+    const k = p.keep || 0, q = p.post || {}, hold = p.whiteHold || 0, satK = Math.pow(2, q.sat || 0), o1 = [0, 0, 0], o2 = [0, 0, 0], lb = [0, 0, 0], lp = [0, 0, 0];
     return function layer(r, g, b, out) {
       const c1 = full ? full(r, g, b, o1) : [r, g, b];
       srgbToOklab(c1[0], c1[1], c1[2], lb);
@@ -129,7 +144,9 @@ export function compilePrim(p) {
         const c2 = prot(r, g, b, o2); srgbToOklab(c2[0], c2[1], c2[2], lp);
         for (let i = 0; i < 3; i++) lb[i] += (lp[i] - lb[i]) * k;
       }
-      return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), lb[1] * satK + (q.a || 0), lb[2] * satK + (q.b || 0), out);
+      // whiteHold: whites (bright, near-neutral after the grade) keep the white point; the region tint fades out on them
+      const wk = hold ? 1 - hold * smooth(0.7, 0.88, lb[0]) * (1 - smooth(0.03, 0.08, Math.hypot(lb[1], lb[2]))) : 1;
+      return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), lb[1] * satK + (q.a || 0) * wk, lb[2] * satK + (q.b || 0) * wk, out);
     };
   }
   const L = wheelRGB(p.lift, 'lift'), G = wheelRGB(p.gamma, 'gamma'), K = wheelRGB(p.gain, 'gain'), O = wheelRGB(p.offset, 'offset');
@@ -141,7 +158,9 @@ export function compilePrim(p) {
   const lab = [0, 0, 0], rgb = [0, 0, 0];
   const norm = isNeutralNorm(p.norm) ? null : p.norm, normSat = norm ? 1 + norm.amt * (norm.sat - 1) : 1;
   /** sRGB 0..1 in -> sRGB 0..1 out (out array). */
+  const bal = isNeutralBal(p.bal) ? null : p.bal, cb = [0, 0, 0];
   return function apply(r, g, b, out) {
+    if (bal) { applyBal(bal, r, g, b, cb); r = cb[0]; g = cb[1]; b = cb[2]; } // correction before restoration and grade
     if (norm) { // restoration first, like a CST node ahead of the grade
       srgbToOklab(r, g, b, lab);
       oklabToSrgb(normTone(norm, lab[0]), lab[1] * normSat, lab[2] * normSat, rgb);
@@ -204,7 +223,9 @@ export function sanitizePrim(q) {
     for (const r of LOCAL_REGIONS) p.local[r] = adj(q.local[r]) || { L: 0, a: 0, b: 0, sat: 0 };
   }
   p.localAmt = num(q.localAmt, 0, 1.5, 1);
+  p.bal = q.bal && typeof q.bal === 'object' ? { r: num(q.bal.r, 0.5, 2, 1), g: num(q.bal.g, 0.5, 2, 1), b: num(q.bal.b, 0.5, 2, 1) } : neutralBal();
   p.keep = num(q.keep, 0, 1, 0);
+  p.whiteHold = num(q.whiteHold, 0, 1, 0);
   p.post = adj(q.post);
   return p;
 }

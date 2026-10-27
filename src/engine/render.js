@@ -37,6 +37,8 @@ function expose(lin, k) {
   }
 }
 
+const sameIndex = (a, b) => (!a && !b) || (a && b && a.length === b.length && a.every((v, i) => v === b[i]));
+
 /**
  * src: RGBA Uint8ClampedArray (w×h). lut: {size, data} or null (identity). ev: {data, w, h} stops or null.
  * Returns a new RGBA Uint8ClampedArray.
@@ -48,7 +50,9 @@ function expose(lin, k) {
  */
 export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.length), fx = null, layers = null) {
   const N = lut ? lut.size : 0, L = lut ? lut.data : null, n1 = N - 1;
-  const LY = L && layers ? (Array.isArray(layers) ? layers : [layers]).filter((l) => l && l.lut && l.lut.size === N) : [], col2 = [0, 0, 0];
+  // region layers must share the main LUT's grid (same size and shaper) because they reuse its lookup position
+  const LY = L && layers ? (Array.isArray(layers) ? layers : [layers]).filter((l) => l && l.lut && l.lut.size === N && sameIndex(l.lut.index, lut.index)) : [], col2 = [0, 0, 0];
+  const IX = lut && lut.index ? lut.index : null; // shaper: 8-bit level -> fractional grid coordinate
   let gain = null, gw = 0, gh = 0;
   if (ev) {
     gw = ev.w; gh = ev.h;
@@ -62,7 +66,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * 4;
       if (L) { // trilinear 3D LUT lookup (global look)
-        const fr = src[p] / 255 * n1, fg = src[p + 1] / 255 * n1, fb = src[p + 2] / 255 * n1;
+        const fr = IX ? IX[src[p]] : src[p] / 255 * n1, fg = IX ? IX[src[p + 1]] : src[p + 1] / 255 * n1, fb = IX ? IX[src[p + 2]] : src[p + 2] / 255 * n1;
         const r0 = Math.min(n1 - 1, fr | 0), g0 = Math.min(n1 - 1, fg | 0), b0 = Math.min(n1 - 1, fb | 0);
         const dr = fr - r0, dg = fg - g0, db = fb - b0, sR = N * N * 3, sG = N * 3;
         for (let c = 0; c < 3; c++) {

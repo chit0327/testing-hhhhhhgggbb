@@ -406,19 +406,93 @@ export function lutLookup(lut, r, g, b, out = [0, 0, 0]) {
   return out;
 }
 
-/** Bake into an N³ LUT (Float32Array, index ((r*N+g)*N+b)*3), sRGB in -> sRGB out. */
-export function bakeLUT(model, look = {}, N = 33) {
+/**
+ * Shaper (1D pre-LUT), as used for log-to-display LUTs: where the grade changes fast along the grey axis
+ * (a LOG restoration stretching a narrow input range), the 3D grid nodes are placed densely; elsewhere
+ * sparsely. Returns, for every 8-bit input level, its position in the grid (0..1), or null when the grade is
+ * even enough that a uniform grid is as good. Density = OKLab change per input level, floored at a quarter of
+ * the mean so that no range is starved of nodes.
+ */
+export function computeShaper(model, look = {}, { floor = 0.25, smooth = 0 } = {}) {
+  const k = { ...DEFAULT_LOOK, ...look }, primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim), o = [0, 0, 0], t = [0, 0, 0], prev = [0, 0, 0], lab = [0, 0, 0];
+  const d = new Float64Array(255);
+  for (let v = 0; v < 256; v++) {
+    gradeColour(model, v / 255, v / 255, v / 255, look, o, t, primFn);
+    srgbToOklab(Math.min(1, Math.max(0, o[0])), Math.min(1, Math.max(0, o[1])), Math.min(1, Math.max(0, o[2])), lab);
+    if (v) d[v - 1] = Math.hypot(lab[0] - prev[0], lab[1] - prev[1], lab[2] - prev[2]);
+    prev[0] = lab[0]; prev[1] = lab[1]; prev[2] = lab[2];
+  }
+  let mean = 0; for (const x of d) mean += x; mean /= 255;
+  if (!(mean > 0)) return null;
+  if (smooth) { // box-smooth the density: node spacing then changes gradually (abrupt changes cost accuracy off the grey axis)
+    const c = Float64Array.from(d);
+    for (let i = 0; i < 255; i++) { let s = 0, n = 0; for (let j = Math.max(0, i - smooth); j <= Math.min(254, i + smooth); j++) { s += c[j]; n++; } d[i] = s / n; }
+  }
+  let max = 0; for (let i = 0; i < 255; i++) { d[i] = Math.max(d[i], mean * floor); if (d[i] > max) max = d[i]; }
+  let floored = 0; for (const x of d) floored += x;
+  if (max < 2.5 * (floored / 255)) return null; // even enough: keep the uniform grid
+  const pos = new Float32Array(256);
+  for (let v = 1; v < 256; v++) pos[v] = pos[v - 1] + d[v - 1] / floored;
+  pos[255] = 1;
+  return pos;
+}
+
+/**
+ * Bake into an N³ LUT (Float32Array, index ((r*N+g)*N+b)*3), sRGB in -> sRGB out. With a shaper the grid
+ * nodes sit at the shaper's input levels and the LUT carries `index` (per 8-bit input level, its fractional
+ * grid coordinate 0..N−1), which the renderer uses instead of v / 255 × (N − 1).
+ */
+export function bakeLUT(model, look = {}, N = 33, { shaper = null } = {}) {
   const lut = new Float32Array(N * N * N * 3), o = [0, 0, 0], t = [0, 0, 0];
   const k = { ...DEFAULT_LOOK, ...look };
   const primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim);
   const neutral = !model && !primFn && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
+  // input value of grid node i: inverse of the shaper (linear between its 256 levels)
+  const node = new Float64Array(N);
+  for (let i = 0; i < N; i++) {
+    const u = i / (N - 1);
+    if (!shaper) { node[i] = u; continue; }
+    let v = 0; while (v < 254 && shaper[v + 1] < u) v++;
+    const a = shaper[v], b = shaper[v + 1];
+    node[i] = (v + (b > a ? Math.min(1, Math.max(0, (u - a) / (b - a))) : 0)) / 255;
+  }
   for (let r = 0; r < N; r++) for (let g = 0; g < N; g++) for (let b = 0; b < N; b++) {
-    if (neutral) { o[0] = r / (N - 1); o[1] = g / (N - 1); o[2] = b / (N - 1); }
-    else gradeColour(model, r / (N - 1), g / (N - 1), b / (N - 1), look, o, t, primFn);
+    if (neutral) { o[0] = node[r]; o[1] = node[g]; o[2] = node[b]; }
+    else gradeColour(model, node[r], node[g], node[b], look, o, t, primFn);
     const i = ((r * N + g) * N + b) * 3;
     lut[i] = o[0]; lut[i + 1] = o[1]; lut[i + 2] = o[2];
   }
-  return { size: N, data: lut };
+  const out = { size: N, data: lut };
+  if (shaper) { out.index = new Float32Array(256); for (let v = 0; v < 256; v++) out.index[v] = shaper[v] * (N - 1); }
+  return out;
 }
 
 export function identityLUT(N = 17) { return bakeLUT(null, {}, N); }
+
+/**
+ * The LUT the app renders with (preview, processing, evaluation tools): 41³, plus a shaper when the look
+ * restores LOG / flat footage. Measured against exact per-pixel maths (research/eval_runs/2026-10-26,
+ * test/unit/lut.test.js): on LOG footage the share of pixels off by more than 4 levels went 26.6 % (33³) →
+ * 1.3 %; on a bold hue-curve grade 5.4 % → 0.3 %. Without a restoration the shaper did not help (it moves
+ * nodes along the grey axis while the error sits in hue), so it is used only with one. Known counter-case: a
+ * synthetic flat ramp with tiny colour offsets and a 3× chroma boost (2.9 % instead of 0.4 % off by > 4).
+ * Smoothing the density or a higher floor removed that, but also removed the gain on real LOG footage.
+ * shaperLook: the look whose grey-axis response places the nodes (region layers pass their base look, so
+ * every layer shares the main LUT's grid).
+ */
+export const LUT_SIZE = 41;
+export function bakeLook(model, look = {}, { shaperLook = look, size = LUT_SIZE } = {}) {
+  const p = shaperLook && shaperLook.prim, restores = !!(p && p.norm && p.norm.amt > 0.02);
+  return bakeLUT(model, look, size, { shaper: restores ? computeShaper(model, shaperLook) : null });
+}
+
+/** .cube text (Resolve / Adobe format: red changes fastest, values 0..1) of a uniform-grid LUT. */
+export function toCube(lut, title = 'zhaoyang') {
+  if (lut.index) throw new Error('a shaper LUT cannot be written as a plain .cube; bake it on a uniform grid');
+  const N = lut.size, lines = [`TITLE "${title}"`, `LUT_3D_SIZE ${N}`];
+  for (let b = 0; b < N; b++) for (let g = 0; g < N; g++) for (let r = 0; r < N; r++) {
+    const i = ((r * N + g) * N + b) * 3;
+    lines.push(`${lut.data[i].toFixed(6)} ${lut.data[i + 1].toFixed(6)} ${lut.data[i + 2].toFixed(6)}`);
+  }
+  return lines.join('\n') + '\n';
+}

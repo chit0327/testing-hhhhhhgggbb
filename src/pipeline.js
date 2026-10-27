@@ -2,6 +2,7 @@
 // full processing job (decode -> segment -> worker render -> WebCodecs encode -> MP4).
 import { Muxer, ArrayBufferTarget } from '../vendor/mp4-muxer.mjs';
 import { MASK_W } from './engine/intent.js';
+import { extractAudio, muxAudio } from './audio.js';
 
 // ---------------------------------------------------------------- worker client
 export class EngineClient {
@@ -20,7 +21,7 @@ export class EngineClient {
     const id = ++this.seq;
     return new Promise((resolve, reject) => { this.pending.set(id, { resolve, reject }); this.worker.postMessage({ ...msg, id }, transfer); });
   }
-  fit(frames, reference) { return this.call({ type: 'fit', frames, reference }); }
+  fit(frames, reference, opts = {}) { return this.call({ type: 'fit', frames, reference, ...opts }); }
   fitPair(src, ai, pairId) { // src, ai: ImageData of the same size
     const a = src.data.slice().buffer, b = ai.data.slice().buffer;
     return this.call({ type: 'fit-pair', src: a, ai: b, w: src.width, h: src.height, pairId }, [a, b]);
@@ -82,11 +83,25 @@ export async function probeVideo(file) {
     });
     video.pause();
     const d = times.slice(1).map((t, i) => t - times[i]).filter((x) => x > 0.001).sort((a, b) => a - b);
-    if (d.length >= 3) { info.fps = Math.round(1 / d[Math.floor(d.length / 2)] * 100) / 100; info.fpsMeasured = true; }
+    if (d.length >= 3) { info.fps = snapFps(1 / d[Math.floor(d.length / 2)]); info.fpsMeasured = true; }
   }
   else { await video.play().catch(() => {}); video.pause(); } // iOS decodes pictures only after a play
   info.frameCount = Math.max(1, Math.floor(info.duration * info.fps + 1e-6));
   return info;
+}
+
+// measured rates are snapped to the standard ones (exact NTSC fractions: 29.97 is 30000/1001)
+const STANDARD_FPS = [24000 / 1001, 24, 25, 30000 / 1001, 30, 48, 50, 60000 / 1001, 60];
+export function snapFps(f) {
+  const s = STANDARD_FPS.find((x) => Math.abs(x - f) < 0.02);
+  return s ?? Math.round(f * 100) / 100;
+}
+/** MP4 timescale for a frame rate: the rate itself when it is an integer, else 1000 × the NTSC base
+ *  (30000 for 29.97) so that every frame lands on an exact tick; 90000 otherwise. */
+export function timescaleFor(fps) {
+  if (Number.isInteger(fps)) return fps;
+  const k = Math.round(fps * 1.001);
+  return Math.abs(fps - (k * 1000) / 1001) < 1e-6 ? k * 1000 : 90000;
 }
 
 /** Time of the centre of frame i (seeking there always lands on exactly that frame). */
@@ -177,7 +192,11 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   const { w, h } = fitSize(meta.width, meta.height, maxSide);
   const fps = meta.fps, n = meta.frameCount;
   const cfg = await pickCodec(w, h, fps);
-  const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: fps }, fastStart: 'in-memory' });
+  // the source's audio is carried over as it is (AAC samples copied, not re-encoded)
+  let audio;
+  try { audio = await extractAudio(await (await fetch(meta.url)).arrayBuffer()); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; }
+  const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
+    ...(audio.track ? { audio: { codec: 'aac', numberOfChannels: audio.track.numberOfChannels, sampleRate: audio.track.sampleRate } } : {}) });
   let encErr = null;
   const encoder = new VideoEncoder({ output: (chunk, md) => muxer.addVideoChunk(chunk, md), error: (e) => { encErr = e; } });
   encoder.configure(cfg);
@@ -208,10 +227,12 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
     }
     await encoder.flush();
     if (encErr) throw encErr;
+    if (audio.track) audio.written = muxAudio(muxer, audio, (n * 1e6) / fps);
     muxer.finalize();
   } finally {
     engine.endJob(jobId);
     if (encoder.state !== 'closed') encoder.close();
   }
-  return { blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }), frames: n, fps, width: w, height: h, codec: cfg.codec, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, kept };
+  return { blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }), frames: n, fps, width: w, height: h, codec: cfg.codec, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, kept,
+    audio: audio.track ? { kept: true, codec: audio.track.codec, samples: audio.written } : { kept: false, reason: audio.skipped } };
 }

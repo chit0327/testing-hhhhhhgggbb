@@ -8,7 +8,7 @@ import { rawMask } from './engine/regionmasks.js';
 import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
 import { EngineClient, probeVideo, grabFrame, fitSize, loadImage, imageDataOf, processVideo, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
-import { DEFAULT_LOOK, measure } from './engine/grade.js';
+import { DEFAULT_LOOK, measure, toCube } from './engine/grade.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
@@ -46,6 +46,10 @@ const S = {
   log: [],                         // event log (used by the end-to-end test)
 };
 window.__app = { S, hashIntent, engine };
+const AUTOFIT_V2 = new URLSearchParams(location.search).has('v2'); // grey balance + absent colours kept (under evaluation)
+const AUTOFIT_V3 = new URLSearchParams(location.search).has('v3'); // v2 + tone from the look prior, not the reference content (under evaluation)
+const AUTOFIT_WHITE = !new URLSearchParams(location.search).has('nowhite'); // white point matched to the reference's white (default since round-3 blind rating; ?nowhite = before)
+const AUTOFIT_BALANCE = new URLSearchParams(location.search).has('balance'); // correction (white balance of the shot) before the grade (under evaluation)
 const log = (ev, data = {}) => { S.log.push({ ev, t: Date.now(), ...data }); };
 
 function setPhase(p, detail = '') {
@@ -131,7 +135,7 @@ function fitGrade(key) {
       frames.push({ data: img.data, width: w, height: h });
     }
     const ref = S.ref.imageData;
-    const r = await engine.fit(frames, { data: ref.data, width: ref.width, height: ref.height });
+    const r = await engine.fit(frames, { data: ref.data, width: ref.width, height: ref.height }, { v2: AUTOFIT_V2, v3: AUTOFIT_V3, white: AUTOFIT_WHITE, balance: AUTOFIT_BALANCE });
     S.grade.stats = { src: r.src, ref: r.ref, palette: r.palette };
     S.grade.cands = r.candidates || [];
     S.grade.refBands = bandColours(S.ref.imageData.data, S.ref.imageData.width, S.ref.imageData.height, { centre: 0.7, skipWhite: true });
@@ -638,15 +642,10 @@ $('exportCube').onclick = async () => {
   try {
     await S.grade.ready;
     const lut = await engine.bake(S.look.draft, S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null), N = lut.size;
-    const lines = [`TITLE "zhaoyang"`, `LUT_3D_SIZE ${N}`];
-    for (let b = 0; b < N; b++) for (let g = 0; g < N; g++) for (let r = 0; r < N; r++) {
-      const i = ((r * N + g) * N + b) * 3;
-      lines.push(`${lut.data[i].toFixed(6)} ${lut.data[i + 1].toFixed(6)} ${lut.data[i + 2].toFixed(6)}`);
-    }
     const name = `${(S.video.file ? S.video.file.name : 'look').replace(/\.[^.]+$/, '')}_look.cube`;
-    await saveBlob(new Blob([lines.join('\n') + '\n'], { type: 'text/plain' }), name);
+    await saveBlob(new Blob([toCube(lut)], { type: 'text/plain' }), name);
     log('cube-exported', { size: N, name });
-    $('cubeInfo').textContent = `已匯出 ${name}（${N}³）。局部曝光、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。`;
+    $('cubeInfo').textContent = `已匯出 ${name}（${N}³）。自動局部調色、局部曝光、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。`;
   } catch (err) { if (!(err && err.code === 'declined')) $('cubeInfo').textContent = `匯出失敗：${err.message || err.code}`; }
 };
 
@@ -1013,11 +1012,12 @@ async function startProcessing() {
     S.output = { ...res, url: URL.createObjectURL(res.blob), confirmedHash: hashIntent(intent) };
     $('origVideo').src = S.video.meta.url;
     $('outVideo').src = S.output.url;
-    $('resultInfo').textContent = `${res.frames} 格，${res.fps} fps，${res.width}×${res.height}，${res.codec}，${(res.blob.size / 1e6).toFixed(1)} MB。`
+    $('resultInfo').textContent = `${res.frames} 格，${+res.fps.toFixed(3)} fps，${res.width}×${res.height}，${res.codec}，${(res.blob.size / 1e6).toFixed(1)} MB。`
       + `處理引擎回報的光暗設定雜湊 ${res.intentHash}${res.intentHash === S.output.confirmedHash ? '（與確認的設定一致）' : '（⚠ 不一致）'}，色彩設定雜湊 ${res.lookHash}`
     + `（${describeLook(S.look.applied)}）`
-    + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`;
-    log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size });
+    + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
+    + (res.audio.kept ? `音訊：已保留原片音軌（${res.audio.codec}，未重新編碼）。` : `音訊：${res.audio.reason}。`);
+    log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio });
     setPhase('done');
     updateAdjState();
     for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = false;
