@@ -21,10 +21,10 @@
 
 <!-- page 1: uploads -->
 <main id="pageUpload" class="page-upload">
-  <p class="sub">上傳參考圖片和要調色的影片，網站會分析參考圖的色彩風格，套用到影片上。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
+  <p class="sub">上傳參考圖片和要調色的影片，網站會分析參考圖的色彩風格，套用到影片上；沒有參考圖也可以，直接在工作區選一種氛圍色調。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
   <section class="uploads">
     <article class="card upcard" id="refCard">
-      <h2>參考圖片</h2>
+      <h2>參考圖片 <span class="optional">（可選）</span></h2>
       <label class="dropzone" id="refDrop" for="refInput">
         <input type="file" id="refInput" accept="image/*" class="sr-only">
         <span class="dz-title">點擊選擇或把圖片拖放到這裏</span>
@@ -54,7 +54,7 @@
     </article>
   </section>
   <div class="start-row">
-    <span class="info" id="startHint">請上傳參考圖片和目標影片。</span>
+    <span class="info" id="startHint">還需要要調色的影片或照片（參考圖片可選）。</span>
     <button type="button" id="startBtn" class="primary big" disabled>開始調色</button>
   </div>
 </main>
@@ -126,6 +126,15 @@
       </section>
 
       <div id="adjustCard" hidden>
+        <details class="cat" id="catMood">
+          <summary>氛圍色調</summary>
+          <div class="cat-body">
+            <p class="info" id="moodLead">不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。</p>
+            <div id="moodBox"></div>
+            <p class="info" id="moodInfo">每張小圖是你的畫面套用該氛圍的效果；下面的色條是常見顏色（膚色、天空、樹葉、紅、白、灰、暗部）套用前（上方細條）和套用後的顏色。</p>
+          </div>
+        </details>
+
         <details class="cat" id="catMatch" open>
           <summary>參考匹配</summary>
           <div class="cat-body">
@@ -221,14 +230,60 @@
           </div>
         </details>
 
+        <details class="cat" id="catBlur">
+          <summary>背景模糊</summary>
+          <div class="cat-body">
+            <label class="check"><input type="checkbox" id="blurOn"> 開啟模糊</label>
+            <h3>選取要模糊的範圍</h3>
+            <label class="check"><input type="checkbox" id="blurAi" checked> AI 自動偵測背景</label>
+            <div class="seg-choice tools" role="radiogroup" aria-label="選取工具">
+              <label><input type="radio" name="blurTool" value="none" checked> 不編輯</label>
+              <label><input type="radio" name="blurTool" value="brush"> 筆刷</label>
+              <label><input type="radio" name="blurTool" value="erase"> 橡皮擦</label>
+              <label><input type="radio" name="blurTool" value="lasso"> 套索加入</label>
+              <label><input type="radio" name="blurTool" value="lassoErase"> 套索移除</label>
+              <label><input type="radio" name="blurTool" value="wand"> 魔術棒加入</label>
+              <label><input type="radio" name="blurTool" value="wandErase"> 魔術棒移除</label>
+            </div>
+            <div id="blurTolRow" hidden>
+              <label class="slider"><span>魔術棒容許度</span><input type="range" id="blurTol" min="2" max="60" value="12"><output id="blurTol-v">12</output></label>
+              <p class="info">在畫面上點一下，會選取和那一點顏色相近、而且相連的整片範圍（例如天空、牆身）。容許度越大，選到的顏色範圍越闊。</p>
+            </div>
+            <div class="seg-choice" role="radiogroup" aria-label="筆刷大小" id="blurSizeRow">
+              <span class="bar-lbl">筆刷大小</span>
+              <label><input type="radio" name="blurSize" value="s"> 小</label>
+              <label><input type="radio" name="blurSize" value="m" checked> 中</label>
+              <label><input type="radio" name="blurSize" value="l"> 大</label>
+            </div>
+            <label class="check"><input type="checkbox" id="blurInvert"> 反轉遮罩（模糊選取範圍以外的部分）</label>
+            <label class="check"><input type="checkbox" id="blurShow" checked> 在畫面上顯示選取範圍（紅色）</label>
+            <div class="row"><button type="button" id="blurClear">清除筆刷和套索</button></div>
+            <p class="info">選了工具後直接在左邊畫面上塗抹、圈選或點選。筆刷、套索和魔術棒會跟着鏡頭移動（以你塗抹的那一格畫面為準，自動追蹤平移、推近拉遠）；AI 背景每一格都會重新偵測。AI 只分辨「人」和「其他」，所以動物、物件也算背景；不想模糊的地方用橡皮擦或「套索移除」擦掉即可（也會擦掉 AI 選到的部分）。</p>
+            <h3>模糊效果</h3>
+            <div class="seg-choice" role="radiogroup" aria-label="模糊效果">
+              <label><input type="radio" name="blurType" value="gauss" checked> 高斯模糊</label>
+              <label><input type="radio" name="blurType" value="bokeh"> 散景 Bokeh</label>
+              <label><input type="radio" name="blurType" value="motion"> 動態模糊</label>
+            </div>
+            <label class="slider"><span>模糊強度</span><input type="range" id="blurAmount" min="0" max="100" value="50"><output id="blurAmount-v">50</output></label>
+            <div id="blurDirRow" hidden>
+              <label class="slider"><span>方向</span><input type="range" class="dir" id="blurAngle" min="0" max="179" value="0"><output id="blurAngle-v">0°</output></label>
+              <div class="row"><button type="button" id="blurDirBtn" aria-pressed="false">在畫面上拖動設定方向</button></div>
+            </div>
+            <p class="info" id="blurInfo"></p>
+          </div>
+        </details>
+
         <details class="cat" id="catFx">
-          <summary>柔光與暗角</summary>
+          <summary>柔光、朦朧與暗角</summary>
           <div class="cat-body">
             <label class="slider"><span>柔光</span><input type="range" id="adj-glow" min="0" max="100" value="0"><output id="adj-glow-v">0</output></label>
             <label class="slider"><span>柔光範圍</span><input type="range" id="adj-glowRadius" min="0" max="100" value="50"><output id="adj-glowRadius-v">50</output></label>
+            <label class="slider"><span>朦朧夢幻</span><input type="range" id="adj-haze" min="0" max="100" value="0"><output id="adj-haze-v">0</output></label>
+            <label class="slider"><span>朦朧範圍</span><input type="range" id="adj-hazeRadius" min="0" max="100" value="50"><output id="adj-hazeRadius-v">50</output></label>
             <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
             <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
-            <p class="info">柔光讓亮部向外擴散；暗角正值壓暗四周、負值提亮四周。這兩項不受「整體調色強度」影響。</p>
+            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻讓整個畫面像隔了一層霧，邊緣和燈光帶光暈、暗部變成淡淡的霧、對比變柔，範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
           </div>
         </details>
 

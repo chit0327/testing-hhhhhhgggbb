@@ -116,7 +116,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
 // ---- spatial effects: they depend on position / neighbours, so they cannot live in the LUT ------------
 // Both work in linear light on the finished frame and are defined relative to the frame size, so the
 // 640 px preview and the 1280 px export look the same.
-export const FX_KEYS = ['glow', 'glowRadius', 'vignette', 'vignetteSize'];
+export const FX_KEYS = ['glow', 'glowRadius', 'haze', 'hazeRadius', 'vignette', 'vignetteSize'];
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 function boxBlur(buf, w, h, r) { // in place, 3 channels, sliding window (clamped edges)
@@ -155,44 +155,58 @@ function vignetteGain(w, h, vig, size) {
   return g;
 }
 
+// the frame (linear light, weighted per pixel by wfn(luminance)) averaged onto a ~320 px grid and blurred
+function blurredGrid(img, w, h, wfn, radius) {
+  const f = Math.max(1, Math.round(Math.max(w, h) / 320)), sw = Math.ceil(w / f), sh = Math.ceil(h / f);
+  const small = new Float32Array(sw * sh * 3), cnt = new Float32Array(sw * sh);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    const p = (y * w + x) * 4, r = S2L[img[p]], g = S2L[img[p + 1]], b = S2L[img[p + 2]];
+    const k = wfn(0.2126 * r + 0.7152 * g + 0.0722 * b), q = (Math.floor(y / f) * sw + Math.floor(x / f));
+    small[3 * q] += r * k; small[3 * q + 1] += g * k; small[3 * q + 2] += b * k; cnt[q]++;
+  }
+  for (let q = 0; q < sw * sh; q++) for (let c = 0; c < 3; c++) small[3 * q + c] /= cnt[q] || 1;
+  const rad = Math.max(1, Math.round(radius * Math.max(sw, sh)));
+  for (let pass = 0; pass < 3; pass++) boxBlur(small, sw, sh, rad); // ≈ Gaussian
+  return { small, sw, sh, f };
+}
+function sampleGrid(G, x, y, out) { // bilinear, full-resolution pixel (x, y)
+  const { small, sw, sh, f } = G;
+  let gy = Math.min(sh - 1, Math.max(0, (y + 0.5) / f - 0.5)), gx = Math.min(sw - 1, Math.max(0, (x + 0.5) / f - 0.5));
+  const y0 = Math.floor(gy), y1 = Math.min(sh - 1, y0 + 1), x0 = Math.floor(gx), x1 = Math.min(sw - 1, x0 + 1); gy -= y0; gx -= x0;
+  for (let c = 0; c < 3; c++) {
+    const a = small[(y0 * sw + x0) * 3 + c] + (small[(y0 * sw + x1) * 3 + c] - small[(y0 * sw + x0) * 3 + c]) * gx;
+    const b = small[(y1 * sw + x0) * 3 + c] + (small[(y1 * sw + x1) * 3 + c] - small[(y1 * sw + x0) * 3 + c]) * gx;
+    out[c] = a + (b - a) * gy;
+  }
+  return out;
+}
+
 /**
- * fx: {glow 0..1, glowRadius 0..1, vignette -1..1 (+ darkens edges, − lightens), vignetteSize 0..1}. In place on RGBA.
+ * fx: {glow 0..1, glowRadius 0..1, haze 0..1, hazeRadius 0..1, vignette -1..1 (+ darkens edges, − lightens),
+ * vignetteSize 0..1}. In place on RGBA.
  * 柔光 (glow): bright parts are blurred on a ~320 px grid and added back (a diffusion / bloom filter).
+ * 朦朧 (haze): the WHOLE frame is blurred and screened over itself, then mixed toward that soft version (a mist /
+ * Orton-style diffusion): edges and lights get halos, shadows turn into a light mist, contrast softens; a little of
+ * the frame's average light is spread evenly as a veil, so blacks far from any light turn milky too.
  */
 export function applyEffects(img, w, h, fx) {
-  const glow = Math.min(1, Math.max(0, fx.glow || 0)), vig = Math.min(1, Math.max(-1, fx.vignette || 0));
-  if (!glow && !vig) return img;
-  let small = null, sw = 0, sh = 0, f = 1;
-  if (glow) {
-    f = Math.max(1, Math.round(Math.max(w, h) / 320)); sw = Math.ceil(w / f); sh = Math.ceil(h / f);
-    small = new Float32Array(sw * sh * 3);
-    const cnt = new Float32Array(sw * sh);
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-      const p = (y * w + x) * 4, r = S2L[img[p]], g = S2L[img[p + 1]], b = S2L[img[p + 2]];
-      const k = smooth(0.2, 0.85, 0.2126 * r + 0.7152 * g + 0.0722 * b), q = (Math.floor(y / f) * sw + Math.floor(x / f));
-      small[3 * q] += r * k; small[3 * q + 1] += g * k; small[3 * q + 2] += b * k; cnt[q]++;
-    }
-    for (let q = 0; q < sw * sh; q++) for (let c = 0; c < 3; c++) small[3 * q + c] /= cnt[q] || 1;
-    const rad = Math.max(1, Math.round((0.008 + 0.05 * (fx.glowRadius ?? 0.5)) * Math.max(sw, sh)));
-    for (let pass = 0; pass < 3; pass++) boxBlur(small, sw, sh, rad); // ≈ Gaussian
-  }
+  const glow = Math.min(1, Math.max(0, fx.glow || 0)), vig = Math.min(1, Math.max(-1, fx.vignette || 0)), haze = Math.min(1, Math.max(0, fx.haze || 0));
+  if (!glow && !vig && !haze) return img;
+  const G = glow ? blurredGrid(img, w, h, (Y) => smooth(0.2, 0.85, Y), 0.008 + 0.05 * (fx.glowRadius ?? 0.5)) : null;
+  const H = haze ? blurredGrid(img, w, h, () => 1, 0.006 + 0.04 * (fx.hazeRadius ?? 0.5)) : null;
+  const veil = [0, 0, 0]; // veiling glare: light from the whole scene scattered evenly into the shadows (milky blacks)
+  if (H) { const n = H.sw * H.sh; for (let q = 0; q < n; q++) for (let c = 0; c < 3; c++) veil[c] += H.small[3 * q + c] / n; }
   const vg = vig ? vignetteGain(w, h, vig, fx.vignetteSize ?? 0.5) : null;
-  const lin = [0, 0, 0];
+  const lin = [0, 0, 0], bl = [0, 0, 0];
   for (let y = 0; y < h; y++) {
-    let gy = 0, y0 = 0, y1 = 0;
-    if (small) { gy = Math.min(sh - 1, Math.max(0, (y + 0.5) / f - 0.5)); y0 = Math.floor(gy); y1 = Math.min(sh - 1, y0 + 1); gy -= y0; }
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * 4;
       lin[0] = S2L[img[p]]; lin[1] = S2L[img[p + 1]]; lin[2] = S2L[img[p + 2]];
-      if (small) {
-        let gx = Math.min(sw - 1, Math.max(0, (x + 0.5) / f - 0.5));
-        const x0 = Math.floor(gx), x1 = Math.min(sw - 1, x0 + 1); gx -= x0;
-        for (let c = 0; c < 3; c++) {
-          const a = small[(y0 * sw + x0) * 3 + c] + (small[(y0 * sw + x1) * 3 + c] - small[(y0 * sw + x0) * 3 + c]) * gx;
-          const b = small[(y1 * sw + x0) * 3 + c] + (small[(y1 * sw + x1) * 3 + c] - small[(y1 * sw + x0) * 3 + c]) * gx;
-          lin[c] += glow * 1.2 * (a + (b - a) * gy);
-        }
+      if (H) { // mist: screen the soft copy over the sharp one, then move part of the way to the soft copy
+        sampleGrid(H, x, y, bl);
+        for (let c = 0; c < 3; c++) { const scr = 1 - (1 - lin[c]) * (1 - bl[c]); lin[c] += haze * (0.55 * (scr - lin[c]) + 0.35 * (bl[c] - lin[c]) + 0.18 * veil[c] * (1 - lin[c])); }
       }
+      if (G) { sampleGrid(G, x, y, bl); for (let c = 0; c < 3; c++) lin[c] += glow * 1.2 * bl[c]; }
       if (vg) { const g = vg[y * w + x]; lin[0] *= g; lin[1] *= g; lin[2] *= g; }
       const Y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
       if (Y > KNEE) { const s = rollOff(Y) / Y; lin[0] *= s; lin[1] *= s; lin[2] *= s; } // added light rolls off, never clips

@@ -32,14 +32,19 @@ export class EngineClient {
   }
   clearPair() { return this.call({ type: 'clear-pair' }); }
   bake(look, intentJson) { return this.call({ type: 'bake', look, intent: intentJson }).then((m) => ({ size: m.size, data: new Float32Array(m.data) })); }
-  startJob(jobId, intentJson, look) {
-    return new Promise((resolve, reject) => { this.pending.set(`job:${jobId}`, { resolve, reject }); this.worker.postMessage({ type: 'start-job', jobId, intent: intentJson, look }); });
+  startJob(jobId, intentJson, look, { noTrack = false } = {}) { // noTrack: photos (separate pictures, no camera motion to follow)
+    return new Promise((resolve, reject) => { this.pending.set(`job:${jobId}`, { resolve, reject }); this.worker.postMessage({ type: 'start-job', jobId, intent: intentJson, look, noTrack }); });
+  }
+  /** background-blur selection: painted layer {data Float32 −1..1, w, h} or null, anchor luma {data, w, h} of the frame it was painted on */
+  setBlurSelection(selId, layer, anchor) {
+    const lb = layer ? layer.data.slice().buffer : null, ab = anchor ? anchor.data.slice().buffer : null;
+    return this.call({ type: 'blur-selection', selId, layer: lb, w: layer && layer.w, h: layer && layer.h, anchor: anchor ? { data: ab, w: anchor.w, h: anchor.h } : null }, [lb, ab].filter(Boolean));
   }
   endJob(jobId) { this.worker.postMessage({ type: 'end-job', jobId }); }
   render(img, opts) { // img: ImageData. Returns {imageData, intentHash, localApplied}
     const buf = img.data.slice().buffer;
     return this.call({ type: 'render', rgba: buf, w: img.width, h: img.height, ...opts }, [buf]).then((m) => ({
-      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index,
+      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index, blur: m.blur,
     }));
   }
 }
@@ -207,7 +212,7 @@ export async function processPhoto({ engine, meta, intentJson, look, needsSeg, s
   let seg = null;
   if (needsSeg) { const sc = canvas2d(256, Math.max(2, Math.round(256 * h / w))); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height); seg = segmentFn(sc, MASK_W, maskH); }
   const jobId = `photo${Date.now().toString(36)}_${index}`;
-  const started = await engine.startJob(jobId, intentJson, look);
+  const started = await engine.startJob(jobId, intentJson, look, { noTrack: true });
   try {
     const r = await engine.render(img, { jobId, index: 0, seg, grade: true });
     if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
@@ -249,7 +254,7 @@ async function pickCodec(w, h, fps) {
  * Returns {blob, frames, fps, width, height, codec, intentHash}.
  */
 export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, maskH, maxSide = 1280, onProgress, isCancelled, keepFrames = [] }) {
-  const kept = {};
+  const kept = {}, blurTrack = { frames: 0, lost: 0, chained: 0 };
   if (typeof VideoEncoder === 'undefined') throw new Error('此瀏覽器不支援 WebCodecs，無法輸出影片（請使用最新版 Chrome 或 Edge）');
   const { w, h } = fitSize(meta.width, meta.height, maxSide);
   const fps = meta.fps, n = meta.frameCount;
@@ -279,6 +284,7 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
         seg = segmentFn(segCanvas, MASK_W, maskH);
       }
       const r = await engine.render(img, { jobId, index: i, seg, grade: true });
+      if (r.blur && r.blur.tracked) { blurTrack.frames++; if (!r.blur.ok) blurTrack.lost++; if (r.blur.chained) blurTrack.chained++; }
       if (keepFrames.includes(i)) kept[i] = { source: img, rendered: r.imageData };
       if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
       const frame = new VideoFrame(r.imageData.data, { format: 'RGBA', codedWidth: w, codedHeight: h, timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
@@ -295,6 +301,6 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
     engine.endJob(jobId);
     if (encoder.state !== 'closed') encoder.close();
   }
-  return { blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }), frames: n, fps, width: w, height: h, codec: cfg.codec, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, kept,
+  return { blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }), frames: n, fps, width: w, height: h, codec: cfg.codec, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, kept, blurTrack,
     audio: audio.track ? { kept: true, codec: audio.track.codec, samples: audio.written } : { kept: false, reason: audio.skipped } };
 }

@@ -6,7 +6,9 @@ import { fitCandidates } from './engine/autofit.js';
 import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engine/intent.js';
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
-import { renderFrame, FX_KEYS } from './engine/render.js';
+import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
+import { combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
+import { feather, guidedFilter, resize } from './engine/masks.js';
 import { fitPairLUT } from './engine/pairfit.js';
 import { LOCAL_REGIONS, sanitizePrim } from './engine/primary.js';
 import { fitLocal, layerPrim } from './engine/local.js';
@@ -15,6 +17,7 @@ let model = null;
 const pairs = new Map();       // pairId -> LUT distilled from an AI-graded frame (look.source === 'ai'); a few candidates
 const luts = new Map();      // key: look settings + preserve flag -> LUT (bounded cache)
 const jobs = new Map();      // jobId -> {intent, regions, hash, look, temporal}
+const blurSels = new Map();  // selection id -> {layer: {data, w, h} | null, anchor: luma pyramid of the frame it was painted on}
 
 const fxOf = (look) => (look && FX_KEYS.some((k) => look[k] !== undefined) ? Object.fromEntries(FX_KEYS.map((k) => [k, look[k]])) : null);
 
@@ -39,10 +42,11 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
+  delete full.blur;
   const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
-    const pair = full.source === 'ai' ? pairs.get(full.pairId) : null, m = pair ? { ...model, pair } : model;
+    const pair = full.source === 'ai' ? pairs.get(full.pairId) : null, m = full.source === 'mood' ? null : pair ? { ...model, pair } : model;
     const gridLook = full.prim ? { ...full, prim: sanitizePrim({ ...full.prim, post: null, keep: 0, local: null }) } : full;
     luts.set(key, forExport ? bakeLUT(m, full, 65) : draft ? bakeLUT(m, full, DRAFT_N, { memo: memoFor }) : bakeLook(m, full, { shaperLook: gridLook, memo: memoFor }));
   }
@@ -73,6 +77,44 @@ function layersFor(intent, look, src, w, h, seg, temporal, draft = false) {
     out.push(layer('hair', m));
   }
   return out;
+}
+
+/**
+ * Background blur for one frame (in place on the graded RGBA `out`). The painted part of the selection follows the
+ * camera: the frame is registered to the anchor (the frame it was painted on), starting from the previous frame's
+ * motion; if that fails (e.g. the anchor's content left the picture) the motion is chained through the previous
+ * frame. track: per-job state {prevPyr, prevP} or null (one-off render: registered from scratch).
+ */
+function blurFrame(out, src, w, h, blur, seg, track, noTrack) {
+  if (!blur || !blur.on || !(blur.amount > 0)) return null;
+  const sel = blur.selId ? blurSels.get(blur.selId) : null, layer = sel && sel.layer;
+  if (!layer && !blur.ai) return null;
+  const mw = MASK_W, mh = Math.round(MASK_W * h / w);
+  let bg = null;
+  if (blur.ai && seg && seg.background && seg.background.length === mw * mh) { // AI background, snapped to the frame's edges
+    bg = guidedFilter(Float32Array.from(seg.background), lightnessGrid(src, w, h, mw, mh), mw, mh);
+    for (let i = 0; i < bg.length; i++) { const t = Math.min(1, Math.max(0, (bg[i] - 0.2) / 0.6)); bg[i] = t * t * (3 - 2 * t); }
+  }
+  let lay = null, info = { tracked: false };
+  if (layer) {
+    lay = layer.w === mw && layer.h === mh ? layer.data : resize(layer.data, layer.w, layer.h, mw, mh);
+    if (!noTrack && sel.anchor) {
+      const cur = pyramid(lumaSmall(src, w, h));
+      let r = estimateMotion(sel.anchor, cur, track && track.prevP ? track.prevP : null);
+      if (!r.ok && track && track.prevPyr) { // chain through the previous frame
+        const step = estimateMotion(track.prevPyr, cur, IDENTITY);
+        if (step.ok) r = { ...step, p: compose(track.prevP, step.p), ok: true, chained: true };
+      }
+      const p = r.ok ? r.p : track && track.prevP ? track.prevP : IDENTITY; // lost: keep the last known placement
+      if (track) { track.prevPyr = cur; track.prevP = p; }
+      lay = warpLayer(lay, mw, mh, p);
+      info = { tracked: true, ok: r.ok, chained: !!r.chained, err: r.err, p };
+    }
+  }
+  if (!bg && blur.ai && !lay) return null;
+  const m = feather(combineSelection(lay, bg, { ai: blur.ai, invert: blur.invert }, mw * mh), mw, mh, 1.5);
+  applyBlur(out, w, h, { data: m, w: mw, h: mh }, blur);
+  return info;
 }
 
 function lookHash(look) {
@@ -110,6 +152,10 @@ self.onmessage = (e) => {
       const candidates = fitCandidates(unscale(srcLab), unscale(refLab), { thumb: { data: td, width: tw, height: th }, v2: !!m.v2, v3: !!m.v3, white: !!m.white, balance: !!m.balance })
         .map((c) => ({ mode: c.report.mode, label: c.report.label, prim: c.prim, residual: c.report.residual, norm: c.report.norm }));
       self.postMessage({ type: 'fitted', id: m.id, ms: performance.now() - t, autofitMs: performance.now() - t2, src: model.src, ref: model.ref, palette: model.palette, candidates });
+    } else if (m.type === 'blur-selection') { // the painted selection and the frame it was painted on (tracking anchor)
+      if (blurSels.size > 6) blurSels.delete(blurSels.keys().next().value);
+      blurSels.set(m.selId, { layer: m.layer ? { data: new Float32Array(m.layer), w: m.w, h: m.h } : null, anchor: m.anchor ? pyramid({ w: m.anchor.w, h: m.anchor.h, data: new Float32Array(m.anchor.data) }) : null });
+      self.postMessage({ type: 'blur-selection-set', id: m.id });
     } else if (m.type === 'bake') { // the look as a LUT (for .cube export); spatial effects are not part of it
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look, { forExport: true });
       const data = lut.data.slice();
@@ -134,14 +180,14 @@ self.onmessage = (e) => {
       for (const k of [...luts.keys()]) if (k.includes('"source":"ai"')) luts.delete(k);
       self.postMessage({ type: 'pair-cleared', id: m.id });
     } else if (m.type === 'start-job') {
-      jobs.set(m.jobId, { ...prepare(m.intent), look: m.look || null, temporal: { prev: {} } });
+      jobs.set(m.jobId, { ...prepare(m.intent), look: m.look || null, temporal: { prev: {} }, track: {}, noTrack: !!m.noTrack });
       const j = jobs.get(m.jobId);
       self.postMessage({ type: 'job-started', jobId: m.jobId, intentHash: j.hash, lookHash: lookHash(j.look), regions: j.regions.map((r) => ({ id: r.id, kind: r.kind, ev: r.ev })) });
     } else if (m.type === 'end-job') {
       jobs.delete(m.jobId);
     } else if (m.type === 'render') {
-      if (!model && m.grade) throw new Error('grade model not fitted yet');
       const lk = m.jobId ? jobs.get(m.jobId)?.look : m.look;
+      if (!model && m.grade && !(lk && lk.source === 'mood')) throw new Error('grade model not fitted yet'); // a mood needs no reference
       if (m.grade && lk && lk.source === 'ai' && !pairs.has(lk.pairId)) throw new Error('AI 調色圖的 LUT 與目前設定不一致，請重新上傳');
       // one-off renders (dialog preview) carry their own intent; job renders reuse the job's state
       const j = m.jobId ? jobs.get(m.jobId) : { ...prepare(m.intent), look: m.look || null, temporal: null };
@@ -158,9 +204,12 @@ self.onmessage = (e) => {
       // quick preview drops the region layers (skin protection, local grade) while a control moves, like an
       // editor's fast preview drops costly effects; they return with the full-quality frame
       const layers = m.grade && !draft ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
-      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look, { draft }) : null, ev, undefined, m.grade ? fxOf(j.look) : null, layers);
+      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look, { draft }) : null, ev, undefined, null, layers);
+      const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
+      const fx = m.grade ? fxOf(j.look) : null;
+      if (fx) applyEffects(out, m.w, m.h, fx); // after the blur: haze and glow spread over the blurred background too
       const prim = j.look && j.look.prim;
-      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev,
+      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo,
         skinProtected: layers.length > 0 && !!(prim && prim.skin), localGraded: layers.length > 1 }, [out.buffer]);
     }
   } catch (err) {

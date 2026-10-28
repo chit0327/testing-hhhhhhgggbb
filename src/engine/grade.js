@@ -279,7 +279,7 @@ export const DEFAULT_LOOK = {
   hiHue: 100, hiAmt: 0,         // ... highlights
   source: 'reference',          // 'reference' (natural transfer) | 'ai' (LUT distilled from an AI-graded frame)
   amount: 1,                    // 整體調色強度: blend of the whole look with the original colour (0 = original)
-  glow: 0, glowRadius: 0.5,     // 柔光 (spatial: applied by the renderer, not the LUT)
+  glow: 0, glowRadius: 0.5, haze: 0, hazeRadius: 0.5, // 柔光, 朦朧 (spatial: applied by the renderer, not the LUT)
   vignette: 0, vignetteSize: 0.5, // 暗角: + darkens / − lightens the edges (spatial)
   prim: null,                   // pro stage (primary.js): wheels, curves, hue curves, skin protection; null = off
 };

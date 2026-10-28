@@ -8,7 +8,9 @@ import { rawMask } from './engine/regionmasks.js';
 import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
 import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, loadImage, imageDataOf, processVideo, processPhoto, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
-import { DEFAULT_LOOK, measure, toCube } from './engine/grade.js';
+import { DEFAULT_LOOK, measure, toCube, gradeColour } from './engine/grade.js';
+import { MOODS, MOOD_GROUPS, moodLook } from './engine/moods.js';
+import { paintStroke, fillPolygon, combineSelection, labGrid, magicWand, stampSelection, lumaSmall, pyramid, estimateMotion, warpLayer, warpPoint, toN, fromN, IDENTITY, BRUSH_SIZES } from './engine/blur.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
@@ -23,7 +25,7 @@ const $ = (id) => document.getElementById(id);
 const engine = new EngineClient();
 
 const PHASE_TEXT = {
-  idle: '請先上傳參考圖片和要調色的影片或照片', loading: '素材載入中…', analysing: '正在分析參考圖片與影片…',
+  idle: '請先上傳要調色的影片或照片（參考圖片可選）', loading: '素材載入中…', analysing: '正在分析參考圖片與影片…',
   draft: '草稿設定：請在光暗設定視窗中確認', unset: '尚未確認光暗設定（按「重新設定光暗」開始）',
   confirmed: '已確認設定，準備處理…', processing: '正在處理…', done: '已完成處理',
   exporting: '匯出中…', exported: '匯出完成', error: '發生錯誤',
@@ -61,7 +63,10 @@ function setPhase(p, detail = '') {
   el.textContent = PHASE_TEXT[p] + (detail ? `：${detail}` : '');
 }
 
-const pairKey = () => (S.ref.status === 'ready' && S.video.status === 'ready' ? `${S.ref.id}|${S.video.id}` : null);
+// no reference (none chosen, or it failed to load): the look comes from a mood preset or the sliders alone
+const moodOnly = () => S.ref.status === 'empty' || S.ref.status === 'error';
+const pairKey = () => (S.video.status !== 'ready' ? null : S.ref.status === 'ready' ? `${S.ref.id}|${S.video.id}` : moodOnly() ? `mood|${S.video.id}` : null);
+const moodBase = () => ({ ...DEFAULT_LOOK, strength: 0, match: 0, source: 'mood' }); // no reference transfer
 const maskH = () => Math.round(MASK_W * S.video.meta.height / S.video.meta.width);
 
 // ------------------------------------------------------------------ assets
@@ -141,6 +146,18 @@ function promptOnce() { // auto-open the Lighting Intent dialog exactly once per
 }
 
 function fitGrade(key) {
+  syncRefMode();
+  if (key.startsWith('mood|')) { // nothing to fit without a reference
+    S.grade = { pair: key, ready: Promise.resolve(key), cands: [], stats: null, refBands: null };
+    S.candMode = null; S.candRun = (S.candRun || 0) + 1; // cancels a candidate pass of the previous reference
+    // the previous reference's look cannot be rendered any more: start from the original, or keep the user's edits
+    S.look.draft = S.look.auto ? { ...moodBase(), ...kept() } : { ...S.look.draft, strength: 0, match: 0, source: 'mood', pairId: undefined };
+    $('candBox').replaceChildren(); $('candInfo').textContent = '';
+    if (!$('adjustCard').hidden) { syncAdjustControls(); scheduleAdjPreview(); }
+    if (!['processing', 'exporting'].includes(S.phase)) setPhase(S.intent.confirmed ? 'confirmed' : 'draft');
+    log('grade-fitted', { mood: true });
+    return S.grade.ready;
+  }
   S.grade.pair = key;
   setPhase('analysing');
   S.grade.ready = (async () => {
@@ -453,7 +470,8 @@ $('openIntent').onclick = () => openDialog();
 $('editIntent').onclick = () => openDialog();
 
 function describeLook(k) {
-  const parts = k.source === 'ai' ? [`強度 ${Math.round(k.strength * 100)}%`] : [`接近參考 ${Math.round(k.match * 100)}%`, `強度 ${Math.round(k.strength * 100)}%`];
+  const mood = k.source === 'mood' && MOODS.find((m) => m.id === k.mood);
+  const parts = k.source === 'mood' ? (mood ? [`氛圍「${mood.name}」`] : []) : k.source === 'ai' ? [`強度 ${Math.round(k.strength * 100)}%`] : [`接近參考 ${Math.round(k.match * 100)}%`, `強度 ${Math.round(k.strength * 100)}%`];
   for (const [key, name] of [['exposure', '曝光'], ['contrast', '對比'], ['highlights', '高光'], ['shadows', '陰影'], ['saturation', '飽和'], ['temperature', '色溫'], ['tint', '色調']]) {
     if (k[key]) parts.push(`${name} ${k[key] > 0 ? '+' : ''}${key === 'exposure' ? k[key].toFixed(2) : Math.round(k[key] * 100)}`);
   }
@@ -492,10 +510,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   shadowHue: ['shadowHue', 1, null], midHue: ['midHue', 1, null], hiHue: ['hiHue', 1, null],
   shadowAmt: ['shadowAmt', 100, (v) => `${v}`], midAmt: ['midAmt', 100, (v) => `${v}`], hiAmt: ['hiAmt', 100, (v) => `${v}`],
   glow: ['glow', 100, (v) => `${v}`], glowRadius: ['glowRadius', 100, (v) => `${v}`],
+  haze: ['haze', 100, (v) => `${v}`], hazeRadius: ['hazeRadius', 100, (v) => `${v}`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'glow', 'glowRadius', 'vignette', 'vignetteSize'];
+const KEEP = ['amount', 'glow', 'glowRadius', 'haze', 'hazeRadius', 'vignette', 'vignetteSize', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -514,6 +533,8 @@ function syncAdjustControls() {
   $('adj-match').disabled = ai; $('adj-protect').disabled = ai;
   syncPro();
   updateAdjState();
+  markMood();
+  syncBlurControls();
 }
 function updateAdjState() {
   const dirty = !S.look.applied || JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
@@ -526,7 +547,7 @@ for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
   $(`adj-${id}`).addEventListener('dblclick', () => { S.look.auto = false; S.look.draft[key] = DEFAULT_LOOK[key]; syncAdjustControls(); scheduleAdjPreview(); });
 }
 $('adj-protect').addEventListener('change', (e) => { S.look.auto = false; S.look.draft.protect = e.target.checked; updateAdjState(); scheduleAdjPreview(); });
-$('adjReset').onclick = () => { S.look.auto = false; S.look.draft = { ...DEFAULT_LOOK }; syncAdjustControls(); scheduleAdjPreview(); };
+$('adjReset').onclick = () => { S.look.auto = false; S.look.draft = moodOnly() ? moodBase() : { ...DEFAULT_LOOK }; $('moodInfo').textContent = MOOD_INFO; syncAdjustControls(); scheduleAdjPreview(); markMood(); };
 for (const el of document.querySelectorAll('input[name=source]')) {
   el.addEventListener('change', () => {
     if (el.value === 'ai' && !S.aiPair) return;
@@ -550,6 +571,232 @@ function applyAutoLook(mode = 'natural') {
 }
 $('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.candMode || 'natural'); syncAdjustControls(); scheduleAdjPreview(); renderCands(); };
 
+// ---- background blur (背景模糊): the selection is the AI background and/or a layer painted on one frame (the
+// anchor: brush, eraser, lasso), kept in the anchor's coordinates. On other frames the layer is placed with the
+// camera motion from that frame to the anchor (the worker does the same for every exported frame).
+const BLUR_DEFAULT = { on: false, ai: true, invert: false, type: 'gauss', amount: 0.5, angle: 0, selId: null };
+const BL = { tol: 12, labFor: null, lab: null, layer: null, w: 0, h: 0, anchorT: null, anchorLuma: null, anchorPyr: null, curSel: null, seq: 0, tool: 'none', size: 'm', dir: false, motion: new Map(), drag: null, hover: null };
+window.__app.BL = BL;
+const blurOf = () => ({ ...BLUR_DEFAULT, ...(S.look.draft.blur || {}) });
+function editBlur(changes) {
+  const next = { ...blurOf(), ...changes };
+  if (BL.layer && !next.selId) next.selId = BL.curSel;
+  S.look.draft.blur = next;
+  syncBlurControls(); updateAdjState(); scheduleAdjPreview();
+}
+function syncBlurControls() {
+  const b = blurOf();
+  $('blurOn').checked = b.on; $('blurAi').checked = b.ai; $('blurInvert').checked = b.invert;
+  for (const el of document.querySelectorAll('input[name=blurType]')) el.checked = el.value === b.type;
+  $('blurAmount').value = Math.round(b.amount * 100); $('blurAmount-v').textContent = Math.round(b.amount * 100);
+  $('blurAngle').value = Math.round(b.angle) % 180; $('blurAngle-v').textContent = `${Math.round(b.angle) % 180}°`;
+  $('blurDirRow').hidden = b.type !== 'motion';
+  $('blurDirBtn').setAttribute('aria-pressed', String(BL.dir));
+  $('adjCanvas').classList.toggle('editing', blurEditing());
+}
+const blurEditing = () => (BL.tool !== 'none' || BL.dir) && !$('catBlur').hidden && $('catBlur').open && !$('viewPreview').hidden;
+$('blurOn').addEventListener('change', (e) => editBlur({ on: e.target.checked }));
+$('blurAi').addEventListener('change', (e) => { editBlur({ ai: e.target.checked }); if (e.target.checked && !(S.rep && S.rep.seg)) $('blurInfo').textContent = 'AI 背景偵測還沒有結果（請先完成光暗設定的 AI 辨識），可以先用筆刷或套索。'; });
+$('blurInvert').addEventListener('change', (e) => editBlur({ invert: e.target.checked }));
+$('blurShow').addEventListener('change', () => drawAdj());
+for (const el of document.querySelectorAll('input[name=blurType]')) el.addEventListener('change', () => editBlur({ type: el.value }));
+$('blurAmount').addEventListener('input', (e) => { $('blurAmount-v').textContent = e.target.value; editBlur({ amount: e.target.value / 100 }); });
+$('blurAngle').addEventListener('input', (e) => { $('blurAngle-v').textContent = `${e.target.value}°`; editBlur({ angle: +e.target.value }); });
+// narrow screens: the panel is below the picture, so bring the picture into view to draw on it
+const showCanvasForEditing = () => { if (window.innerWidth <= 1024 && blurEditing()) $('adjCanvas').scrollIntoView({ block: 'center', behavior: 'instant' }); };
+for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; $('blurTolRow').hidden = !BL.tool.startsWith('wand'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
+$('blurTol').addEventListener('input', (e) => { BL.tol = +e.target.value; $('blurTol-v').textContent = e.target.value; });
+for (const el of document.querySelectorAll('input[name=blurSize]')) el.addEventListener('change', () => { BL.size = el.value; drawAdj(); showCanvasForEditing(); });
+$('blurDirBtn').onclick = () => { BL.dir = !BL.dir; syncBlurControls(); drawAdj(); showCanvasForEditing(); };
+$('catBlur').addEventListener('toggle', () => { syncBlurControls(); drawAdj(); });
+$('blurClear').onclick = () => { BL.layer = null; BL.curSel = null; BL.motion.clear(); editBlur({ selId: null }); log('blur-cleared'); };
+
+// motion from the current preview frame to the anchor (cached per frame time)
+function motionToAnchor() {
+  if (!BL.layer || !S.rep || S.rep.t === BL.anchorT || isPhoto()) return IDENTITY;
+  if (!BL.motion.has(S.rep.t)) {
+    const r = estimateMotion(BL.anchorPyr, pyramid(lumaSmall(S.rep.img.data, S.rep.img.width, S.rep.img.height)));
+    BL.motion.set(S.rep.t, r.ok ? r.p : IDENTITY);
+    if (!r.ok) $('blurInfo').textContent = '這一格和塗抹的那一格差太遠，追蹤不到；筆刷範圍暫時放在原來的位置。';
+  }
+  return BL.motion.get(S.rep.t);
+}
+function ensureLayer() {
+  if (BL.layer) return;
+  BL.w = MASK_W; BL.h = maskH(); BL.layer = new Float32Array(BL.w * BL.h);
+  BL.anchorT = S.rep.t; BL.anchorLuma = lumaSmall(S.rep.img.data, S.rep.img.width, S.rep.img.height); BL.anchorPyr = pyramid(BL.anchorLuma); BL.motion.clear();
+}
+// picture position (0..1 of width / height) → layer grid of the ANCHOR frame
+function toAnchorGrid(fx, fy) {
+  const gx = fx * BL.w, gy = fy * BL.h;
+  const [u, v] = toN(gx - 0.5, gy - 0.5, BL.w, BL.h), [X, Y] = fromN(...warpPoint(motionToAnchor(), u, v), BL.w, BL.h);
+  return [X + 0.5, Y + 0.5];
+}
+// pointer → position in the picture as 0..1 of its width / height (the canvas is letterboxed by object-fit: contain,
+// and its pixel size changes between the quick and the full-quality preview, so canvas pixels are not stable)
+function canvasPoint(e) {
+  const c = $('adjCanvas'), r = c.getBoundingClientRect(), k = Math.min(r.width / c.width, r.height / c.height);
+  return [(e.clientX - r.left - (r.width - c.width * k) / 2) / (c.width * k), (e.clientY - r.top - (r.height - c.height * k) / 2) / (c.height * k)];
+}
+async function commitSelection() {
+  const selId = `blur${++BL.seq}`;
+  await engine.setBlurSelection(selId, { data: BL.layer, w: BL.w, h: BL.h }, BL.anchorLuma);
+  BL.curSel = selId;
+  const b = blurOf();
+  editBlur({ selId, on: true, ...(b.amount ? {} : { amount: 0.5 }) });
+  log('blur-selection', { selId, painted: BL.layer.reduce((n, v) => n + (v > 0.5), 0) });
+}
+{
+  const cv = $('adjCanvas');
+  cv.addEventListener('pointerdown', (e) => {
+    if (!blurEditing() || !S.rep) return;
+    e.preventDefault(); cv.setPointerCapture(e.pointerId);
+    const pt = canvasPoint(e);
+    if (BL.dir) { BL.drag = { kind: 'dir', from: pt, to: pt }; return; }
+    ensureLayer();
+    if (BL.tool === 'wand' || BL.tool === 'wandErase') { // one click: the connected area of similar colour on THIS frame
+      const key = `${S.video.id}|${S.rep.t}|${S.rep.img.width}`;
+      if (BL.labFor !== key) { BL.lab = labGrid(S.rep.img.data, S.rep.img.width, S.rep.img.height, BL.w, BL.h); BL.labFor = key; }
+      const sel = magicWand(BL.lab, BL.w, BL.h, pt[0] * BL.w, pt[1] * BL.h, BL.tol);
+      stampSelection(BL.layer, BL.w, BL.h, sel, motionToAnchor(), BL.tool === 'wand' ? 1 : -1);
+      log('blur-wand', { tol: BL.tol, cells: sel.reduce((n, v) => n + v, 0) });
+      commitSelection(); drawAdj(); return;
+    }
+    if (BL.tool === 'brush' || BL.tool === 'erase') {
+      const a = toAnchorGrid(...pt), rad = BRUSH_SIZES[BL.size] * BL.w;
+      paintStroke(BL.layer, BL.w, BL.h, a[0], a[1], a[0], a[1], rad, BL.tool === 'brush' ? 1 : -1);
+      BL.drag = { kind: 'brush', last: a };
+    } else BL.drag = { kind: 'lasso', pts: [pt] };
+    drawAdj();
+  });
+  cv.addEventListener('pointermove', (e) => {
+    if (!blurEditing()) return;
+    const pt = canvasPoint(e); BL.hover = pt;
+    const d = BL.drag;
+    if (d && d.kind === 'brush') {
+      const a = toAnchorGrid(...pt);
+      paintStroke(BL.layer, BL.w, BL.h, d.last[0], d.last[1], a[0], a[1], BRUSH_SIZES[BL.size] * BL.w, BL.tool === 'brush' ? 1 : -1);
+      d.last = a;
+    } else if (d && d.kind === 'lasso') d.pts.push(pt);
+    else if (d && d.kind === 'dir') d.to = pt;
+    drawAdj();
+  });
+  const end = (e) => {
+    const d = BL.drag; BL.drag = null;
+    if (!d) return;
+    if (d.kind === 'dir') {
+      const c = $('adjCanvas'), dx = (d.to[0] - d.from[0]) * c.width, dy = (d.to[1] - d.from[1]) * c.height;
+      if (Math.hypot(dx / c.width, dy / c.width) > 0.01) { const ang = ((Math.atan2(dy, dx) * 180 / Math.PI) % 180 + 180) % 180; editBlur({ angle: Math.round(ang), type: 'motion', on: true }); log('blur-direction', { angle: Math.round(ang) }); }
+      drawAdj(); return;
+    }
+    if (d.kind === 'lasso' && d.pts.length > 2) fillPolygon(BL.layer, BL.w, BL.h, d.pts.map((p) => toAnchorGrid(...p)), BL.tool === 'lassoErase' ? -1 : 1);
+    commitSelection();
+  };
+  cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
+  cv.addEventListener('pointerleave', () => { BL.hover = null; if (blurEditing()) drawAdj(); });
+}
+function drawBlurOverlay(ctx, w, h) {
+  const b = blurOf(), panel = !$('catBlur').hidden && $('catBlur').open;
+  if (!panel) return;
+  if ($('blurShow').checked && (b.on || BL.layer)) {
+    const p = motionToAnchor(), bg = b.ai && S.rep.seg ? S.rep.seg.background : null;
+    const lay = BL.layer ? warpLayer(BL.layer, BL.w, BL.h, p) : null, mw = BL.layer ? BL.w : MASK_W, mh = BL.layer ? BL.h : maskH();
+    if ((lay || bg) && (!bg || bg.length === mw * mh)) {
+      const m = combineSelection(lay, bg, { ai: b.ai, invert: b.invert }, mw * mh), id = new ImageData(mw, mh);
+      for (let i = 0; i < m.length; i++) { id.data[4 * i] = 255; id.data[4 * i + 1] = 40; id.data[4 * i + 2] = 60; id.data[4 * i + 3] = m[i] * 75; }
+      const t = canvas2d(mw, mh); t.getContext('2d').putImageData(id, 0, 0);
+      ctx.imageSmoothingEnabled = true; ctx.drawImage(t, 0, 0, w, h);
+    }
+  }
+  const d = BL.drag;
+  ctx.lineWidth = Math.max(1.5, w / 400); ctx.strokeStyle = '#fff'; ctx.setLineDash([]);
+  if (d && d.kind === 'lasso') { ctx.beginPath(); d.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h))); ctx.stroke(); }
+  if (BL.dir || b.type === 'motion' && b.on && BL.tool === 'none') { // the motion direction as an arrow (dragging: the drag itself)
+    const from = d && d.kind === 'dir' ? [d.from[0] * w, d.from[1] * h] : [w / 2 - Math.cos(b.angle * Math.PI / 180) * w * 0.15, h / 2 - Math.sin(b.angle * Math.PI / 180) * w * 0.15];
+    const to = d && d.kind === 'dir' ? [d.to[0] * w, d.to[1] * h] : [w / 2 + Math.cos(b.angle * Math.PI / 180) * w * 0.15, h / 2 + Math.sin(b.angle * Math.PI / 180) * w * 0.15];
+    if (BL.dir || d) {
+      const a = Math.atan2(to[1] - from[1], to[0] - from[0]), hl = w / 40;
+      ctx.strokeStyle = '#ffd34d'; ctx.lineWidth = Math.max(2, w / 300);
+      ctx.beginPath(); ctx.moveTo(...from); ctx.lineTo(...to);
+      ctx.lineTo(to[0] - hl * Math.cos(a - 0.4), to[1] - hl * Math.sin(a - 0.4)); ctx.moveTo(...to); ctx.lineTo(to[0] - hl * Math.cos(a + 0.4), to[1] - hl * Math.sin(a + 0.4)); ctx.stroke();
+    }
+  }
+  if (BL.hover && (BL.tool === 'brush' || BL.tool === 'erase') && !BL.dir && blurEditing()) { // brush outline
+    const rr = BRUSH_SIZES[BL.size] * w;
+    ctx.strokeStyle = BL.tool === 'brush' ? '#fff' : '#ff8080'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
+    ctx.beginPath(); ctx.arc(BL.hover[0] * w, BL.hover[1] * h, rr, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
+  }
+}
+
+// ---- mood presets (氛圍): ready-made looks, usable with or without a reference. Each card shows the user's own
+// frame graded by the mood (quick 17³ preview) and a colour chart: sample colours before (thin top band) and after.
+const MOOD_SAMPLES = [[0.86, 0.64, 0.52], [0.5, 0.7, 0.9], [0.38, 0.55, 0.25], [0.85, 0.25, 0.22], [0.95, 0.94, 0.9], [0.55, 0.55, 0.55], [0.15, 0.15, 0.16]]; // skin, sky, foliage, red, white, grey, shadow
+function moodSwatch(m) {
+  const look = moodLook(m), n = MOOD_SAMPLES.length, cw = 24, c = document.createElement('canvas'), o = [0, 0, 0];
+  c.width = n * cw; c.height = 24;
+  const ctx = c.getContext('2d');
+  MOOD_SAMPLES.forEach((rgb, i) => {
+    const css = (v) => `rgb(${v.map((x) => Math.round(Math.min(1, Math.max(0, x)) * 255)).join(',')})`;
+    ctx.fillStyle = css(rgb); ctx.fillRect(i * cw, 0, cw, 6);
+    ctx.fillStyle = css(gradeColour(null, rgb[0], rgb[1], rgb[2], look, o)); ctx.fillRect(i * cw, 6, cw, 18);
+  });
+  c.className = 'mood-swatch'; c.setAttribute('aria-hidden', 'true');
+  return c;
+}
+const MOOD_INFO = $('moodInfo').textContent; // the explanation shown while no mood is applied
+function buildMoods() {
+  const box = $('moodBox');
+  MOOD_GROUPS.forEach((g, gi) => {
+    const h = document.createElement('h3'); h.textContent = g; box.appendChild(h);
+    const grid = document.createElement('div'); grid.className = 'mood-grid';
+    for (const m of MOODS.filter((x) => x.group === gi)) {
+      const b = document.createElement('button'); b.type = 'button'; b.className = 'mood'; b.dataset.mood = m.id; b.title = m.desc;
+      b.setAttribute('aria-pressed', 'false');
+      const th = document.createElement('canvas'); th.className = 'mood-thumb'; th.width = 16; th.height = 9; th.setAttribute('aria-hidden', 'true');
+      const name = document.createElement('span'); name.className = 'mood-name'; name.textContent = m.name;
+      b.append(th, moodSwatch(m), name);
+      b.onclick = () => applyMood(m);
+      grid.appendChild(b);
+    }
+    box.appendChild(grid);
+  });
+}
+buildMoods();
+function markMood() {
+  const id = S.look.draft.source === 'mood' ? S.look.draft.mood : null;
+  for (const b of document.querySelectorAll('#moodBox .mood')) b.setAttribute('aria-pressed', String(b.dataset.mood === id));
+}
+function applyMood(m) {
+  S.look.auto = false; S.candMode = null;
+  S.look.draft = moodLook(m, { amount: S.look.draft.amount ?? 1, blur: S.look.draft.blur });
+  for (const el of $('candBox').children) el.classList.remove('chosen');
+  $('moodInfo').textContent = `已套用「${m.name}」：${m.desc}。下面的滑桿已按這個氛圍設定，可以再微調${moodOnly() ? '' : '；按「恢復自動匹配」可回到參考圖的調色'}。`;
+  log('mood-chosen', { mood: m.id });
+  markMood(); syncAdjustControls(); scheduleAdjPreview();
+  if ($('viewPreview').hidden) showView('preview');
+}
+async function renderMoodThumbs() {
+  if (!S.rep || $('adjustCard').hidden || !$('catMood').open) return; // collapsed: no worker time spent on thumbnails
+  const run = S.moodRun = (S.moodRun || 0) + 1, key = `${S.video.id}|${S.rep.t}|${S.intent.confirmed ? hashIntent(S.intent.confirmed) : ''}`;
+  if (S.moodThumbsFor === key) return;
+  const src = await previewFrame(240), intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
+  for (const m of MOODS) {
+    const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: moodLook(m), draft: true });
+    if (run !== S.moodRun) return;
+    const c = document.querySelector(`#moodBox .mood[data-mood="${m.id}"] .mood-thumb`);
+    c.width = src.width; c.height = src.height; c.getContext('2d').putImageData(r.imageData, 0, 0);
+  }
+  S.moodThumbsFor = key;
+  log('mood-thumbs', { n: MOODS.length });
+}
+$('catMood').addEventListener('toggle', () => renderMoodThumbs());
+function syncRefMode() { // reference-only controls are hidden without a reference; the moods open instead
+  const none = moodOnly();
+  $('catMatch').hidden = none; $('aiPanel').hidden = none;
+  $('catMood').open = none || $('catMood').open;
+  $('moodLead').textContent = none ? '沒有參考圖片時，可以直接選一種氛圍；之後仍可用下面的滑桿微調。' : '不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。';
+}
+
 // ---- automatic candidates: render each on the representative frame and measure it
 function skinMaskFor(img) { // AI skin grid resampled to the frame (for the skin ΔE report), or null
   const seg = S.rep && S.rep.seg;
@@ -562,6 +809,7 @@ async function renderCands() {
   const box = $('candBox');
   if (!S.rep || !(S.grade.cands || []).length || $('adjustCard').hidden) return;
   await S.grade.ready;
+  if (!(S.grade.cands || []).length || !S.grade.refBands) return; // the reference was removed meanwhile
   const run = S.candRun = (S.candRun || 0) + 1; // a newer run (e.g. after the local fit) replaces this one
   const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
   const img = S.rep.img, skinM = skinMaskFor(img);
@@ -569,7 +817,7 @@ async function renderCands() {
   for (const c of S.grade.cands) {
     const look = candLook(c);
     const r = await engine.render(img, { intent, seg: S.rep.seg, grade: true, look });
-    if (run !== S.candRun) return;
+    if (run !== S.candRun || !S.grade.refBands) return;
     const d = r.imageData.data, cl = clipping(d);
     const m = {
       mode: c.mode, de: bandDeltaE(bandColours(d, img.width, img.height), S.grade.refBands),
@@ -693,7 +941,7 @@ const CLAUDE_ERR = {
   images_unavailable: '這個檢視不能傳送圖片給 Claude。', session_expired: '請重新登入 claude.ai。',
 };
 async function runClaude(instruction = '') {
-  if (!S.claude || !S.rep || S.claudeBusy) return false;
+  if (!S.claude || !S.rep || S.claudeBusy || moodOnly()) return false; // Claude compares with the reference
   await S.grade.ready;
   S.claudeBusy = true; claudeCtl = new AbortController();
   $('claudeStop').hidden = false; $('claudeGrade').disabled = true; $('adjApply').disabled = true;
@@ -1000,12 +1248,13 @@ async function pumpRenders() {
 function drawAdj() {
   const p = S.preview;
   if (!S.rep || !p) return;
-  const c = $('adjCanvas'), w = p.w, h = p.h, x = Math.round($('adjWipe').value / 100 * w);
+  const editing = blurEditing(), c = $('adjCanvas'), w = p.w, h = p.h, x = editing ? 0 : Math.round($('adjWipe').value / 100 * w); // editing: the whole result
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
   ctx.putImageData(p.src, 0, 0);
   ctx.putImageData(p.out, 0, 0, x, 0, w - x, h);
-  ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
+  if (!editing) { ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h); }
+  drawBlurOverlay(ctx, w, h);
 }
 function syncPreviewControls() {
   for (const b of document.querySelectorAll('[data-pvq]')) b.setAttribute('aria-checked', String(b.dataset.pvq === PV.q));
@@ -1058,7 +1307,7 @@ $('scopes').addEventListener('toggle', drawScopes);
 $('scopeKind').addEventListener('change', drawScopes);
 $('scopeOrig').addEventListener('change', drawScopes);
 
-function showAdjustCard() { setAdjustVisible(true); syncAdjustControls(); scheduleAdjPreview(); renderCands(); }
+function showAdjustCard() { setAdjustVisible(true); syncAdjustControls(); scheduleAdjPreview(); renderCands(); renderMoodThumbs(); }
 
 async function startProcessing() {
   const intent = S.intent.confirmed;
@@ -1076,7 +1325,8 @@ async function startProcessing() {
   const regs = effectiveRegions(intent);
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const ap = S.look.applied.prim;
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local));
+  const bl = S.look.applied.blur;
+  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai);
   if (needsSeg) await initSegmenter();
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   try {
@@ -1195,9 +1445,9 @@ function showPage(p) {
 function updateStart() {
   const ready = !!pairKey(), loading = S.ref.status === 'loading' || S.video.status === 'loading';
   $('startBtn').disabled = !ready;
-  $('startHint').textContent = ready ? '素材已就緒，可以開始調色。' : loading ? '素材載入中…'
-    : S.ref.status !== 'ready' && S.video.status !== 'ready' ? '請上傳參考圖片，以及要調色的影片或照片。'
-    : S.ref.status !== 'ready' ? '還需要一張參考圖片。' : '還需要要調色的影片或照片。';
+  $('startHint').textContent = loading ? '素材載入中…'
+    : ready ? (moodOnly() ? '沒有參考圖片：開始後可以在工作區選擇氛圍色調，或用滑桿自行調色。' : '素材已就緒，可以開始調色。')
+    : '還需要要調色的影片或照片（參考圖片可選）。';
   for (const k of ['ref', 'video']) $(`${k}Actions`).hidden = S[k].status !== 'ready' && S[k].status !== 'error';
   $('refDrop').classList.toggle('has-file', S.ref.status === 'ready');
   $('videoDrop').classList.toggle('has-file', S.video.status === 'ready');
