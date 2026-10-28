@@ -8,206 +8,303 @@
 </head>
 <body>
 <header class="top">
-  <h1>照樣調色</h1>
-  <p class="sub">上傳參考圖片和要調色的影片，設定光暗意圖後，套用相同的色彩風格。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
-  <div class="status" id="status" data-state="idle">請先上傳參考圖片和目標影片</div>
+  <div class="brand">
+    <h1>照樣調色</h1>
+    <button type="button" id="backToUpload" class="link-btn" hidden>← 返回上傳</button>
+  </div>
+  <div class="status" id="status" data-state="idle" role="status" aria-live="polite">請先上傳參考圖片和目標影片</div>
+  <div class="theme-switch" role="radiogroup" aria-label="介面顏色">
+    <button type="button" role="radio" data-theme-choice="light" aria-checked="false">米白</button>
+    <button type="button" role="radio" data-theme-choice="dark" aria-checked="false">深色</button>
+  </div>
 </header>
 
-<main>
+<!-- page 1: uploads -->
+<main id="pageUpload" class="page-upload">
+  <p class="sub">上傳參考圖片和要調色的影片，網站會分析參考圖的色彩風格，套用到影片上。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
   <section class="uploads">
-    <article class="card" id="refCard">
-      <h2>1. 參考圖片</h2>
-      <label class="drop"><input type="file" id="refInput" accept="image/*"><span>選擇圖片（JPG、PNG、WebP）</span></label>
+    <article class="card upcard" id="refCard">
+      <h2>參考圖片</h2>
+      <label class="dropzone" id="refDrop" for="refInput">
+        <input type="file" id="refInput" accept="image/*" class="sr-only">
+        <span class="dz-title">點擊選擇或把圖片拖放到這裏</span>
+        <span class="dz-hint">JPG、PNG、WebP</span>
+      </label>
       <div class="preview"><img id="refPreview" alt="參考圖片預覽" hidden></div>
       <p class="info" id="refInfo"></p>
+      <div class="row file-actions" id="refActions" hidden>
+        <button type="button" id="refReplace">更換圖片</button>
+        <button type="button" id="refRemove">移除</button>
+      </div>
     </article>
-    <article class="card" id="videoCard">
-      <h2>2. 目標影片</h2>
-      <label class="drop"><input type="file" id="videoInput" accept="video/*"><span>選擇影片（MP4、WebM、MOV）</span></label>
-      <div class="preview"><video id="videoPreview" controls muted playsinline hidden></video></div>
+    <article class="card upcard" id="videoCard">
+      <h2>要調色的影片或照片</h2>
+      <label class="dropzone" id="videoDrop" for="videoInput">
+        <input type="file" id="videoInput" accept="video/*,image/*" class="sr-only">
+        <span class="dz-title">點擊選擇或把影片／照片拖放到這裏</span>
+        <span class="dz-hint">影片：MP4、WebM、MOV（建議 60 秒以內）　照片：JPG、PNG、WebP</span>
+      </label>
+      <div class="preview"><video id="videoPreview" controls muted playsinline preload="auto" hidden></video><img id="photoPreview" alt="要調色的照片預覽" hidden></div>
       <p class="info" id="videoInfo"></p>
+      <div class="row file-actions" id="videoActions" hidden>
+        <button type="button" id="videoReplace">更換檔案</button>
+        <button type="button" id="videoRemove">移除</button>
+      </div>
     </article>
   </section>
+  <div class="start-row">
+    <span class="info" id="startHint">請上傳參考圖片和目標影片。</span>
+    <button type="button" id="startBtn" class="primary big" disabled>開始調色</button>
+  </div>
+</main>
 
-  <section class="card" id="intentCard">
-    <h2>3. 光暗設定（Lighting Intent）</h2>
-    <p id="intentSummary" class="info">素材載入後會自動開啟設定視窗。</p>
-    <div class="row">
-      <button id="openIntent" disabled>重新設定光暗</button>
-      <span class="hash" id="intentHash"></span>
+<!-- page 2: grading workspace -->
+<main id="pageWork" class="work" hidden>
+  <section class="stage-col" aria-label="影片預覽">
+    <div class="view-tabs" role="tablist" aria-label="預覽模式">
+      <button type="button" role="tab" id="tabPreview" aria-selected="true" aria-controls="viewPreview">調色預覽</button>
+      <button type="button" role="tab" id="tabResult" aria-selected="false" aria-controls="resultCard" disabled>處理結果影片</button>
+      <button type="button" role="tab" id="tabWipe" aria-selected="false" aria-controls="wipe" disabled>結果分割比較</button>
     </div>
-  </section>
-
-  <section class="card" id="adjustCard" hidden>
-    <h2>4. 色彩與明暗微調</h2>
-    <div class="adjust">
-      <div class="adj-preview">
-        <canvas id="adjCanvas"></canvas>
-        <input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="前後分隔線">
-        <p class="info">左：原始　右：目前設定的實際處理結果（含已確認的光暗設定）。拖動滑桿移動分隔線。</p>
-        <details class="scopes" id="scopes">
-          <summary>示波器</summary>
-          <div class="scope-bar">
-            <label>類型 <select id="scopeKind">
-              <option value="luma">波形圖（亮度）</option>
-              <option value="parade">RGB 分量圖</option>
-              <option value="vector">向量圖</option>
-            </select></label>
-            <label class="check-inline"><input type="checkbox" id="scopeOrig"> 左邊改看原片</label>
-          </div>
-          <div class="scope-pair">
-            <figure><canvas id="scopeMain" width="320" height="180"></canvas><figcaption id="scopeMainCap">目前結果</figcaption></figure>
-            <figure><canvas id="scopeRef" width="320" height="180"></canvas><figcaption>參考圖（中央 70%）</figcaption></figure>
-          </div>
-          <p class="info" id="scopeInfo"></p>
-          <p class="info">波形圖：橫向是畫面位置，縱向是亮度 0–100%；貼到 100% 的平線代表過曝，貼到 0% 代表死黑。RGB 分量圖：紅、綠、藍分開顯示，三者在亮部高低不同就是偏色。向量圖：離中心越遠越飽和，方向代表色相；橙色線是膚色線，人的皮膚應該落在線附近。</p>
-        </details>
-      </div>
-      <div class="adj-controls">
-        <div class="adj-group">
-          <h3>自動調色候選</h3>
-          <p class="info">依參考圖自動算出三種詮釋（色輪、曲線、色相曲線），挑一個即可；數值為實際畫面的量測結果。</p>
-          <div class="cands3" id="candBox"></div>
-          <p class="info" id="candInfo"></p>
-        </div>
-        <div class="adj-group">
-          <h3>整體調色強度</h3>
-          <label class="slider"><span>強度</span><input type="range" id="adj-amount" min="0" max="100" value="100"><output id="adj-amount-v">100%</output></label>
-          <p class="info">0% 是原片，100% 是完整效果。調到 50–70% 通常更自然、膚色更耐看。不影響光暗設定的局部曝光。</p>
-        </div>
-        <div class="adj-group">
-          <h3>調色來源</h3>
-          <div class="seg-choice" role="radiogroup" aria-label="調色來源">
-            <label><input type="radio" name="source" value="reference" checked> 參考圖自動轉移</label>
-            <label><input type="radio" name="source" value="ai" id="sourceAi" disabled> AI 調色圖</label>
-          </div>
-          <div class="row">
-            <button type="button" id="adjSuggest">恢復自動匹配</button>
-            <button type="button" id="claudeGrade" class="primary" hidden>Claude 看圖自動調色</button>
-            <button type="button" id="claudeStop" hidden>停止</button>
-          </div>
-          <p class="info" id="suggestInfo">素材載入後會自動依參考圖量化的對比、黑位、飽和度和亮部、暗部色偏設定下面的滑桿（參考色彩強度設為 0，所有變化都顯示在滑桿上）。</p>
-          <p class="info" id="claudeInfo"></p>
-          <div class="row" id="tweakRow" hidden>
-            <input type="text" id="tweakText" class="grow" placeholder="用文字微調，例如：暖一點、膚色更自然、暗部不要太黑">
-            <button type="button" id="tweakBtn">照文字微調</button>
-          </div>
-        </div>
-        <div class="adj-group">
-          <h3>參考色彩</h3>
-          <label class="slider"><span>接近參考程度</span><input type="range" id="adj-match" min="0" max="100" value="50"><output id="adj-match-v">50%</output></label>
-          <label class="slider"><span>參考色彩強度</span><input type="range" id="adj-strength" min="0" max="100" value="100"><output id="adj-strength-v">100%</output></label>
-          <label class="check"><input type="checkbox" id="adj-protect" checked> 保護材質顏色（避免草地、皮膚等被染成別的顏色）</label>
-        </div>
-        <div class="adj-group">
-          <h3>明暗</h3>
-          <label class="slider"><span>曝光</span><input type="range" id="adj-exposure" min="-200" max="200" value="0"><output id="adj-exposure-v">0</output></label>
-          <label class="slider"><span>對比</span><input type="range" id="adj-contrast" min="-100" max="100" value="0"><output id="adj-contrast-v">0</output></label>
-          <label class="slider"><span>高光</span><input type="range" id="adj-highlights" min="-100" max="100" value="0"><output id="adj-highlights-v">0</output></label>
-          <label class="slider"><span>陰影</span><input type="range" id="adj-shadows" min="-100" max="100" value="0"><output id="adj-shadows-v">0</output></label>
-        </div>
-        <div class="adj-group">
-          <h3>色彩</h3>
-          <label class="slider"><span>飽和度</span><input type="range" id="adj-saturation" min="-100" max="100" value="0"><output id="adj-saturation-v">0</output></label>
-          <label class="slider"><span>色溫</span><input type="range" id="adj-temperature" min="-100" max="100" value="0"><output id="adj-temperature-v">0</output></label>
-          <label class="slider"><span>色調</span><input type="range" id="adj-tint" min="-100" max="100" value="0"><output id="adj-tint-v">0</output></label>
-        </div>
-        <div class="adj-group">
-          <h3>黑白位與分區色調</h3>
-          <label class="slider"><span>黑位提亮</span><input type="range" id="adj-black" min="0" max="40" value="0"><output id="adj-black-v">0</output></label>
-          <label class="slider"><span>白位</span><input type="range" id="adj-white" min="70" max="100" value="100"><output id="adj-white-v">100</output></label>
-          <div class="tone-row"><span>陰影</span><input type="range" class="hue" id="adj-shadowHue" min="0" max="359" value="60" aria-label="陰影色相"><input type="range" id="adj-shadowAmt" min="0" max="100" value="0" aria-label="陰影色彩量"><output id="adj-shadowAmt-v">0</output></div>
-          <div class="tone-row"><span>中間調</span><input type="range" class="hue" id="adj-midHue" min="0" max="359" value="60" aria-label="中間調色相"><input type="range" id="adj-midAmt" min="0" max="100" value="0" aria-label="中間調色彩量"><output id="adj-midAmt-v">0</output></div>
-          <div class="tone-row"><span>亮部</span><input type="range" class="hue" id="adj-hiHue" min="0" max="359" value="100" aria-label="亮部色相"><input type="range" id="adj-hiAmt" min="0" max="100" value="0" aria-label="亮部色彩量"><output id="adj-hiAmt-v">0</output></div>
-          <p class="info">每一列：左邊選顏色，右邊調整加入的份量。例如亮部選黃色、份量 30，亮部就會偏黃。</p>
-        </div>
-        <div class="adj-group">
-          <h3>柔光與暗角</h3>
-          <label class="slider"><span>柔光</span><input type="range" id="adj-glow" min="0" max="100" value="0"><output id="adj-glow-v">0</output></label>
-          <label class="slider"><span>柔光範圍</span><input type="range" id="adj-glowRadius" min="0" max="100" value="50"><output id="adj-glowRadius-v">50</output></label>
-          <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
-          <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
-          <p class="info">柔光讓亮部向外擴散，帶來柔和、夢幻的感覺；暗角正值壓暗四周、負值提亮四周。這兩項不受「整體調色強度」影響。</p>
-        </div>
-        <details class="adj-group pro" id="proPanel">
-          <summary>專業調色（進階）：色輪、曲線、色相曲線</summary>
-          <div id="proControls"></div>
-          <div class="row"><button type="button" id="exportCube">匯出 .cube LUT</button></div>
-          <p class="info" id="cubeInfo">匯出的 LUT 包含全畫面調色（可在 DaVinci Resolve、剪映等軟體套用）；局部曝光、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。</p>
-        </details>
-        <div class="row">
-          <button id="adjReset" type="button">全部歸零</button>
-          <button id="adjApply" type="button" class="primary">套用並處理影片</button>
-        </div>
-        <p class="info" id="adjState"></p>
-      </div>
-    </div>
-    <details class="ai-panel" id="aiPanel">
-      <summary>AI 調色圖（進階）：讓 AI 圖像模型調好一格，網站反推成調色設定</summary>
-      <section class="gemini" id="geminiBox">
-        <h3>自動生成（使用你自己的 API 金鑰）</h3>
-        <div class="row"><label>服務 <select id="genProvider"><option value="gemini">Google Gemini</option><option value="pollinations">Pollinations</option></select></label></div>
-        <p class="info" id="genProviderInfo"></p>
-        <div class="row">
-          <input type="password" id="geminiKey" placeholder="貼上 Gemini API 金鑰" autocomplete="off" spellcheck="false" class="grow">
-          <button type="button" id="geminiConnect">連線並列出模型</button>
-        </div>
-        <label class="check"><input type="checkbox" id="geminiRemember"> 在這部裝置記住金鑰</label>
-        <div class="row">
-          <label>模型 <select id="geminiModel"><option value="">（先連線）</option></select></label>
-          <label>候選數 <select id="geminiCount"><option>1</option><option selected>2</option><option>3</option></select></label>
-        </div>
-        <label class="check"><input type="checkbox" id="geminiConsent"> 我同意把代表影格和參考圖傳送給 <span id="genProviderName">Google Gemini</span> 處理</label>
-        <div class="row">
-          <button type="button" id="geminiRun" class="primary" disabled>生成調色候選</button>
-          <button type="button" id="geminiStop" hidden>停止</button>
-        </div>
-        <p class="info" id="geminiInfo"></p>
-        <div class="cands" id="geminiCands"></div>
-      </section>
-      <h3 class="ai-manual">或手動：用任何 AI 圖像工具</h3>
-      <ol class="ai-steps">
-        <li>
-          <p>下載代表影格（目前預覽的這一格），連同參考圖一起交給你使用的 AI 圖像工具。</p>
-          <button type="button" id="aiDownload">下載代表影格</button>
-        </li>
-        <li>
-          <p>使用這段提示詞（依參考圖的量化數據自動產生，可以自行修改）：</p>
-          <textarea id="aiPrompt" rows="6"></textarea>
-          <button type="button" id="aiCopy">複製提示詞</button>
-        </li>
-        <li>
-          <p>把 AI 調好的圖片上傳到這裏。網站會核對構圖是否相同，再在瀏覽器內反推出調色設定，不會上傳任何檔案。</p>
-          <label class="drop"><input type="file" id="aiInput" accept="image/*"><span>上傳 AI 調色後的影格</span></label>
-          <p class="info" id="aiResult"></p>
-        </li>
-      </ol>
-    </details>
-  </section>
-
-  <section class="card" id="resultCard" hidden>
-    <h2>5. 處理結果</h2>
     <div class="progress" id="progressWrap" hidden><div id="progressBar"></div><span id="progressText"></span></div>
-    <div class="compare-videos">
-      <figure><figcaption>原始影片</figcaption><video id="origVideo" controls muted playsinline></video></figure>
-      <figure><figcaption>處理後影片</figcaption><video id="outVideo" controls muted playsinline></video></figure>
+    <div class="stage">
+      <div class="view" id="viewPreview" role="tabpanel" aria-labelledby="tabPreview">
+        <div class="stage-media">
+          <canvas id="adjCanvas" aria-label="調色預覽：左邊原始、右邊調色結果"></canvas>
+          <div class="stage-empty" id="stageEmpty">
+            <p>完成「光暗設定」後，這裏會顯示代表影格的調色預覽。</p>
+            <button type="button" id="stageIntent" class="primary">開啟光暗設定</button>
+          </div>
+        </div>
+        <div class="stage-bar">
+          <label class="grow"><span class="bar-lbl">原始</span><input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="原始與調色結果的分隔線"><span class="bar-lbl">調色</span></label>
+        </div>
+      </div>
+      <div class="view" id="resultCard" role="tabpanel" aria-labelledby="tabResult" hidden>
+        <div class="compare-videos">
+          <figure><figcaption id="origCap">原始影片</figcaption><video id="origVideo" controls muted playsinline></video><img id="origPhoto" alt="原始照片" hidden></figure>
+          <figure><figcaption id="outCap">處理後影片</figcaption><video id="outVideo" controls muted playsinline></video><img id="outPhoto" alt="調色後的照片" hidden></figure>
+        </div>
+        <div class="stage-bar"><button type="button" id="syncPlay" disabled>同步播放兩段影片</button></div>
+      </div>
+      <div class="view" id="wipe" role="tabpanel" aria-labelledby="tabWipe" hidden>
+        <div class="stage-media"><canvas id="wipeCanvas" aria-label="處理結果分割比較：左邊原始、右邊處理後"></canvas></div>
+        <div class="stage-bar stack">
+          <label class="grow" id="cmpTimeRow"><span class="bar-lbl">時間點</span><input type="range" id="cmpTime" min="0" max="1000" value="500" disabled></label>
+          <label class="grow"><span class="bar-lbl">原始</span><input type="range" id="wipePos" min="0" max="100" value="50" aria-label="原始與處理後的分隔線"><span class="bar-lbl">處理後</span></label>
+        </div>
+      </div>
     </div>
-    <div class="row">
-      <button id="syncPlay" disabled>同步播放</button>
-      <label class="grow">同一時間點比較 <input type="range" id="cmpTime" min="0" max="1000" value="500" disabled></label>
-    </div>
-    <div class="wipe" id="wipe" hidden>
-      <canvas id="wipeCanvas"></canvas>
-      <input type="range" id="wipePos" min="0" max="100" value="50" aria-label="前後分隔線">
-      <p class="info">左：原始　右：處理後（拖動滑桿移動分隔線）</p>
-    </div>
-    <div class="row">
-      <button id="reprocess" disabled>以目前設定重新處理</button>
-      <button id="editIntent" disabled>返回修改光暗設定</button>
-      <button id="exportBtn" class="primary" disabled>匯出影片</button>
-    </div>
-    <p class="info" id="resultInfo"></p>
   </section>
+
+  <aside class="panel" aria-label="調校面板">
+    <div class="panel-scroll" id="panelScroll">
+      <section class="intent-box" id="intentCard">
+        <h2>光暗設定</h2>
+        <p id="intentSummary" class="info">素材載入後會自動開啟設定視窗。</p>
+        <div class="row">
+          <button type="button" id="openIntent" disabled>設定光暗</button>
+          <span class="hash" id="intentHash"></span>
+        </div>
+      </section>
+
+      <div id="adjustCard" hidden>
+        <details class="cat" id="catMatch" open>
+          <summary>參考匹配</summary>
+          <div class="cat-body">
+            <h3>自動調色候選</h3>
+            <p class="info">依參考圖自動算出的幾種詮釋，挑一個即可；數值為實際畫面的量測結果。</p>
+            <div class="cands3" id="candBox"></div>
+            <p class="info" id="candInfo"></p>
+            <h3>整體調色強度</h3>
+            <label class="slider"><span>強度</span><input type="range" id="adj-amount" min="0" max="100" value="100"><output id="adj-amount-v">100%</output></label>
+            <p class="info">0% 是原片，100% 是完整效果。調到 50–70% 通常更自然、膚色更耐看。不影響光暗設定的局部曝光。</p>
+            <h3>調色來源</h3>
+            <div class="seg-choice" role="radiogroup" aria-label="調色來源">
+              <label><input type="radio" name="source" value="reference" checked> 參考圖自動轉移</label>
+              <label><input type="radio" name="source" value="ai" id="sourceAi" disabled> AI 調色圖</label>
+            </div>
+            <div class="row">
+              <button type="button" id="adjSuggest">恢復自動匹配</button>
+              <button type="button" id="claudeGrade" class="primary" hidden>Claude 看圖自動調色</button>
+              <button type="button" id="claudeStop" hidden>停止</button>
+            </div>
+            <p class="info" id="suggestInfo">素材載入後會自動依參考圖設定下面的控制項。</p>
+            <p class="info" id="claudeInfo"></p>
+            <div class="row" id="tweakRow" hidden>
+              <input type="text" id="tweakText" class="grow" placeholder="用文字微調，例如：暖一點、膚色更自然、暗部不要太黑">
+              <button type="button" id="tweakBtn">照文字微調</button>
+            </div>
+            <h3>參考色彩</h3>
+            <label class="slider"><span>接近參考程度</span><input type="range" id="adj-match" min="0" max="100" value="50"><output id="adj-match-v">50%</output></label>
+            <label class="slider"><span>參考色彩強度</span><input type="range" id="adj-strength" min="0" max="100" value="100"><output id="adj-strength-v">100%</output></label>
+            <label class="check"><input type="checkbox" id="adj-protect" checked> 保護材質顏色（避免草地、皮膚等被染成別的顏色）</label>
+          </div>
+        </details>
+
+        <details class="cat" id="catTone">
+          <summary>曝光與亮度</summary>
+          <div class="cat-body">
+            <label class="slider"><span>曝光</span><input type="range" id="adj-exposure" min="-200" max="200" value="0"><output id="adj-exposure-v">0</output></label>
+            <label class="slider"><span>對比</span><input type="range" id="adj-contrast" min="-100" max="100" value="0"><output id="adj-contrast-v">0</output></label>
+            <label class="slider"><span>高光</span><input type="range" id="adj-highlights" min="-100" max="100" value="0"><output id="adj-highlights-v">0</output></label>
+            <label class="slider"><span>陰影</span><input type="range" id="adj-shadows" min="-100" max="100" value="0"><output id="adj-shadows-v">0</output></label>
+            <label class="slider"><span>黑位提亮</span><input type="range" id="adj-black" min="0" max="40" value="0"><output id="adj-black-v">0</output></label>
+            <label class="slider"><span>白位</span><input type="range" id="adj-white" min="70" max="100" value="100"><output id="adj-white-v">100</output></label>
+            <p class="info">在滑桿上按兩下可以把該項還原。</p>
+          </div>
+        </details>
+
+        <details class="cat" id="catColour">
+          <summary>色溫、色調與飽和度</summary>
+          <div class="cat-body">
+            <label class="slider"><span>飽和度</span><input type="range" id="adj-saturation" min="-100" max="100" value="0"><output id="adj-saturation-v">0</output></label>
+            <label class="slider"><span>色溫</span><input type="range" id="adj-temperature" min="-100" max="100" value="0"><output id="adj-temperature-v">0</output></label>
+            <label class="slider"><span>色調</span><input type="range" id="adj-tint" min="-100" max="100" value="0"><output id="adj-tint-v">0</output></label>
+            <div id="proSat"></div>
+          </div>
+        </details>
+
+        <details class="cat" id="catZones">
+          <summary>陰影、中間調與高光</summary>
+          <div class="cat-body">
+            <h3>分區色調</h3>
+            <div class="tone-row"><span>陰影</span><input type="range" class="hue" id="adj-shadowHue" min="0" max="359" value="60" aria-label="陰影色相"><input type="range" id="adj-shadowAmt" min="0" max="100" value="0" aria-label="陰影色彩量"><output id="adj-shadowAmt-v">0</output></div>
+            <div class="tone-row"><span>中間調</span><input type="range" class="hue" id="adj-midHue" min="0" max="359" value="60" aria-label="中間調色相"><input type="range" id="adj-midAmt" min="0" max="100" value="0" aria-label="中間調色彩量"><output id="adj-midAmt-v">0</output></div>
+            <div class="tone-row"><span>亮部</span><input type="range" class="hue" id="adj-hiHue" min="0" max="359" value="100" aria-label="亮部色相"><input type="range" id="adj-hiAmt" min="0" max="100" value="0" aria-label="亮部色彩量"><output id="adj-hiAmt-v">0</output></div>
+            <p class="info">每一列：左邊選顏色，右邊調整加入的份量。例如亮部選黃色、份量 30，亮部就會偏黃。</p>
+            <div class="pro" id="proWheels"></div>
+          </div>
+        </details>
+
+        <details class="cat" id="catCurves">
+          <summary>色彩曲線</summary>
+          <div class="cat-body">
+            <div class="curve-editor">
+              <div class="curve-tabs" role="radiogroup" aria-label="曲線通道">
+                <button type="button" role="radio" data-curve="luma" aria-checked="true">亮度</button>
+                <button type="button" role="radio" data-curve="red" aria-checked="false">紅</button>
+                <button type="button" role="radio" data-curve="green" aria-checked="false">綠</button>
+                <button type="button" role="radio" data-curve="blue" aria-checked="false">藍</button>
+                <button type="button" id="curveReset" class="small">重設此曲線</button>
+              </div>
+              <canvas id="curveCanvas" width="320" height="320" aria-label="曲線編輯：上下拖動五個控制點" tabindex="0"></canvas>
+              <p class="info">上下拖動 0%、25%、50%、75%、100% 五個控制點（橫向位置固定，這是調色引擎的曲線結構）。也可以先點一個控制點，再用鍵盤上下鍵微調。背景是目前畫面的亮度分佈。</p>
+            </div>
+            <div class="pro" id="proCurves"></div>
+          </div>
+        </details>
+
+        <details class="cat" id="catLocal">
+          <summary>局部調色及遮罩</summary>
+          <div class="cat-body">
+            <p class="info">AI 遮罩（人物、皮膚、背景）與局部曝光在「光暗設定」裏確認和修改。</p>
+            <div class="row"><button type="button" id="editIntent" disabled>編輯光暗設定與遮罩</button></div>
+            <div class="pro" id="proLocal"></div>
+          </div>
+        </details>
+
+        <details class="cat" id="catFx">
+          <summary>柔光與暗角</summary>
+          <div class="cat-body">
+            <label class="slider"><span>柔光</span><input type="range" id="adj-glow" min="0" max="100" value="0"><output id="adj-glow-v">0</output></label>
+            <label class="slider"><span>柔光範圍</span><input type="range" id="adj-glowRadius" min="0" max="100" value="50"><output id="adj-glowRadius-v">50</output></label>
+            <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
+            <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
+            <p class="info">柔光讓亮部向外擴散；暗角正值壓暗四周、負值提亮四周。這兩項不受「整體調色強度」影響。</p>
+          </div>
+        </details>
+
+        <details class="cat scopes" id="scopes">
+          <summary>示波器</summary>
+          <div class="cat-body">
+            <div class="scope-bar">
+              <label>類型 <select id="scopeKind">
+                <option value="luma">波形圖（亮度）</option>
+                <option value="parade">RGB 分量圖</option>
+                <option value="vector">向量圖</option>
+              </select></label>
+              <label class="check-inline"><input type="checkbox" id="scopeOrig"> 左邊改看原片</label>
+            </div>
+            <div class="scope-pair">
+              <figure><canvas id="scopeMain" width="320" height="180"></canvas><figcaption id="scopeMainCap">目前結果</figcaption></figure>
+              <figure><canvas id="scopeRef" width="320" height="180"></canvas><figcaption>參考圖（中央 70%）</figcaption></figure>
+            </div>
+            <p class="info" id="scopeInfo"></p>
+            <p class="info">波形圖：橫向是畫面位置，縱向是亮度 0–100%；貼到 100% 的平線代表過曝，貼到 0% 代表死黑。RGB 分量圖：三者在亮部高低不同就是偏色。向量圖：離中心越遠越飽和；橙色線是膚色線。</p>
+          </div>
+        </details>
+
+        <details class="cat ai-panel" id="aiPanel">
+          <summary>AI 調色圖（進階）</summary>
+          <div class="cat-body">
+            <p class="info">讓 AI 圖像模型調好一格，網站再反推成調色設定。</p>
+            <section class="gemini" id="geminiBox">
+              <h3>自動生成（使用你自己的 API 金鑰）</h3>
+              <div class="row"><label>服務 <select id="genProvider"><option value="gemini">Google Gemini</option><option value="pollinations">Pollinations</option></select></label></div>
+              <p class="info" id="genProviderInfo"></p>
+              <div class="row">
+                <input type="password" id="geminiKey" placeholder="貼上 Gemini API 金鑰" autocomplete="off" spellcheck="false" class="grow">
+                <button type="button" id="geminiConnect">連線並列出模型</button>
+              </div>
+              <label class="check"><input type="checkbox" id="geminiRemember"> 在這部裝置記住金鑰</label>
+              <div class="row">
+                <label>模型 <select id="geminiModel"><option value="">（先連線）</option></select></label>
+                <label>候選數 <select id="geminiCount"><option>1</option><option selected>2</option><option>3</option></select></label>
+              </div>
+              <label class="check"><input type="checkbox" id="geminiConsent"> 我同意把代表影格和參考圖傳送給 <span id="genProviderName">Google Gemini</span> 處理</label>
+              <div class="row">
+                <button type="button" id="geminiRun" class="primary" disabled>生成調色候選</button>
+                <button type="button" id="geminiStop" hidden>停止</button>
+              </div>
+              <p class="info" id="geminiInfo"></p>
+              <div class="cands" id="geminiCands"></div>
+            </section>
+            <h3 class="ai-manual">或手動：用任何 AI 圖像工具</h3>
+            <ol class="ai-steps">
+              <li>
+                <p>下載代表影格，連同參考圖一起交給你使用的 AI 圖像工具。</p>
+                <button type="button" id="aiDownload">下載代表影格</button>
+              </li>
+              <li>
+                <p>使用這段提示詞（依參考圖的量化數據自動產生，可以自行修改）：</p>
+                <textarea id="aiPrompt" rows="6"></textarea>
+                <button type="button" id="aiCopy">複製提示詞</button>
+              </li>
+              <li>
+                <p>把 AI 調好的圖片上傳到這裏。網站會核對構圖是否相同，再在瀏覽器內反推出調色設定，不會上傳任何檔案。</p>
+                <label class="drop"><input type="file" id="aiInput" accept="image/*"><span>上傳 AI 調色後的影格</span></label>
+                <p class="info" id="aiResult"></p>
+              </li>
+            </ol>
+          </div>
+        </details>
+
+        <details class="cat" id="catExport">
+          <summary>匯出設定</summary>
+          <div class="cat-body">
+            <h3 id="exportKindTitle">影片</h3>
+            <p class="info" id="exportVideoInfo">MP4（H.264），長邊最多 1280 像素；原片的 AAC 音軌會原樣保留，不重新編碼。按下方「匯出影片」下載目前的處理結果。</p>
+            <p class="info" id="exportPhotoInfo" hidden>JPEG（品質 95%），長邊最多 4096 像素，比這更大的照片會等比例縮小。按下方「匯出照片」下載目前的處理結果。</p>
+            <div class="row"><button type="button" id="reprocess" disabled>以目前設定重新處理</button></div>
+            <p class="info" id="resultInfo"></p>
+            <h3>LUT</h3>
+            <div class="row"><button type="button" id="exportCube">匯出 .cube LUT</button></div>
+            <p class="info" id="cubeInfo">匯出的 LUT 包含全畫面調色（可在 DaVinci Resolve、剪映等軟體套用）；局部調色、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。</p>
+          </div>
+        </details>
+      </div>
+    </div>
+
+    <div class="panel-actions" id="panelActions">
+      <p class="info" id="adjState"></p>
+      <div class="action-row">
+        <button type="button" id="adjReset">全部歸零</button>
+        <button type="button" id="adjApply" class="primary">套用並處理影片</button>
+        <button type="button" id="exportBtn" class="primary" disabled>匯出影片</button>
+      </div>
+    </div>
+  </aside>
 </main>
 
 <dialog id="intentDialog">
@@ -222,7 +319,7 @@
           <figure><figcaption>代表影格（遮罩疊色）<span id="maskLabel"></span></figcaption><canvas id="maskCanvas"></canvas></figure>
           <figure><figcaption>處理預覽（以目前已確認的選區實際運算）</figcaption><canvas id="previewCanvas"></canvas></figure>
         </div>
-        <label class="row">代表影格時間 <input type="range" id="frameTime" min="0" max="1000" value="500" class="grow"></label>
+        <label class="row" id="frameTimeRow">代表影格時間 <input type="range" id="frameTime" min="0" max="1000" value="500" class="grow"></label>
         <div class="brush row" id="brushBar">
           <span>修正選區：</span>
           <label><input type="radio" name="brush" value="add" checked> 加筆</label>

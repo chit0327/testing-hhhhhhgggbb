@@ -86,9 +86,13 @@ export async function probeVideo(file) {
     if (d.length >= 3) { info.fps = snapFps(1 / d[Math.floor(d.length / 2)]); info.fpsMeasured = true; }
   }
   else { await video.play().catch(() => {}); video.pause(); } // iOS decodes pictures only after a play
-  info.frameCount = Math.max(1, Math.floor(info.duration * info.fps + 1e-6));
+  info.frameCount = frameCountOf(info.duration, info.fps);
   return info;
 }
+
+/** Frames in a clip: the browser gives the duration to the microsecond (8.708333 s × 24 = 208.99999 for 209
+ * frames), so a hundredth of a frame of tolerance; a partial last frame (dog: 289.63) is not counted. */
+export const frameCountOf = (duration, fps) => Math.max(1, Math.floor(duration * fps + 0.01));
 
 // measured rates are snapped to the standard ones (exact NTSC fractions: 29.97 is 30000/1001)
 const STANDARD_FPS = [24000 / 1001, 24, 25, 30000 / 1001, 30, 48, 50, 60000 / 1001, 60];
@@ -136,8 +140,13 @@ export const canvas2d = (w, h) => { // OffscreenCanvas where it is dependable, e
 
 const locks = new WeakMap(); // one seek+draw at a time per <video> (analysis, dialog and job share it)
 
-/** Grab the frame at time t, scaled to w×h, as ImageData. */
+/** Grab the frame at time t, scaled to w×h, as ImageData. A photo source (ImageBitmap) has one frame: t is ignored. */
 export function grabFrame(video, t, w, h, canvas = canvas2d(w, h)) {
+  if (typeof video.play !== 'function') { // photo
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(video, 0, 0, w, h);
+    return Promise.resolve(ctx.getImageData(0, 0, w, h));
+  }
   const run = async () => {
     await seek(video, t);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -153,6 +162,36 @@ export function grabFrame(video, t, w, h, canvas = canvas2d(w, h)) {
   const p = (locks.get(video) || Promise.resolve()).then(run, run);
   locks.set(video, p.catch(() => {}));
   return p;
+}
+
+/**
+ * A photo as the target: the same meta shape as a video with one frame (so analysis, the Lighting Intent
+ * dialog and every preview work unchanged); `video` is the decoded ImageBitmap (EXIF orientation applied).
+ */
+export async function probeImage(file) {
+  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
+  return { kind: 'image', video: bmp, url: URL.createObjectURL(file), width: bmp.width, height: bmp.height, duration: 1, fps: 1, fpsMeasured: true, frameCount: 1 };
+}
+
+/**
+ * Grade a photo: the same worker job as one video frame (confirmed intent, look, AI segmentation for the local
+ * grade and skin protection), at up to maxSide on the long side, encoded as JPEG (quality 0.95).
+ * Returns {blob, width, height, intentHash, lookHash, jobRegions, imageData, source}.
+ */
+export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, maskH, maxSide = 4096 }) {
+  const { w, h } = fitSize(meta.width, meta.height, maxSide);
+  const img = await grabFrame(meta.video, 0, w, h);
+  let seg = null;
+  if (needsSeg) { const sc = canvas2d(256, Math.round(256 * h / w)); sc.getContext('2d').drawImage(meta.video, 0, 0, sc.width, sc.height); seg = segmentFn(sc, MASK_W, maskH); }
+  const jobId = `photo${Date.now().toString(36)}`;
+  const started = await engine.startJob(jobId, intentJson, look);
+  try {
+    const r = await engine.render(img, { jobId, index: 0, seg, grade: true });
+    if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
+    const c = canvas2d(w, h); c.getContext('2d').putImageData(r.imageData, 0, 0);
+    const blob = c.convertToBlob ? await c.convertToBlob({ type: 'image/jpeg', quality: 0.95 }) : await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.95));
+    return { blob, width: w, height: h, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, imageData: r.imageData, source: img };
+  } finally { engine.endJob(jobId); }
 }
 
 export function fitSize(w, h, maxSide) {

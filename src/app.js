@@ -6,25 +6,25 @@ import {
 } from './engine/intent.js';
 import { rawMask } from './engine/regionmasks.js';
 import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
-import { EngineClient, probeVideo, grabFrame, fitSize, loadImage, imageDataOf, processVideo, seek, frameTime, canvas2d } from './pipeline.js';
+import { EngineClient, probeVideo, probeImage, grabFrame, fitSize, loadImage, imageDataOf, processVideo, processPhoto, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure, toCube } from './engine/grade.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
-import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
+import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { keyStore, listImageModels, geminiRegrade, nearestRatio } from './gemini.js';
 import { pollinationsKeyStore, listEditModels, pollinationsRegrade } from './pollinations.js';
 import { suggestLook, promptFor } from './engine/suggest.js';
-import { oklabToSrgb } from './engine/color.js';
+import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
 const $ = (id) => document.getElementById(id);
 const engine = new EngineClient();
 
 const PHASE_TEXT = {
-  idle: '請先上傳參考圖片和目標影片', loading: '素材載入中…', analysing: '正在分析參考圖片與影片…',
+  idle: '請先上傳參考圖片和要調色的影片或照片', loading: '素材載入中…', analysing: '正在分析參考圖片與影片…',
   draft: '草稿設定：請在光暗設定視窗中確認', unset: '尚未確認光暗設定（按「重新設定光暗」開始）',
-  confirmed: '已確認設定，準備處理…', processing: '正在處理影片…', done: '已完成處理',
+  confirmed: '已確認設定，準備處理…', processing: '正在處理…', done: '已完成處理',
   exporting: '匯出中…', exported: '匯出完成', error: '發生錯誤',
 };
 
@@ -49,6 +49,7 @@ window.__app = { S, hashIntent, engine };
 const AUTOFIT_V2 = new URLSearchParams(location.search).has('v2'); // grey balance + absent colours kept (under evaluation)
 const AUTOFIT_V3 = new URLSearchParams(location.search).has('v3'); // v2 + tone from the look prior, not the reference content (under evaluation)
 const AUTOFIT_WHITE = !new URLSearchParams(location.search).has('nowhite'); // white point matched to the reference's white (default since round-3 blind rating; ?nowhite = before)
+const SKIN_KEEP = new URLSearchParams(location.search).has('skinkeep'); // skin protection keeps the original colour (before the skin-line change)
 const AUTOFIT_BALANCE = new URLSearchParams(location.search).has('balance'); // correction (white balance of the shot) before the grade (under evaluation)
 const log = (ev, data = {}) => { S.log.push({ ev, t: Date.now(), ...data }); };
 
@@ -91,37 +92,47 @@ $('videoInput').addEventListener('change', async (e) => {
   const id = ++S.video.id;
   S.video = { status: 'loading', id };
   $('videoInfo').textContent = '載入中…';
+  const photo = file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|avif)$/i.test(file.name);
   try {
-    if (!file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v)$/i.test(file.name)) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇影片`);
-    const meta = await probeVideo(file);
+    if (!photo && !file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v)$/i.test(file.name)) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇影片或照片`);
+    const meta = photo ? await probeImage(file) : await probeVideo(file);
     if (id !== S.video.id) return;
     S.video = { status: 'ready', id, file, meta };
-    const v = $('videoPreview');
-    v.src = meta.url; v.hidden = false;
-    $('videoInfo').textContent = `${file.name}　${meta.width}×${meta.height}　${meta.duration.toFixed(2)} 秒　${meta.fps} fps${meta.fpsMeasured ? '' : '（無法測得，假設值）'}　約 ${meta.frameCount} 格`
-      + (meta.duration > 60 ? '　⚠ 第一版建議 60 秒以內' : '');
-    log('video-loaded', { name: file.name, fps: meta.fps, frames: meta.frameCount });
+    showTargetPreview(meta);
+    if (photo) {
+      $('videoInfo').textContent = `${file.name}　照片　${meta.width}×${meta.height}` + (Math.max(meta.width, meta.height) > 4096 ? '　（匯出時長邊縮為 4096）' : '');
+      log('photo-loaded', { name: file.name, w: meta.width, h: meta.height });
+    } else {
+      $('videoInfo').textContent = `${file.name}　${meta.width}×${meta.height}　${meta.duration.toFixed(2)} 秒　${meta.fps} fps${meta.fpsMeasured ? '' : '（無法測得，假設值）'}　約 ${meta.frameCount} 格`
+        + (meta.duration > 60 ? '　⚠ 第一版建議 60 秒以內' : '');
+      log('video-loaded', { name: file.name, fps: meta.fps, frames: meta.frameCount });
+    }
   } catch (err) {
     S.video = { status: 'error', id };
-    $('videoInfo').textContent = `無法載入影片：${err.message}（瀏覽器可能不支援此編碼）`;
+    showTargetPreview(null);
+    $('videoInfo').textContent = photo ? `無法載入照片：${err.message}（瀏覽器可能不支援此格式）` : `無法載入影片：${err.message}（瀏覽器可能不支援此編碼）`;
   }
   assetsChanged('video');
 });
 
 async function assetsChanged(which) {
   const key = pairKey();
+  updateStart();
   if (!key) { setPhase(S.ref.status === 'loading' || S.video.status === 'loading' ? 'loading' : 'idle'); return; }
   // new pair: old results no longer valid; a new video also invalidates masks (geometry/content changed)
-  S.output = null; $('resultCard').hidden = true; $('adjustCard').hidden = true;
+  S.output = null; setAdjustVisible(false); resetResultViews();
   if (which === 'video') { S.intent.confirmed = null; S.rep = null; clearAiPair(); }
   updateIntentCard();
   $('openIntent').disabled = false;
-  if (S.grade.pair !== key) fitGrade(key);
-  if (S.promptedPair !== key) { // auto-open exactly once per newly loaded pair
-    S.promptedPair = key;
-    log('dialog-auto-open', { pair: key });
-    openDialog();
-  }
+  if (S.grade.pair !== key) fitGrade(key); // analysis starts while the user is still on the upload page
+  if (S.page === 'work') promptOnce();
+}
+function promptOnce() { // auto-open the Lighting Intent dialog exactly once per newly loaded pair
+  const key = pairKey();
+  if (!key || S.promptedPair === key) return;
+  S.promptedPair = key;
+  log('dialog-auto-open', { pair: key });
+  openDialog();
 }
 
 function fitGrade(key) {
@@ -137,7 +148,7 @@ function fitGrade(key) {
     const ref = S.ref.imageData;
     const r = await engine.fit(frames, { data: ref.data, width: ref.width, height: ref.height }, { v2: AUTOFIT_V2, v3: AUTOFIT_V3, white: AUTOFIT_WHITE, balance: AUTOFIT_BALANCE });
     S.grade.stats = { src: r.src, ref: r.ref, palette: r.palette };
-    S.grade.cands = r.candidates || [];
+    S.grade.cands = (r.candidates || []).map((c) => (SKIN_KEEP ? { ...c, prim: { ...c.prim, skinLine: 0 } } : c));
     S.grade.refBands = bandColours(S.ref.imageData.data, S.ref.imageData.width, S.ref.imageData.height, { centre: 0.7, skipWhite: true });
     log('autofit', { ms: Math.round(r.autofitMs || 0), modes: S.grade.cands.map((c) => c.mode) });
     $('aiPrompt').value = promptFor(r.ref, r.palette);
@@ -423,6 +434,7 @@ $('confirmIntent').onclick = async () => {
   log('intent-confirmed', { hash: hashIntent(S.intent.confirmed) });
   setPhase('confirmed');
   updateIntentCard();
+  $('editIntent').disabled = false;
   showAdjustCard();
   if (withClaude) await runClaude();
   startProcessing();
@@ -496,7 +508,7 @@ function syncAdjustControls() {
 function updateAdjState() {
   const dirty = !S.look.applied || JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
   $('adjState').textContent = !S.intent.confirmed ? '確認光暗設定後即可處理影片。'
-    : dirty ? '調整尚未套用到影片：按「套用並處理影片」產生新的結果。' : '影片已使用目前的調整。';
+    : dirty ? `調整尚未套用：按「${isPhoto() ? '套用並處理照片' : '套用並處理影片'}」產生新的結果。` : `${isPhoto() ? '照片' : '影片'}已使用目前的調整。`;
   $('adjApply').disabled = !S.intent.confirmed || S.phase === 'processing';
 }
 for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
@@ -589,7 +601,7 @@ function proSlider(parent, { min, max, value, label, get, set }) {
   return el;
 }
 function buildPro() {
-  const root = $('proControls');
+  let root = $('proLocal');
   const h4 = (t) => { const e = document.createElement('h4'); e.textContent = t; root.appendChild(e); };
   h4('自動步驟：LOG／平面素材還原（自動偵測，0 = 不還原）與局部調色');
   const nrow = document.createElement('div'); nrow.className = 'hue-row';
@@ -597,6 +609,7 @@ function buildPro() {
   proSlider(nrow, { min: 0, max: 100, value: 0, label: '還原強度', get: (p) => (p.norm ? p.norm.amt : 0) * 100, set: (p, v) => { p.norm = { ...(p.norm || { m: 0.5, Tm: 0.5, s: 1, sat: 1 }), amt: v / 100 }; } });
   proSlider(nrow, { min: 0, max: 100, value: 100, label: '自動局部調色（皮膚、背景）', get: (p) => (p.localAmt ?? 1) * 100, set: (p, v) => { p.localAmt = v / 100; } });
   root.appendChild(nrow);
+  root = $('proWheels');
   h4('色輪（Lift 暗部／Gamma 中間調／Gain 亮部／Offset 整體）');
   for (const [k, name] of [['lift', 'Lift'], ['gamma', 'Gamma'], ['gain', 'Gain'], ['offset', 'Offset']]) {
     const row = document.createElement('div'); row.className = 'wheel-row';
@@ -607,6 +620,7 @@ function buildPro() {
     proSlider(row, { min: 0, max: 100, value: 0, label: '份量', get: (p) => p[k].a * 100, set: (p, v) => { p[k].a = v / 100; } });
     root.appendChild(row);
   }
+  root = $('proCurves');
   h4('曲線（0%／25%／50%／75%／100% 的輸出）');
   for (const [k, name] of [['luma', '亮度'], ['red', '紅'], ['green', '綠'], ['blue', '藍']]) {
     const row = document.createElement('div'); row.className = 'curve-row';
@@ -623,20 +637,27 @@ function buildPro() {
     proSlider(row, { min: -15, max: 15, value: 0, label: '亮度', get: (p) => p.hueLum[i] * 100, set: (p, v) => { p.hueLum[i] = v / 100; } });
     root.appendChild(row);
   });
-  h4('其他');
+  root = $('proSat');
+  h4('專業調色');
   const row = document.createElement('div'); row.className = 'hue-row';
   row.appendChild(document.createElement('span'));
   proSlider(row, { min: -100, max: 100, value: 0, label: '整體飽和度', get: (p) => p.sat * 100, set: (p, v) => { p.sat = v / 100; } });
-  proSlider(row, { min: 0, max: 100, value: 0, label: '膚色保護（AI 皮膚遮罩）', get: (p) => p.skin * 100, set: (p, v) => { p.skin = v / 100; } });
   root.appendChild(row);
+  root = $('proLocal');
+  h4('膚色保護');
+  const srow = document.createElement('div'); srow.className = 'hue-row';
+  srow.appendChild(document.createElement('span'));
+  proSlider(srow, { min: 0, max: 100, value: 0, label: '膚色保護（AI 皮膚遮罩）', get: (p) => p.skin * 100, set: (p, v) => { p.skin = v / 100; } });
+  root.appendChild(srow);
   const stops = [];
   for (let hh = 0; hh <= 360; hh += 30) { const c = oklabToSrgb(0.72, 0.12 * Math.cos(hh * Math.PI / 180), 0.12 * Math.sin(hh * Math.PI / 180)); stops.push(`rgb(${c.map((v) => Math.round(v * 255)).join(',')}) ${(hh / 360 * 100).toFixed(1)}%`); }
-  for (const el of root.querySelectorAll('input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
+  for (const el of document.querySelectorAll('.pro input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
 }
 buildPro();
 function syncPro() {
   const p = S.look.draft.prim || neutralPrim();
   for (const c of PRO) c.el.value = Math.round(c.get(p));
+  drawCurve();
 }
 $('exportCube').onclick = async () => {
   try {
@@ -979,7 +1000,7 @@ $('scopes').addEventListener('toggle', drawScopes);
 $('scopeKind').addEventListener('change', drawScopes);
 $('scopeOrig').addEventListener('change', drawScopes);
 
-function showAdjustCard() { $('adjustCard').hidden = false; syncAdjustControls(); scheduleAdjPreview(); renderCands(); }
+function showAdjustCard() { setAdjustVisible(true); syncAdjustControls(); scheduleAdjPreview(); renderCands(); }
 
 async function startProcessing() {
   const intent = S.intent.confirmed;
@@ -988,16 +1009,17 @@ async function startProcessing() {
   await S.grade.ready;
   // the automatic look includes the local grade: wait for it (bounded) if it is still being fitted
   if (S.look.auto && S.ai.status === 'ready') await Promise.race([fitLocalGrade(), new Promise((r) => setTimeout(r, 20000))]);
-  S.look.applied = { ...S.look.draft };
+  S.look.applied = JSON.parse(JSON.stringify(S.look.draft)); // deep: pro controls edit look.prim in place
   setPhase('processing');
   updateAdjState();
-  $('resultCard').hidden = false; $('progressWrap').hidden = false;
+  $('progressWrap').hidden = false;
   for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = true;
   const regs = effectiveRegions(intent);
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const ap = S.look.applied.prim;
   const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local));
   if (needsSeg) await initSegmenter();
+  if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   try {
     const res = await processVideo({
       engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH,
@@ -1021,12 +1043,15 @@ async function startProcessing() {
     setPhase('done');
     updateAdjState();
     for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = false;
-    $('wipe').hidden = false;
+    $('progressWrap').hidden = true;
+    $('tabResult').disabled = false; $('tabWipe').disabled = false;
+    showView('result');
     drawWipe();
   } catch (err) {
     if (token !== S.job.token) return;
     log('processing-failed', { message: err.message });
     setPhase('error', err.message);
+    $('progressWrap').hidden = true;
     for (const id of ['reprocess', 'editIntent']) $(id).disabled = false;
   }
 }
@@ -1043,6 +1068,15 @@ $('origVideo').addEventListener('timeupdate', () => {
 
 async function drawWipe() {
   if (!S.output) return;
+  if (S.output.kind === 'image') { // photo: original | result, same size, no time axis
+    const c = $('wipeCanvas'), w = S.output.width, h = S.output.height, x = Math.round($('wipePos').value / 100 * w);
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.putImageData(S.output.source, 0, 0);
+    ctx.putImageData(S.output.imageData, 0, 0, x, 0, w - x, h);
+    ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
+    return;
+  }
   const a = $('origVideo'), b = $('outVideo');
   const t = $('cmpTime').value / 1000 * Math.min(a.duration || S.video.meta.duration, b.duration || S.video.meta.duration);
   await Promise.all([seek(a, Math.max(0, t - 1e-3)), seek(b, Math.max(0, t - 1e-3))]);
@@ -1059,7 +1093,7 @@ $('wipePos').addEventListener('input', drawWipe);
 $('exportBtn').onclick = async () => {
   if (!S.output) return;
   setPhase('exporting');
-  const name = `${S.video.file.name.replace(/\.[^.]+$/, '')}_graded_${S.output.intentHash}.mp4`;
+  const name = `${S.video.file.name.replace(/\.[^.]+$/, '')}_graded_${S.output.intentHash}.${S.output.kind === 'image' ? 'jpg' : 'mp4'}`;
   try {
     // inside a claude.ai artifact plain download links are blocked; the platform's save dialog is used instead
     const downloads = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
@@ -1077,4 +1111,222 @@ $('exportBtn').onclick = async () => {
   }
 };
 
+// ------------------------------------------------------------------ pages, upload controls, workspace views
+S.page = 'upload';
+function showPage(p) {
+  S.page = p;
+  $('pageUpload').hidden = p !== 'upload';
+  $('pageWork').hidden = p !== 'work';
+  $('backToUpload').hidden = p !== 'work';
+  document.body.classList.toggle('is-work', p === 'work');
+  log('page', { page: p });
+  if (p === 'work') {
+    if (!$('adjustCard').hidden) scheduleAdjPreview(); // the canvas was not drawn while the page was hidden
+    promptOnce();
+  }
+}
+function updateStart() {
+  const ready = !!pairKey(), loading = S.ref.status === 'loading' || S.video.status === 'loading';
+  $('startBtn').disabled = !ready;
+  $('startHint').textContent = ready ? '素材已就緒，可以開始調色。' : loading ? '素材載入中…'
+    : S.ref.status !== 'ready' && S.video.status !== 'ready' ? '請上傳參考圖片，以及要調色的影片或照片。'
+    : S.ref.status !== 'ready' ? '還需要一張參考圖片。' : '還需要要調色的影片或照片。';
+  for (const k of ['ref', 'video']) $(`${k}Actions`).hidden = S[k].status !== 'ready' && S[k].status !== 'error';
+  $('refDrop').classList.toggle('has-file', S.ref.status === 'ready');
+  $('videoDrop').classList.toggle('has-file', S.video.status === 'ready');
+}
+$('startBtn').onclick = () => { if (pairKey()) showPage('work'); };
+$('backToUpload').onclick = () => showPage('upload');
+$('stageIntent').onclick = () => openDialog();
+for (const k of ['ref', 'video']) {
+  const input = $(`${k}Input`), zone = $(`${k}Drop`);
+  $(`${k}Replace`).onclick = () => input.click();
+  zone.addEventListener('dragover', (e) => { e.preventDefault(); zone.classList.add('drag'); });
+  zone.addEventListener('dragleave', () => zone.classList.remove('drag'));
+  zone.addEventListener('drop', (e) => { // a dropped file goes through the same loader as a picked one
+    e.preventDefault(); zone.classList.remove('drag');
+    if (!e.dataTransfer.files.length) return;
+    const dt = new DataTransfer(); dt.items.add(e.dataTransfer.files[0]);
+    input.files = dt.files;
+    input.dispatchEvent(new Event('change'));
+  });
+}
+for (const ev of ['dragover', 'drop']) window.addEventListener(ev, (e) => e.preventDefault()); // a stray drop must not navigate away
+$('videoPreview').addEventListener('loadedmetadata', (e) => { if (e.target.currentTime === 0) e.target.currentTime = Math.min(0.1, e.target.duration / 2); }); // show a frame, not black
+$('refRemove').onclick = () => {
+  S.ref = { status: 'empty', id: S.ref.id + 1 };
+  $('refInput').value = ''; $('refPreview').hidden = true; $('refPreview').removeAttribute('src'); $('refInfo').textContent = '';
+  log('ref-removed');
+  assetsChanged('ref');
+};
+$('videoRemove').onclick = () => {
+  S.job.token++; // drop any processing still running for this video
+  S.video = { status: 'empty', id: S.video.id + 1 };
+  S.output = null; S.intent.confirmed = null; S.rep = null; clearAiPair();
+  setAdjustVisible(false); resetResultViews(); updateIntentCard();
+  showTargetPreview(null);
+  $('videoInput').value = ''; $('videoInfo').textContent = '';
+  log('video-removed');
+  assetsChanged('video');
+};
+function setAdjustVisible(on) {
+  $('adjustCard').hidden = !on;
+  $('stageEmpty').hidden = on;
+  $('adjCanvas').hidden = !on;
+}
+function resetResultViews() {
+  $('tabResult').disabled = true; $('tabWipe').disabled = true; $('progressWrap').hidden = true;
+  $('exportBtn').disabled = true;
+  showView('preview');
+}
+const VIEWS = { preview: ['tabPreview', 'viewPreview'], result: ['tabResult', 'resultCard'], wipe: ['tabWipe', 'wipe'] };
+function showView(name) {
+  for (const [k, [tab, view]] of Object.entries(VIEWS)) { $(view).hidden = k !== name; $(tab).setAttribute('aria-selected', String(k === name)); }
+  if (name !== 'result') for (const id of ['origVideo', 'outVideo']) $(id).pause();
+  if (name === 'wipe') drawWipe();
+  if (name === 'preview') drawAdj();
+}
+for (const [k, [tab]] of Object.entries(VIEWS)) $(tab).onclick = () => showView(k);
+// changing a control while a processed result is shown: switch back to the live preview so the change is visible
+$('adjustCard').addEventListener('input', (e) => { if (e.target.matches('input[type=range], input[type=checkbox], input[type=radio]') && $('viewPreview').hidden) showView('preview'); });
+$('candBox').addEventListener('click', () => { if ($('viewPreview').hidden) showView('preview'); });
+// ---- photos as the target: one frame, same engine job, JPEG out
+const isPhoto = () => !!(S.video.meta && S.video.meta.kind === 'image');
+function showTargetPreview(meta) {
+  const v = $('videoPreview'), im = $('photoPreview'), photo = !!(meta && meta.kind === 'image');
+  if (!meta || photo) { v.pause(); v.hidden = true; if (v.getAttribute('src')) { v.removeAttribute('src'); v.load(); } }
+  else { v.src = meta.url; v.hidden = false; }
+  if (photo) { im.src = meta.url; im.hidden = false; } else { im.hidden = true; im.removeAttribute('src'); }
+  syncKindLabels();
+}
+function syncKindLabels() { // wording and controls that only make sense for one kind of target
+  const photo = isPhoto();
+  $('frameTimeRow').hidden = photo;
+  $('tabResult').textContent = photo ? '處理結果照片' : '處理結果影片';
+  $('origCap').textContent = photo ? '原始照片' : '原始影片'; $('outCap').textContent = photo ? '調色後照片' : '處理後影片';
+  for (const id of ['origVideo', 'outVideo']) $(id).hidden = photo;
+  for (const id of ['origPhoto', 'outPhoto']) $(id).hidden = !photo;
+  $('syncPlay').hidden = photo; $('cmpTimeRow').hidden = photo;
+  $('exportBtn').textContent = photo ? '匯出照片' : '匯出影片';
+  $('adjApply').textContent = photo ? '套用並處理照片' : '套用並處理影片';
+  $('exportKindTitle').textContent = photo ? '照片' : '影片';
+  $('exportVideoInfo').hidden = photo; $('exportPhotoInfo').hidden = !photo;
+  $('reprocess').textContent = '以目前設定重新處理';
+}
+async function processPhotoJob(intent, token, needsSeg) {
+  try {
+    const res = await processPhoto({ engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH, look: S.look.applied });
+    if (token !== S.job.token) return;
+    if (S.output) URL.revokeObjectURL(S.output.url);
+    S.output = { ...res, kind: 'image', url: URL.createObjectURL(res.blob), confirmedHash: hashIntent(intent) };
+    $('origPhoto').src = S.video.meta.url; $('outPhoto').src = S.output.url;
+    $('resultInfo').textContent = `照片 ${res.width}×${res.height}，JPEG，${(res.blob.size / 1e6).toFixed(1)} MB。`
+      + `處理引擎回報的光暗設定雜湊 ${res.intentHash}${res.intentHash === S.output.confirmedHash ? '（與確認的設定一致）' : '（⚠ 不一致）'}，色彩設定雜湊 ${res.lookHash}（${describeLook(S.look.applied)}）`
+      + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`;
+    log('processing-done', { frames: 1, photo: true, hash: res.intentHash, size: res.blob.size });
+    setPhase('done');
+    updateAdjState();
+    for (const id of ['exportBtn', 'reprocess', 'editIntent']) $(id).disabled = false;
+    $('progressWrap').hidden = true;
+    $('tabResult').disabled = false; $('tabWipe').disabled = false;
+    showView('result');
+    drawWipe();
+  } catch (err) {
+    if (token !== S.job.token) return;
+    log('processing-failed', { message: err.message });
+    setPhase('error', err.message);
+    $('progressWrap').hidden = true;
+    for (const id of ['reprocess', 'editIntent']) $(id).disabled = false;
+  }
+}
+
+// ---- curve editor: drag the five knots of the engine's curves (fixed x at 0/25/50/75/100 %) up and down
+const CURVE_COL = { luma: '#e8e8ec', red: '#ff6b6b', green: '#5fd38d', blue: '#62a8ff' };
+const curve = { ch: 'luma', sel: null, drag: false, hist: null, histFor: null };
+function curveHist() { // tone distribution of the original representative frame, for the editor's background
+  const img = S.rep && S.rep.img;
+  if (!img) return null;
+  const key = `${curve.ch}|${S.rep.t}|${img.width}`;
+  if (curve.histFor === key) return curve.hist;
+  const h = new Float32Array(64), d = img.data, l = [0, 0, 0], k = { red: 0, green: 1, blue: 2 }[curve.ch];
+  for (let i = 0; i < d.length; i += 16) {
+    const v = k === undefined ? srgbToOklab(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255, l)[0] : d[i + k] / 255;
+    h[Math.min(63, Math.floor(v * 64))]++;
+  }
+  const mx = Math.max(...h) || 1; for (let i = 0; i < 64; i++) h[i] = Math.sqrt(h[i] / mx);
+  curve.hist = h; curve.histFor = key; return h;
+}
+function drawCurve() {
+  const c = $('curveCanvas');
+  if (!c || !c.offsetWidth) return; // collapsed: drawn when opened
+  const dpr = window.devicePixelRatio || 1, W = Math.round(c.offsetWidth * dpr);
+  if (c.width !== W) { c.width = W; c.height = W; }
+  const ctx = c.getContext('2d'), p = S.look.draft.prim || neutralPrim(), ys = p[curve.ch], pad = 14 * dpr, s = W - 2 * pad;
+  const X = (x) => pad + x * s, Y = (y) => pad + (1 - y) * s;
+  ctx.clearRect(0, 0, W, W);
+  const h = curveHist();
+  if (h) { ctx.fillStyle = 'rgba(255,255,255,0.10)'; for (let i = 0; i < 64; i++) { const bh = h[i] * s; ctx.fillRect(X(i / 64), pad + s - bh, s / 64 + 0.5, bh); } }
+  ctx.strokeStyle = 'rgba(255,255,255,0.14)'; ctx.lineWidth = dpr;
+  for (const t of CURVE_X) { ctx.beginPath(); ctx.moveTo(X(t), Y(0)); ctx.lineTo(X(t), Y(1)); ctx.moveTo(X(0), Y(t)); ctx.lineTo(X(1), Y(t)); ctx.stroke(); }
+  ctx.setLineDash([4 * dpr, 4 * dpr]); ctx.beginPath(); ctx.moveTo(X(0), Y(0)); ctx.lineTo(X(1), Y(1)); ctx.stroke(); ctx.setLineDash([]);
+  const f = curveFn(ys); // exactly the function the engine applies (monotone cubic through the knots)
+  ctx.strokeStyle = CURVE_COL[curve.ch]; ctx.lineWidth = 2 * dpr; ctx.beginPath();
+  for (let i = 0; i <= 128; i++) { const x = i / 128, y = Math.min(1.05, Math.max(-0.05, f(x))); i ? ctx.lineTo(X(x), Y(y)) : ctx.moveTo(X(x), Y(y)); }
+  ctx.stroke();
+  CURVE_X.forEach((x, i) => {
+    ctx.beginPath(); ctx.arc(X(x), Y(Math.min(1.05, Math.max(-0.05, ys[i]))), (curve.sel === i ? 7 : 5) * dpr, 0, Math.PI * 2);
+    ctx.fillStyle = curve.sel === i ? CURVE_COL[curve.ch] : '#1b1b1e'; ctx.fill(); ctx.strokeStyle = CURVE_COL[curve.ch]; ctx.lineWidth = 2 * dpr; ctx.stroke();
+  });
+}
+function setKnot(i, v) { // same path as the curve sliders: look.prim, auto-follow off, live preview
+  const p = proPrim(), ys = p[curve.ch];
+  const lo = i > 0 ? ys[i - 1] : -0.05, hi = i < 4 ? ys[i + 1] : 1.05; // keep the curve monotone (the engine flattens a dip anyway)
+  ys[i] = Math.round(Math.min(hi, Math.max(lo, Math.min(1.05, Math.max(-0.05, v)))) * 100) / 100;
+  S.look.auto = false;
+  syncPro(); updateAdjState(); scheduleAdjPreview();
+  log('curve-edited', { ch: curve.ch, i, v: ys[i] });
+}
+function curvePos(e) { const b = $('curveCanvas').getBoundingClientRect(), s = b.width - 28; return { x: (e.clientX - b.left - 14) / s, y: 1 - (e.clientY - b.top - 14) / s }; } // 14 px inset, as drawn
+$('curveCanvas').addEventListener('pointerdown', (e) => {
+  const { x } = curvePos(e);
+  let best = 0; CURVE_X.forEach((cx, i) => { if (Math.abs(cx - x) < Math.abs(CURVE_X[best] - x)) best = i; });
+  curve.sel = best; curve.drag = true; $('curveCanvas').setPointerCapture(e.pointerId); $('curveCanvas').focus({ preventScroll: true }); // a scroll would move the curve under the pointer
+  setKnot(best, curvePos(e).y);
+});
+$('curveCanvas').addEventListener('pointermove', (e) => { if (curve.drag) setKnot(curve.sel, curvePos(e).y); });
+$('curveCanvas').addEventListener('pointerup', () => { curve.drag = false; });
+$('curveCanvas').addEventListener('keydown', (e) => {
+  if (curve.sel === null) curve.sel = 2;
+  const d = { ArrowUp: 0.01, ArrowDown: -0.01, PageUp: 0.05, PageDown: -0.05 }[e.key];
+  if (d) { e.preventDefault(); setKnot(curve.sel, proPrim()[curve.ch][curve.sel] + d); }
+  else if (e.key === 'ArrowLeft' || e.key === 'ArrowRight') { e.preventDefault(); curve.sel = Math.max(0, Math.min(4, curve.sel + (e.key === 'ArrowRight' ? 1 : -1))); drawCurve(); }
+});
+const resetCurve = () => { proPrim()[curve.ch] = CURVE_X.slice(); S.look.auto = false; syncPro(); updateAdjState(); scheduleAdjPreview(); log('curve-reset', { ch: curve.ch }); };
+$('curveCanvas').addEventListener('dblclick', resetCurve);
+$('curveReset').onclick = resetCurve;
+for (const b of document.querySelectorAll('[data-curve]')) b.onclick = () => {
+  curve.ch = b.dataset.curve; curve.sel = null;
+  for (const o of document.querySelectorAll('[data-curve]')) o.setAttribute('aria-checked', String(o === b));
+  drawCurve();
+};
+$('catCurves').addEventListener('toggle', drawCurve);
+window.addEventListener('resize', drawCurve);
+
+// ---- interface colour: off-white or dark grey; the viewer's choice is remembered on this device
+const THEME_KEY = 'zhaoyang-theme';
+function applyTheme(choice) {
+  if (choice === 'light' || choice === 'dark') document.documentElement.dataset.theme = choice;
+  else delete document.documentElement.dataset.theme;
+  const eff = choice || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+  for (const b of document.querySelectorAll('[data-theme-choice]')) b.setAttribute('aria-checked', String(b.dataset.themeChoice === eff));
+}
+for (const b of document.querySelectorAll('[data-theme-choice]')) b.onclick = () => {
+  applyTheme(b.dataset.themeChoice);
+  try { localStorage.setItem(THEME_KEY, b.dataset.themeChoice); } catch {}
+  log('theme', { theme: b.dataset.themeChoice });
+};
+applyTheme((() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })());
+
+setAdjustVisible(false);
+updateStart();
 setPhase('idle');
