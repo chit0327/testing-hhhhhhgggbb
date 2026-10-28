@@ -133,12 +133,17 @@ export function isNeutralPrim(p) {
     && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x));
 }
 
-/** Prepare closures for one parameter set (called once per LUT bake). */
-export function compilePrim(p) {
+/**
+ * Prepare closures for one parameter set (called once per LUT bake). opts.memo(prim) may return a Map shared
+ * by the LUTs baked for one render: the main LUT and the region layers evaluate the same base grade at the
+ * same grid nodes, so each plain (non-layer) grade is computed once per input colour. Same results.
+ */
+export function compilePrim(p, opts = {}) {
   if (isNeutralPrim(p)) return null;
   if (p.keep || !isNeutralPost(p.post)) { // region layer: the grade, part of its colour change removed, then the region's own adjustment
     // prot: the tone-only grade (identity when the grade changes colour only — skin then keeps its colour exactly)
-    const base = { ...p, keep: 0, post: null }, full = compilePrim(base), prot = p.keep ? compilePrim(protectedPrim(base)) || ((r, g, b, o) => { o[0] = r; o[1] = g; o[2] = b; return o; }) : null;
+    const base = { ...p, keep: 0, post: null }, full = compilePrim(base, opts);
+    const prot = p.keep ? compilePrim(protectedPrim(base)) || ((r, g, b, o) => { o[0] = r; o[1] = g; o[2] = b; return o; }) : null;
     const k = p.keep || 0, line = p.skinLine !== 0, q = p.post || {}, hold = p.whiteHold || 0, satK = Math.pow(2, q.sat || 0), o1 = [0, 0, 0], o2 = [0, 0, 0], lb = [0, 0, 0], lp = [0, 0, 0];
     return function layer(r, g, b, out) {
       const c1 = full ? full(r, g, b, o1) : [r, g, b];
@@ -156,6 +161,16 @@ export function compilePrim(p) {
       // whiteHold: whites (bright, near-neutral after the grade) keep the white point; the region tint fades out on them
       const wk = hold ? 1 - hold * smooth(0.7, 0.88, lb[0]) * (1 - smooth(0.03, 0.08, Math.hypot(lb[1], lb[2]))) : 1;
       return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), lb[1] * satK + (q.a || 0) * wk, lb[2] * satK + (q.b || 0) * wk, out);
+    };
+  }
+  if (opts.memo) { // plain grade, memoised per input colour (nested maps: number keys, no string building)
+    const raw = compilePrim(p), memo = opts.memo({ ...p, keep: 0, post: null });
+    return function memoised(r, g, b, out) {
+      let mr = memo.get(r); if (!mr) { mr = new Map(); memo.set(r, mr); }
+      let mg = mr.get(g); if (!mg) { mg = new Map(); mr.set(g, mg); }
+      let v = mg.get(b);
+      if (!v) { raw(r, g, b, out); v = [out[0], out[1], out[2]]; mg.set(b, v); }
+      out[0] = v[0]; out[1] = v[1]; out[2] = v[2]; return out;
     };
   }
   const L = wheelRGB(p.lift, 'lift'), G = wheelRGB(p.gamma, 'gamma'), K = wheelRGB(p.gain, 'gain'), O = wheelRGB(p.offset, 'offset');

@@ -442,10 +442,10 @@ export function computeShaper(model, look = {}, { floor = 0.25, smooth = 0 } = {
  * nodes sit at the shaper's input levels and the LUT carries `index` (per 8-bit input level, its fractional
  * grid coordinate 0..N−1), which the renderer uses instead of v / 255 × (N − 1).
  */
-export function bakeLUT(model, look = {}, N = 33, { shaper = null } = {}) {
+export function bakeLUT(model, look = {}, N = 33, { shaper = null, memo = null } = {}) {
   const lut = new Float32Array(N * N * N * 3), o = [0, 0, 0], t = [0, 0, 0];
   const k = { ...DEFAULT_LOOK, ...look };
-  const primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim);
+  const primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim, { memo }); // memo: see compilePrim
   const neutral = !model && !primFn && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
   // input value of grid node i: inverse of the shaper (linear between its 256 levels)
   const node = new Float64Array(N);
@@ -481,9 +481,9 @@ export function identityLUT(N = 17) { return bakeLUT(null, {}, N); }
  * every layer shares the main LUT's grid).
  */
 export const LUT_SIZE = 41;
-export function bakeLook(model, look = {}, { shaperLook = look, size = LUT_SIZE } = {}) {
+export function bakeLook(model, look = {}, { shaperLook = look, size = LUT_SIZE, memo = null } = {}) {
   const p = shaperLook && shaperLook.prim, restores = !!(p && p.norm && p.norm.amt > 0.02);
-  return bakeLUT(model, look, size, { shaper: restores ? computeShaper(model, shaperLook) : null });
+  return bakeLUT(model, look, size, { shaper: restores ? computeShaper(model, shaperLook) : null, memo });
 }
 
 /** .cube text (Resolve / Adobe format: red changes fastest, values 0..1) of a uniform-grid LUT. */

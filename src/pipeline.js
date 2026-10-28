@@ -140,13 +140,9 @@ export const canvas2d = (w, h) => { // OffscreenCanvas where it is dependable, e
 
 const locks = new WeakMap(); // one seek+draw at a time per <video> (analysis, dialog and job share it)
 
-/** Grab the frame at time t, scaled to w×h, as ImageData. A photo source (ImageBitmap) has one frame: t is ignored. */
+/** Grab the frame at time t, scaled to w×h, as ImageData. A photo set's frame t is photo ⌊t⌋. */
 export function grabFrame(video, t, w, h, canvas = canvas2d(w, h)) {
-  if (typeof video.play !== 'function') { // photo
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
-    ctx.drawImage(video, 0, 0, w, h);
-    return Promise.resolve(ctx.getImageData(0, 0, w, h));
-  }
+  if (video instanceof PhotoSet) return video.frame(t, w, h, canvas);
   const run = async () => {
     await seek(video, t);
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
@@ -165,32 +161,59 @@ export function grabFrame(video, t, w, h, canvas = canvas2d(w, h)) {
 }
 
 /**
- * A photo as the target: the same meta shape as a video with one frame (so analysis, the Lighting Intent
- * dialog and every preview work unchanged); `video` is the decoded ImageBitmap (EXIF orientation applied).
+ * Photos as the target: one or more image files, decoded only when a frame is needed (60 phone photos
+ * decoded at once would not fit in a tablet's memory). Frame i = photo i, so the batch has the same meta
+ * shape as a video (fps 1): analysis samples across the set, the Lighting Intent dialog browses it.
  */
-export async function probeImage(file) {
-  const bmp = await createImageBitmap(file, { imageOrientation: 'from-image' });
-  return { kind: 'image', video: bmp, url: URL.createObjectURL(file), width: bmp.width, height: bmp.height, duration: 1, fps: 1, fpsMeasured: true, frameCount: 1 };
+export class PhotoSet {
+  constructor(files, sizes) { this.files = files; this.sizes = sizes; }
+  get length() { return this.files.length; }
+  index(t) { return Math.min(this.files.length - 1, Math.max(0, Math.floor(t))); }
+  async draw(i, w, h, canvas, fit = 'stretch') {
+    const bmp = await createImageBitmap(this.files[i], { imageOrientation: 'from-image' });
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (fit === 'contain' && Math.abs(bmp.width / bmp.height - w / h) > 0.02) { // another aspect in a mixed set: letterbox
+      const k = Math.min(w / bmp.width, h / bmp.height), dw = Math.round(bmp.width * k), dh = Math.round(bmp.height * k);
+      ctx.fillStyle = '#000'; ctx.fillRect(0, 0, w, h); ctx.drawImage(bmp, (w - dw) >> 1, (h - dh) >> 1, dw, dh);
+    } else ctx.drawImage(bmp, 0, 0, w, h);
+    bmp.close();
+    return ctx.getImageData(0, 0, w, h);
+  }
+  /** photo ⌊t⌋ in a w×h frame (previews, dialog): letterboxed if its aspect differs from the frame */
+  frame(t, w, h, canvas = canvas2d(w, h)) { return this.draw(this.index(t), w, h, canvas, 'contain'); }
+  /** photo i at its own aspect, long side ≤ maxSide (analysis and processing) */
+  frameAt(i, maxSide) { const [W, H] = this.sizes[i], { w, h } = fitSize(W, H, maxSide); return this.draw(i, w, h, canvas2d(w, h)); }
 }
+export const PHOTO_MAX = 60; // photos per batch
+
+/** One or more photos as the target (EXIF orientation applied). meta: like a video with fps 1, one frame per photo. */
+export async function probeImages(files) {
+  const sizes = [];
+  for (const f of files) { const b = await createImageBitmap(f, { imageOrientation: 'from-image' }); sizes.push([b.width, b.height]); b.close(); }
+  const set = new PhotoSet(files, sizes);
+  return { kind: 'image', video: set, url: URL.createObjectURL(files[0]), width: sizes[0][0], height: sizes[0][1], duration: files.length, fps: 1, fpsMeasured: true, frameCount: files.length, count: files.length };
+}
+export const probeImage = (file) => probeImages([file]);
 
 /**
- * Grade a photo: the same worker job as one video frame (confirmed intent, look, AI segmentation for the local
- * grade and skin protection), at up to maxSide on the long side, encoded as JPEG (quality 0.95).
- * Returns {blob, width, height, intentHash, lookHash, jobRegions, imageData, source}.
+ * Grade photo `index` of the set: the same worker job as one video frame (confirmed intent, look, AI
+ * segmentation for the local grade and skin protection), at up to maxSide on the long side, encoded as JPEG
+ * (quality 0.95). Returns {blob, width, height, intentHash, lookHash, jobRegions}; with keepPixels also
+ * {imageData, source} (single photos: the wipe compare draws from them).
  */
-export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, maskH, maxSide = 4096 }) {
-  const { w, h } = fitSize(meta.width, meta.height, maxSide);
-  const img = await grabFrame(meta.video, 0, w, h);
+export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, maskH, maxSide = 4096, index = 0, keepPixels = true }) {
+  const img = await meta.video.frameAt(index, maxSide), w = img.width, h = img.height;
+  const c = canvas2d(w, h); c.getContext('2d').putImageData(img, 0, 0);
   let seg = null;
-  if (needsSeg) { const sc = canvas2d(256, Math.round(256 * h / w)); sc.getContext('2d').drawImage(meta.video, 0, 0, sc.width, sc.height); seg = segmentFn(sc, MASK_W, maskH); }
-  const jobId = `photo${Date.now().toString(36)}`;
+  if (needsSeg) { const sc = canvas2d(256, Math.max(2, Math.round(256 * h / w))); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height); seg = segmentFn(sc, MASK_W, maskH); }
+  const jobId = `photo${Date.now().toString(36)}_${index}`;
   const started = await engine.startJob(jobId, intentJson, look);
   try {
     const r = await engine.render(img, { jobId, index: 0, seg, grade: true });
     if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
-    const c = canvas2d(w, h); c.getContext('2d').putImageData(r.imageData, 0, 0);
+    c.getContext('2d').putImageData(r.imageData, 0, 0);
     const blob = c.convertToBlob ? await c.convertToBlob({ type: 'image/jpeg', quality: 0.95 }) : await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.95));
-    return { blob, width: w, height: h, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, imageData: r.imageData, source: img };
+    return { blob, width: w, height: h, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, ...(keepPixels ? { imageData: r.imageData, source: img } : {}) };
   } finally { engine.endJob(jobId); }
 }
 

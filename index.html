@@ -40,11 +40,12 @@
     <article class="card upcard" id="videoCard">
       <h2>要調色的影片或照片</h2>
       <label class="dropzone" id="videoDrop" for="videoInput">
-        <input type="file" id="videoInput" accept="video/*,image/*" class="sr-only">
+        <input type="file" id="videoInput" accept="video/*,image/*" multiple class="sr-only">
         <span class="dz-title">點擊選擇或把影片／照片拖放到這裏</span>
-        <span class="dz-hint">影片：MP4、WebM、MOV（建議 60 秒以內）　照片：JPG、PNG、WebP</span>
+        <span class="dz-hint">影片：MP4、WebM、MOV（建議 60 秒以內，一次一條）　照片：JPG、PNG、WebP（可一次選多張，最多 60 張）</span>
       </label>
       <div class="preview"><video id="videoPreview" controls muted playsinline preload="auto" hidden></video><img id="photoPreview" alt="要調色的照片預覽" hidden></div>
+      <div class="photo-strip" id="photoStrip" hidden></div>
       <p class="info" id="videoInfo"></p>
       <div class="row file-actions" id="videoActions" hidden>
         <button type="button" id="videoReplace">更換檔案</button>
@@ -67,6 +68,12 @@
       <button type="button" role="tab" id="tabWipe" aria-selected="false" aria-controls="wipe" disabled>結果分割比較</button>
     </div>
     <div class="progress" id="progressWrap" hidden><div id="progressBar"></div><span id="progressText"></span></div>
+    <div class="photo-nav" id="photoNav" hidden>
+      <button type="button" id="photoPrev" aria-label="上一張">◀</button>
+      <span id="photoPos"></span>
+      <button type="button" id="photoNext" aria-label="下一張">▶</button>
+      <button type="button" id="photoOne">下載這張</button>
+    </div>
     <div class="stage">
       <div class="view" id="viewPreview" role="tabpanel" aria-labelledby="tabPreview">
         <div class="stage-media">
@@ -76,8 +83,18 @@
             <button type="button" id="stageIntent" class="primary">開啟光暗設定</button>
           </div>
         </div>
-        <div class="stage-bar">
+        <div class="stage-bar stack">
           <label class="grow"><span class="bar-lbl">原始</span><input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="原始與調色結果的分隔線"><span class="bar-lbl">調色</span></label>
+          <div class="pv-row">
+            <span class="bar-lbl">預覽畫質</span>
+            <div class="pv-seg" role="radiogroup" aria-label="預覽畫質">
+              <button type="button" role="radio" data-pvq="full" aria-checked="true" title="和匯出的影片同一解析度（長邊 1280）">完整</button>
+              <button type="button" role="radio" data-pvq="half" aria-checked="false">1/2</button>
+              <button type="button" role="radio" data-pvq="quarter" aria-checked="false">1/4</button>
+            </div>
+            <label class="pv-fast" title="拖動時先用較粗的調色表和一半解析度，放手後自動換成完整品質"><input type="checkbox" id="pvFast" checked> 快速預覽</label>
+            <span class="pv-info" id="pvInfo"></span>
+          </div>
         </div>
       </div>
       <div class="view" id="resultCard" role="tabpanel" aria-labelledby="tabResult" hidden>
@@ -285,7 +302,7 @@
           <div class="cat-body">
             <h3 id="exportKindTitle">影片</h3>
             <p class="info" id="exportVideoInfo">MP4（H.264），長邊最多 1280 像素；原片的 AAC 音軌會原樣保留，不重新編碼。按下方「匯出影片」下載目前的處理結果。</p>
-            <p class="info" id="exportPhotoInfo" hidden>JPEG（品質 95%），長邊最多 4096 像素，比這更大的照片會等比例縮小。按下方「匯出照片」下載目前的處理結果。</p>
+            <p class="info" id="exportPhotoInfo" hidden>JPEG（品質 95%），長邊最多 4096 像素，比這更大的照片會等比例縮小。多張照片時，「匯出全部照片」會打包成一個 ZIP；也可以在結果檢視上方按「下載這張」單獨下載。所有照片使用同一組調色設定。</p>
             <div class="row"><button type="button" id="reprocess" disabled>以目前設定重新處理</button></div>
             <p class="info" id="resultInfo"></p>
             <h3>LUT</h3>
@@ -319,7 +336,7 @@
           <figure><figcaption>代表影格（遮罩疊色）<span id="maskLabel"></span></figcaption><canvas id="maskCanvas"></canvas></figure>
           <figure><figcaption>處理預覽（以目前已確認的選區實際運算）</figcaption><canvas id="previewCanvas"></canvas></figure>
         </div>
-        <label class="row" id="frameTimeRow">代表影格時間 <input type="range" id="frameTime" min="0" max="1000" value="500" class="grow"></label>
+        <label class="row" id="frameTimeRow"><span id="frameTimeLbl">代表影格時間</span> <input type="range" id="frameTime" min="0" max="1000" value="500" class="grow"></label>
         <div class="brush row" id="brushBar">
           <span>修正選區：</span>
           <label><input type="radio" name="brush" value="add" checked> 加筆</label>

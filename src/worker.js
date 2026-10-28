@@ -26,16 +26,25 @@ const scaled = (prim, r) => { const q = prim.local && prim.local[r], k = prim.lo
  * main LUT and every region layer share it. forExport: 65³ uniform grid, for the .cube file (no shaper:
  * every grading application reads a plain 3D table), without the region (local) adjustments.
  */
-function lutFor(intent, look, { forExport = false } = {}) {
+const DRAFT_N = 17; // interactive preview while a control is being dragged: 17³ bakes ≈ 12× faster than 41³ + shaper
+// base-grade memo shared by the main LUT and the region layers of one look (they evaluate the same base grade at
+// the same grid nodes); keyed by the canonical base parameters, the last two kept
+const baseMemos = new Map(); // the current base grade and the previous one
+const memoFor = (base) => {
+  const key = JSON.stringify(sanitizePrim({ ...base, local: null, post: null, keep: 0 }));
+  if (!baseMemos.has(key)) { if (baseMemos.size > 1) baseMemos.delete(baseMemos.keys().next().value); baseMemos.set(key, new Map()); }
+  return baseMemos.get(key);
+};
+function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
-  const key = JSON.stringify(full) + (forExport ? '|export' : '');
+  const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
     const pair = full.source === 'ai' ? pairs.get(full.pairId) : null, m = pair ? { ...model, pair } : model;
     const gridLook = full.prim ? { ...full, prim: sanitizePrim({ ...full.prim, post: null, keep: 0, local: null }) } : full;
-    luts.set(key, forExport ? bakeLUT(m, full, 65) : bakeLook(m, full, { shaperLook: gridLook }));
+    luts.set(key, forExport ? bakeLUT(m, full, 65) : draft ? bakeLUT(m, full, DRAFT_N, { memo: memoFor }) : bakeLook(m, full, { shaperLook: gridLook, memo: memoFor }));
   }
   return luts.get(key);
 }
@@ -46,7 +55,7 @@ const aiRegion = (kind, mh) => ({ id: `__${kind}`, kind, enabled: true, status: 
  * clothes) gets its own LUT — the grade with that region's adjustment — and its temporally smoothed mask;
  * the background's adjustment lives in the main LUT. Returns [] when nothing is local.
  */
-function layersFor(intent, look, src, w, h, seg, temporal) {
+function layersFor(intent, look, src, w, h, seg, temporal, draft = false) {
   const prim = look && look.prim;
   if (!prim || !seg) return [];
   const local = !!prim.local && (prim.localAmt ?? 1) > 0;
@@ -56,7 +65,7 @@ function layersFor(intent, look, src, w, h, seg, temporal) {
   const regions = local && seg.hair ? ['skin', 'hair', 'clothes'] : ['skin'];
   const regs = regions.map((r) => aiRegion(`ai-${r}`, mh));
   const masks = regionMasks(regs, { seg, L: lightnessGrid(src, w, h, MASK_W, mh) }, MASK_W, mh, 0.006, temporal);
-  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), post: local ? scaled(prim, r) : null } }), mask: { data, w: MASK_W, h: mh }, k: 1 });
+  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), post: local ? scaled(prim, r) : null } }, { draft }), mask: { data, w: MASK_W, h: mh }, k: 1 });
   const out = [layer('skin', masks['__ai-skin'])];
   if (regions.length > 1) { // hair and clothes share one layer (same adjustment): one LUT, one lookup per pixel
     const hm = masks['__ai-hair'], cm = masks['__ai-clothes'], m = new Float32Array(hm.length);
@@ -145,8 +154,11 @@ self.onmessage = (e) => {
         const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
         ev = evField(j.regions, masks, mw, mh);
       }
-      const layers = m.grade ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
-      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look) : null, ev, undefined, m.grade ? fxOf(j.look) : null, layers);
+      const draft = !!m.draft && !m.jobId; // drafts only for one-off previews: processing always uses the full LUT
+      // quick preview drops the region layers (skin protection, local grade) while a control moves, like an
+      // editor's fast preview drops costly effects; they return with the full-quality frame
+      const layers = m.grade && !draft ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
+      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look, { draft }) : null, ev, undefined, m.grade ? fxOf(j.look) : null, layers);
       const prim = j.look && j.look.prim;
       self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev,
         skinProtected: layers.length > 0 && !!(prim && prim.skin), localGraded: layers.length > 1 }, [out.buffer]);

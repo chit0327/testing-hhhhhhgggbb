@@ -6,7 +6,7 @@ import {
 } from './engine/intent.js';
 import { rawMask } from './engine/regionmasks.js';
 import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
-import { EngineClient, probeVideo, probeImage, grabFrame, fitSize, loadImage, imageDataOf, processVideo, processPhoto, seek, frameTime, canvas2d } from './pipeline.js';
+import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, loadImage, imageDataOf, processVideo, processPhoto, seek, frameTime, canvas2d } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure, toCube } from './engine/grade.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
@@ -16,6 +16,7 @@ import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { keyStore, listImageModels, geminiRegrade, nearestRatio } from './gemini.js';
 import { pollinationsKeyStore, listEditModels, pollinationsRegrade } from './pollinations.js';
 import { suggestLook, promptFor } from './engine/suggest.js';
+import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
 const $ = (id) => document.getElementById(id);
@@ -86,22 +87,26 @@ $('refInput').addEventListener('change', async (e) => {
   assetsChanged('ref');
 });
 
+const isImageFile = (f) => f.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|avif)$/i.test(f.name);
 $('videoInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
+  const files = [...e.target.files], file = files[0];
   if (!file) return;
   const id = ++S.video.id;
   S.video = { status: 'loading', id };
   $('videoInfo').textContent = '載入中…';
-  const photo = file.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|avif)$/i.test(file.name);
+  const photo = files.every(isImageFile);
   try {
+    if (files.length > 1 && !photo) throw Object.assign(new Error('一次只能處理一條影片；選多個檔案時只支援照片'), { plain: true });
+    if (files.length > PHOTO_MAX) throw Object.assign(new Error(`一次最多 ${PHOTO_MAX} 張照片（選了 ${files.length} 張），請分批處理`), { plain: true });
     if (!photo && !file.type.startsWith('video/') && !/\.(mp4|webm|mov|m4v)$/i.test(file.name)) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇影片或照片`);
-    const meta = photo ? await probeImage(file) : await probeVideo(file);
+    const meta = photo ? await probeImages(files) : await probeVideo(file);
     if (id !== S.video.id) return;
-    S.video = { status: 'ready', id, file, meta };
+    S.video = { status: 'ready', id, file, files, meta };
     showTargetPreview(meta);
     if (photo) {
-      $('videoInfo').textContent = `${file.name}　照片　${meta.width}×${meta.height}` + (Math.max(meta.width, meta.height) > 4096 ? '　（匯出時長邊縮為 4096）' : '');
-      log('photo-loaded', { name: file.name, w: meta.width, h: meta.height });
+      const big = meta.video.sizes.some(([w, h]) => Math.max(w, h) > 4096) ? '　（匯出時長邊縮為 4096）' : '';
+      $('videoInfo').textContent = files.length > 1 ? `${files.length} 張照片（第一張 ${file.name}　${meta.width}×${meta.height}）${big}` : `${file.name}　照片　${meta.width}×${meta.height}${big}`;
+      log('photo-loaded', { name: file.name, count: files.length, w: meta.width, h: meta.height });
     } else {
       $('videoInfo').textContent = `${file.name}　${meta.width}×${meta.height}　${meta.duration.toFixed(2)} 秒　${meta.fps} fps${meta.fpsMeasured ? '' : '（無法測得，假設值）'}　約 ${meta.frameCount} 格`
         + (meta.duration > 60 ? '　⚠ 第一版建議 60 秒以內' : '');
@@ -110,7 +115,7 @@ $('videoInput').addEventListener('change', async (e) => {
   } catch (err) {
     S.video = { status: 'error', id };
     showTargetPreview(null);
-    $('videoInfo').textContent = photo ? `無法載入照片：${err.message}（瀏覽器可能不支援此格式）` : `無法載入影片：${err.message}（瀏覽器可能不支援此編碼）`;
+    $('videoInfo').textContent = err.plain ? err.message : photo ? `無法載入照片：${err.message}（瀏覽器可能不支援此格式）` : `無法載入影片：${err.message}（瀏覽器可能不支援此編碼）`;
   }
   assetsChanged('video');
 });
@@ -141,7 +146,12 @@ function fitGrade(key) {
   S.grade.ready = (async () => {
     const m = S.video.meta, { w, h } = fitSize(m.width, m.height, 320);
     const frames = [];
-    for (const f of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) { // frame-centred times -> deterministic frames
+    if (m.kind === 'image') { // photos: up to six spread over the set (one look for all), each at its own aspect
+      for (const i of [...new Set([0.1, 0.25, 0.4, 0.55, 0.7, 0.85].map((f) => Math.round(f * (m.count - 1))))]) {
+        const img = await m.video.frameAt(i, 320);
+        frames.push({ data: img.data, width: img.width, height: img.height });
+      }
+    } else for (const f of [0.1, 0.25, 0.4, 0.55, 0.7, 0.85]) { // frame-centred times -> deterministic frames
       const img = await grabFrame(m.video, frameTime(m, Math.round(f * (m.frameCount - 1))), w, h);
       frames.push({ data: img.data, width: w, height: h });
     }
@@ -938,33 +948,81 @@ $('adjApply').onclick = () => startProcessing();
 $('reprocess').onclick = () => startProcessing();
 $('adjWipe').addEventListener('input', () => drawAdj());
 
-let adjTimer = null, adjSeq = 0, adjRendered = null;
+// ---- live preview, After Effects style: a chosen preview resolution (完整 = the export size, 1/2, 1/4) and
+// 快速預覽 — while a control moves, renders use a 17³ LUT at half that resolution (the 41³ + shaper bake is
+// ≈ 600 ms, the 17³ ≈ 50 ms); 250 ms after the last change the full-quality render replaces it. Renders run
+// back to back on the latest settings (no debounce), so the picture follows a drag.
+const PV_SIDE = { full: 1280, half: 640, quarter: 320 };
+const PV = { q: 'full', fast: true, busy: false, pending: null, finalTimer: null, frames: new Map() };
+let adjSeq = 0, adjRendered = null;
+S.preview = null; // {src, out, w, h, draft, ms} — the frame on the canvas (tests read it)
+try { const st = JSON.parse(localStorage.getItem('zhaoyang-preview') || 'null'); if (st && PV_SIDE[st.q]) PV.q = st.q; if (st && typeof st.fast === 'boolean') PV.fast = st.fast; } catch {}
+async function previewFrame(side) { // the representative frame at a preview resolution (cached per frame and size)
+  const m = S.video.meta, key = `${S.video.id}|${S.rep.t}|${side}`;
+  if (!PV.frames.has(key)) {
+    if (PV.frames.size > 6) PV.frames.delete(PV.frames.keys().next().value);
+    const { w, h } = fitSize(m.width, m.height, side);
+    PV.frames.set(key, w === S.rep.img.width && h === S.rep.img.height ? Promise.resolve(S.rep.img) : grabFrame(m.video, S.rep.t, w, h));
+  }
+  return PV.frames.get(key);
+}
 function scheduleAdjPreview() {
-  clearTimeout(adjTimer);
-  adjTimer = setTimeout(async () => {
-    if (!S.rep || $('adjustCard').hidden) return;
-    const seq = ++adjSeq;
-    try {
-      await S.grade.ready;
-      const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
-      const r = await engine.render(S.rep.img, { intent, seg: S.rep.seg, grade: true, look: S.look.draft });
-      if (seq !== adjSeq) return;
-      adjRendered = r.imageData;
-      drawAdj();
-      drawScopes();
-      log('adjust-preview', { look: { ...S.look.draft } });
-    } catch (err) { $('adjState').textContent = `預覽失敗：${err.message}`; }
-  }, 80);
+  if (!S.rep || $('adjustCard').hidden) return;
+  clearTimeout(PV.finalTimer);
+  if (PV.fast) { requestRender(true); PV.finalTimer = setTimeout(() => requestRender(false), 250); }
+  else requestRender(false);
+}
+function requestRender(draft) { PV.pending = { draft }; if (!PV.busy) pumpRenders(); }
+async function pumpRenders() {
+  PV.busy = true;
+  try {
+    while (PV.pending) {
+      const job = PV.pending; PV.pending = null;
+      const seq = ++adjSeq;
+      try {
+        await S.grade.ready;
+        const side = job.draft ? Math.max(320, PV_SIDE[PV.q] / 2) : PV_SIDE[PV.q];
+        const src = await previewFrame(side), t0 = performance.now();
+        const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
+        const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: S.look.draft, draft: job.draft });
+        if (seq !== adjSeq) continue;
+        const ms = performance.now() - t0;
+        adjRendered = r.imageData;
+        S.preview = { src, out: r.imageData, w: src.width, h: src.height, draft: job.draft, ms };
+        drawAdj();
+        $('pvInfo').textContent = `${src.width}×${src.height}・${job.draft ? '快速（17³）' : '完整品質（41³）'}・${Math.round(ms)} ms`;
+        if (job.draft) log('adjust-preview-draft', { w: src.width, ms: Math.round(ms) });
+        else { drawScopes(); log('adjust-preview', { look: { ...S.look.draft }, w: src.width, ms: Math.round(ms) }); }
+      } catch (err) { $('adjState').textContent = `預覽失敗：${err.message}`; }
+    }
+  } finally { PV.busy = false; }
 }
 function drawAdj() {
-  if (!S.rep || !adjRendered) return;
-  const c = $('adjCanvas'), w = S.rep.img.width, h = S.rep.img.height, x = Math.round($('adjWipe').value / 100 * w);
+  const p = S.preview;
+  if (!S.rep || !p) return;
+  const c = $('adjCanvas'), w = p.w, h = p.h, x = Math.round($('adjWipe').value / 100 * w);
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
-  ctx.putImageData(S.rep.img, 0, 0);
-  ctx.putImageData(adjRendered, 0, 0, x, 0, w - x, h);
+  ctx.putImageData(p.src, 0, 0);
+  ctx.putImageData(p.out, 0, 0, x, 0, w - x, h);
   ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
 }
+function syncPreviewControls() {
+  for (const b of document.querySelectorAll('[data-pvq]')) b.setAttribute('aria-checked', String(b.dataset.pvq === PV.q));
+  $('pvFast').checked = PV.fast;
+}
+for (const b of document.querySelectorAll('[data-pvq]')) b.onclick = () => {
+  PV.q = b.dataset.pvq; syncPreviewControls();
+  try { localStorage.setItem('zhaoyang-preview', JSON.stringify({ q: PV.q, fast: PV.fast })); } catch {}
+  log('preview-quality', { q: PV.q });
+  clearTimeout(PV.finalTimer); requestRender(false);
+};
+$('pvFast').addEventListener('change', (e) => {
+  PV.fast = e.target.checked;
+  try { localStorage.setItem('zhaoyang-preview', JSON.stringify({ q: PV.q, fast: PV.fast })); } catch {}
+  log('preview-fast', { on: PV.fast });
+});
+syncPreviewControls();
 // ---- scopes: current result (or the original) beside the reference, redrawn with every preview
 let refScopeImg = null;
 function refCentre() { // the part of the reference the grade analyses (central 70 %)
@@ -1014,6 +1072,7 @@ async function startProcessing() {
   updateAdjState();
   $('progressWrap').hidden = false;
   for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = true;
+  $('photoNav').hidden = true;
   const regs = effectiveRegions(intent);
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const ap = S.look.applied.prim;
@@ -1068,12 +1127,15 @@ $('origVideo').addEventListener('timeupdate', () => {
 
 async function drawWipe() {
   if (!S.output) return;
-  if (S.output.kind === 'image') { // photo: original | result, same size, no time axis
-    const c = $('wipeCanvas'), w = S.output.width, h = S.output.height, x = Math.round($('wipePos').value / 100 * w);
+  if (S.output.kind === 'image') { // photo: original | result at the processed size, no time axis
+    const out = S.output, i = out.cur, it = out.items[i];
+    if (!out.pair || out.pair.i !== i) out.pair = { i, src: await S.video.meta.video.frameAt(i, 4096), res: await createImageBitmap(it.blob) };
+    if (S.output !== out || out.cur !== i) return; // navigated meanwhile
+    const c = $('wipeCanvas'), w = it.width, h = it.height, x = Math.round($('wipePos').value / 100 * w);
     c.width = w; c.height = h;
     const ctx = c.getContext('2d');
-    ctx.putImageData(S.output.source, 0, 0);
-    ctx.putImageData(S.output.imageData, 0, 0, x, 0, w - x, h);
+    ctx.putImageData(out.pair.src, 0, 0);
+    ctx.save(); ctx.beginPath(); ctx.rect(x, 0, w - x, h); ctx.clip(); ctx.drawImage(out.pair.res, 0, 0, w, h); ctx.restore();
     ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h);
     return;
   }
@@ -1093,23 +1155,28 @@ $('wipePos').addEventListener('input', drawWipe);
 $('exportBtn').onclick = async () => {
   if (!S.output) return;
   setPhase('exporting');
-  const name = `${S.video.file.name.replace(/\.[^.]+$/, '')}_graded_${S.output.intentHash}.${S.output.kind === 'image' ? 'jpg' : 'mp4'}`;
+  const batch = S.output.kind === 'image' && S.output.items.length > 1;
+  const name = batch ? `photos_graded_${S.output.intentHash}.zip` // ASCII: some browsers drop a non-ASCII download name
+    : S.output.kind === 'image' ? S.output.items[0].name : `${S.video.file.name.replace(/\.[^.]+$/, '')}_graded_${S.output.intentHash}.mp4`;
   try {
-    // inside a claude.ai artifact plain download links are blocked; the platform's save dialog is used instead
-    const downloads = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
-    if (downloads) {
-      await downloads.save({ filename: name, data: S.output.blob });
-    } else {
-      const a = document.createElement('a');
-      a.href = S.output.url; a.download = name;
-      document.body.appendChild(a); a.click(); a.remove();
-    }
-    log('exported', { name, size: S.output.blob.size });
+    const blob = batch ? await zipStore(S.output.items.map((it) => ({ name: it.name, data: it.blob }))) : S.output.kind === 'image' ? S.output.items[0].blob : S.output.blob;
+    await saveFile(name, blob);
+    log('exported', { name, size: blob.size, count: batch ? S.output.items.length : 1 });
     setPhase('exported', name);
   } catch (err) {
     setPhase(err && err.code === 'declined' ? 'done' : 'error', err && err.code === 'declined' ? '已取消下載' : `匯出失敗：${err.message || err.code}`);
   }
 };
+
+async function saveFile(name, blob) {
+  // inside a claude.ai artifact plain download links are blocked; the platform's save dialog is used instead
+  const downloads = window.claude && window.claude.use ? await window.claude.use('downloads') : null;
+  if (downloads) { await downloads.save({ filename: name, data: blob }); return; }
+  const url = URL.createObjectURL(blob), a = document.createElement('a');
+  a.href = url; a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
 
 // ------------------------------------------------------------------ pages, upload controls, workspace views
 S.page = 'upload';
@@ -1146,7 +1213,7 @@ for (const k of ['ref', 'video']) {
   zone.addEventListener('drop', (e) => { // a dropped file goes through the same loader as a picked one
     e.preventDefault(); zone.classList.remove('drag');
     if (!e.dataTransfer.files.length) return;
-    const dt = new DataTransfer(); dt.items.add(e.dataTransfer.files[0]);
+    const dt = new DataTransfer(); for (const f of (k === 'video' ? [...e.dataTransfer.files] : [e.dataTransfer.files[0]])) dt.items.add(f);
     input.files = dt.files;
     input.dispatchEvent(new Event('change'));
   });
@@ -1176,6 +1243,7 @@ function setAdjustVisible(on) {
 }
 function resetResultViews() {
   $('tabResult').disabled = true; $('tabWipe').disabled = true; $('progressWrap').hidden = true;
+  $('photoNav').hidden = true;
   $('exportBtn').disabled = true;
   showView('preview');
 }
@@ -1197,40 +1265,63 @@ function showTargetPreview(meta) {
   if (!meta || photo) { v.pause(); v.hidden = true; if (v.getAttribute('src')) { v.removeAttribute('src'); v.load(); } }
   else { v.src = meta.url; v.hidden = false; }
   if (photo) { im.src = meta.url; im.hidden = false; } else { im.hidden = true; im.removeAttribute('src'); }
+  const strip = $('photoStrip'); // thumbnails of a batch (first 11, then a count)
+  for (const el of strip.querySelectorAll('img')) URL.revokeObjectURL(el.src);
+  strip.replaceChildren();
+  if (photo && meta.count > 1) {
+    for (const f of S.video.files.slice(0, 11)) { const t = document.createElement('img'); t.src = URL.createObjectURL(f); t.alt = f.name; t.title = f.name; strip.appendChild(t); }
+    if (meta.count > 11) { const more = document.createElement('span'); more.textContent = `＋${meta.count - 11} 張`; strip.appendChild(more); }
+  }
+  strip.hidden = !(photo && meta.count > 1);
   syncKindLabels();
 }
 function syncKindLabels() { // wording and controls that only make sense for one kind of target
-  const photo = isPhoto();
-  $('frameTimeRow').hidden = photo;
+  const photo = isPhoto(), n = photo ? S.video.meta.count : 0;
+  $('frameTimeRow').hidden = photo && n < 2;
+  $('frameTimeLbl').textContent = photo ? '代表照片' : '代表影格時間';
   $('tabResult').textContent = photo ? '處理結果照片' : '處理結果影片';
   $('origCap').textContent = photo ? '原始照片' : '原始影片'; $('outCap').textContent = photo ? '調色後照片' : '處理後影片';
   for (const id of ['origVideo', 'outVideo']) $(id).hidden = photo;
   for (const id of ['origPhoto', 'outPhoto']) $(id).hidden = !photo;
   $('syncPlay').hidden = photo; $('cmpTimeRow').hidden = photo;
-  $('exportBtn').textContent = photo ? '匯出照片' : '匯出影片';
-  $('adjApply').textContent = photo ? '套用並處理照片' : '套用並處理影片';
+  $('exportBtn').textContent = !photo ? '匯出影片' : n > 1 ? '匯出全部照片' : '匯出照片';
+  $('adjApply').textContent = !photo ? '套用並處理影片' : n > 1 ? `套用並處理 ${n} 張` : '套用並處理照片';
   $('exportKindTitle').textContent = photo ? '照片' : '影片';
   $('exportVideoInfo').hidden = photo; $('exportPhotoInfo').hidden = !photo;
   $('reprocess').textContent = '以目前設定重新處理';
 }
 async function processPhotoJob(intent, token, needsSeg) {
+  const m = S.video.meta, n = m.count, items = [], names = new Set();
+  let first = null;
   try {
-    const res = await processPhoto({ engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH, look: S.look.applied });
+    for (let i = 0; i < n; i++) { // one after another (in parallel they only compete for the CPU and memory)
+      if (token !== S.job.token) return;
+      $('progressBar').style.width = `${(i / n) * 100}%`; $('progressText').textContent = `${i} / ${n} 張`;
+      const res = await processPhoto({ engine, meta: m, index: i, keepPixels: false, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH, look: S.look.applied });
+      if (res.intentHash !== hashIntent(intent)) throw new Error(`第 ${i + 1} 張：處理引擎收到的設定與確認的設定不一致`);
+      let name = `${S.video.files[i].name.replace(/\.[^.]+$/, '')}_graded.jpg`;
+      for (let k = 2; names.has(name); k++) name = `${S.video.files[i].name.replace(/\.[^.]+$/, '')}_graded_${k}.jpg`;
+      names.add(name);
+      items.push({ name, blob: res.blob, width: res.width, height: res.height });
+      first = first || res;
+    }
     if (token !== S.job.token) return;
-    if (S.output) URL.revokeObjectURL(S.output.url);
-    S.output = { ...res, kind: 'image', url: URL.createObjectURL(res.blob), confirmedHash: hashIntent(intent) };
-    $('origPhoto').src = S.video.meta.url; $('outPhoto').src = S.output.url;
-    $('resultInfo').textContent = `照片 ${res.width}×${res.height}，JPEG，${(res.blob.size / 1e6).toFixed(1)} MB。`
-      + `處理引擎回報的光暗設定雜湊 ${res.intentHash}${res.intentHash === S.output.confirmedHash ? '（與確認的設定一致）' : '（⚠ 不一致）'}，色彩設定雜湊 ${res.lookHash}（${describeLook(S.look.applied)}）`
-      + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`;
-    log('processing-done', { frames: 1, photo: true, hash: res.intentHash, size: res.blob.size });
+    if (S.output) for (const it of S.output.items || [S.output]) if (it.url) URL.revokeObjectURL(it.url);
+    for (const it of items) it.url = URL.createObjectURL(it.blob);
+    if (n === 1) items[0].name = `${S.video.file.name.replace(/\.[^.]+$/, '')}_graded_${first.intentHash}.jpg`;
+    S.output = { kind: 'image', items, cur: 0, intentHash: first.intentHash, lookHash: first.lookHash, jobRegions: first.jobRegions, confirmedHash: hashIntent(intent), width: items[0].width, height: items[0].height };
+    const mb = items.reduce((t, it) => t + it.blob.size, 0) / 1e6;
+    $('resultInfo').textContent = `${n > 1 ? `${n} 張照片，同一組調色設定` : `照片 ${items[0].width}×${items[0].height}`}，JPEG，共 ${mb.toFixed(1)} MB。`
+      + `處理引擎回報的光暗設定雜湊 ${first.intentHash}（與確認的設定一致），色彩設定雜湊 ${first.lookHash}（${describeLook(S.look.applied)}）`
+      + `；局部調整區域：${first.jobRegions.length ? first.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`;
+    log('processing-done', { frames: n, photo: true, count: n, hash: first.intentHash, size: Math.round(mb * 1e6) });
     setPhase('done');
     updateAdjState();
     for (const id of ['exportBtn', 'reprocess', 'editIntent']) $(id).disabled = false;
     $('progressWrap').hidden = true;
     $('tabResult').disabled = false; $('tabWipe').disabled = false;
+    showPhoto(0);
     showView('result');
-    drawWipe();
   } catch (err) {
     if (token !== S.job.token) return;
     log('processing-failed', { message: err.message });
@@ -1239,6 +1330,26 @@ async function processPhotoJob(intent, token, needsSeg) {
     for (const id of ['reprocess', 'editIntent']) $(id).disabled = false;
   }
 }
+let origPhotoUrl = null;
+function showPhoto(i) { // the result views of a photo (set): original | graded photo i, navigation for a batch
+  const out = S.output;
+  if (!out || out.kind !== 'image') { $('photoNav').hidden = true; return; }
+  out.cur = Math.max(0, Math.min(out.items.length - 1, i));
+  const it = out.items[out.cur];
+  if (origPhotoUrl) URL.revokeObjectURL(origPhotoUrl);
+  origPhotoUrl = URL.createObjectURL(S.video.files[out.cur]);
+  $('origPhoto').src = origPhotoUrl; $('outPhoto').src = it.url;
+  out.width = it.width; out.height = it.height;
+  $('photoNav').hidden = false;
+  $('photoPos').textContent = out.items.length > 1 ? `第 ${out.cur + 1} / ${out.items.length} 張　${S.video.files[out.cur].name}` : S.video.files[0].name;
+  $('photoPrev').disabled = out.cur === 0; $('photoNext').disabled = out.cur === out.items.length - 1;
+  for (const id of ['photoPrev', 'photoNext']) $(id).hidden = out.items.length < 2;
+  if (!$('wipe').hidden) drawWipe();
+  log('photo-shown', { i: out.cur });
+}
+$('photoPrev').onclick = () => showPhoto(S.output.cur - 1);
+$('photoNext').onclick = () => showPhoto(S.output.cur + 1);
+$('photoOne').onclick = async () => { const it = S.output.items[S.output.cur]; await saveFile(it.name, it.blob); log('exported-one', { name: it.name }); };
 
 // ---- curve editor: drag the five knots of the engine's curves (fixed x at 0/25/50/75/100 %) up and down
 const CURVE_COL = { luma: '#e8e8ec', red: '#ff6b6b', green: '#5fd38d', blue: '#62a8ff' };
