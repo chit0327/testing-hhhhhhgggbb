@@ -10,7 +10,7 @@ import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, l
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure, toCube, gradeColour } from './engine/grade.js';
 import { MOODS, MOOD_GROUPS, moodLook } from './engine/moods.js';
-import { paintStroke, fillPolygon, combineSelection, labGrid, magicWand, stampSelection, lumaSmall, pyramid, estimateMotion, warpLayer, warpPoint, toN, fromN, IDENTITY, BRUSH_SIZES } from './engine/blur.js';
+import { featherCells, paintStroke, fillPolygon, combineSelection, labGrid, magicWand, stampSelection, lumaSmall, pyramid, estimateMotion, warpLayer, warpPoint, toN, fromN, IDENTITY, BRUSH_SIZES } from './engine/blur.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
@@ -541,7 +541,16 @@ function updateAdjState() {
   $('adjState').textContent = !S.intent.confirmed ? '確認光暗設定後即可處理影片。'
     : dirty ? `調整尚未套用：按「${isPhoto() ? '套用並處理照片' : '套用並處理影片'}」產生新的結果。` : `${isPhoto() ? '照片' : '影片'}已使用目前的調整。`;
   $('adjApply').disabled = !S.intent.confirmed || S.phase === 'processing';
+  syncStaleNote();
 }
+// the result tabs show the last processed file: say so when the settings have changed since (e.g. blur turned on)
+function syncStaleNote() {
+  const dirty = !!S.output && !!S.look.applied && JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
+  $('staleNote').hidden = !(dirty && S.phase !== 'processing' && ($('viewPreview').hidden));
+  $('staleApply').textContent = isPhoto() ? '套用並處理照片' : '套用並處理影片';
+  $('staleApply').disabled = $('adjApply').disabled;
+}
+$('staleApply').onclick = () => $('adjApply').click();
 for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
   $(`adj-${id}`).addEventListener('input', (e) => { S.look.auto = false; S.look.draft[key] = e.target.value / scale; if (fmt) $(`adj-${id}-v`).textContent = fmt(+e.target.value); updateAdjState(); scheduleAdjPreview(); });
   $(`adj-${id}`).addEventListener('dblclick', () => { S.look.auto = false; S.look.draft[key] = DEFAULT_LOOK[key]; syncAdjustControls(); scheduleAdjPreview(); });
@@ -574,7 +583,9 @@ $('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.can
 // ---- background blur (背景模糊): the selection is the AI background and/or a layer painted on one frame (the
 // anchor: brush, eraser, lasso), kept in the anchor's coordinates. On other frames the layer is placed with the
 // camera motion from that frame to the anchor (the worker does the same for every exported frame).
-const BLUR_DEFAULT = { on: false, ai: true, invert: false, type: 'gauss', amount: 0.5, angle: 0, selId: null };
+// angle: degrees counter-clockwise, 0 = →, 90 = ↑ (as people read a direction); feather: edge softness 0..1
+const BLUR_DEFAULT = { on: false, ai: true, invert: false, type: 'gauss', amount: 0.5, angle: 0, feather: 0.04, selId: null };
+const ARROWS = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'], arrowOf = (a) => ARROWS[Math.round((((a % 360) + 360) % 360) / 45) % 8];
 const BL = { tol: 12, labFor: null, lab: null, layer: null, w: 0, h: 0, anchorT: null, anchorLuma: null, anchorPyr: null, curSel: null, seq: 0, tool: 'none', size: 'm', dir: false, motion: new Map(), drag: null, hover: null };
 window.__app.BL = BL;
 const blurOf = () => ({ ...BLUR_DEFAULT, ...(S.look.draft.blur || {}) });
@@ -589,7 +600,8 @@ function syncBlurControls() {
   $('blurOn').checked = b.on; $('blurAi').checked = b.ai; $('blurInvert').checked = b.invert;
   for (const el of document.querySelectorAll('input[name=blurType]')) el.checked = el.value === b.type;
   $('blurAmount').value = Math.round(b.amount * 100); $('blurAmount-v').textContent = Math.round(b.amount * 100);
-  $('blurAngle').value = Math.round(b.angle) % 180; $('blurAngle-v').textContent = `${Math.round(b.angle) % 180}°`;
+  $('blurAngle').value = Math.round(b.angle) % 360; $('blurAngle-v').textContent = `${Math.round(b.angle) % 360}° ${arrowOf(b.angle)}`;
+  $('blurFeather').value = Math.round(b.feather * 100); $('blurFeather-v').textContent = Math.round(b.feather * 100);
   $('blurDirRow').hidden = b.type !== 'motion';
   $('blurDirBtn').setAttribute('aria-pressed', String(BL.dir));
   $('adjCanvas').classList.toggle('editing', blurEditing());
@@ -601,7 +613,8 @@ $('blurInvert').addEventListener('change', (e) => editBlur({ invert: e.target.ch
 $('blurShow').addEventListener('change', () => drawAdj());
 for (const el of document.querySelectorAll('input[name=blurType]')) el.addEventListener('change', () => editBlur({ type: el.value }));
 $('blurAmount').addEventListener('input', (e) => { $('blurAmount-v').textContent = e.target.value; editBlur({ amount: e.target.value / 100 }); });
-$('blurAngle').addEventListener('input', (e) => { $('blurAngle-v').textContent = `${e.target.value}°`; editBlur({ angle: +e.target.value }); });
+$('blurAngle').addEventListener('input', (e) => { editBlur({ angle: +e.target.value }); });
+$('blurFeather').addEventListener('input', (e) => { editBlur({ feather: e.target.value / 100 }); });
 // narrow screens: the panel is below the picture, so bring the picture into view to draw on it
 const showCanvasForEditing = () => { if (window.innerWidth <= 1024 && blurEditing()) $('adjCanvas').scrollIntoView({ block: 'center', behavior: 'instant' }); };
 for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; $('blurTolRow').hidden = !BL.tool.startsWith('wand'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
@@ -686,7 +699,7 @@ async function commitSelection() {
     if (!d) return;
     if (d.kind === 'dir') {
       const c = $('adjCanvas'), dx = (d.to[0] - d.from[0]) * c.width, dy = (d.to[1] - d.from[1]) * c.height;
-      if (Math.hypot(dx / c.width, dy / c.width) > 0.01) { const ang = ((Math.atan2(dy, dx) * 180 / Math.PI) % 180 + 180) % 180; editBlur({ angle: Math.round(ang), type: 'motion', on: true }); log('blur-direction', { angle: Math.round(ang) }); }
+      if (Math.hypot(dx / c.width, dy / c.width) > 0.01) { const ang = ((Math.atan2(-dy, dx) * 180 / Math.PI) % 360 + 360) % 360; /* screen y points down; angles count counter-clockwise */ editBlur({ angle: Math.round(ang), type: 'motion', on: true }); log('blur-direction', { angle: Math.round(ang) }); }
       drawAdj(); return;
     }
     if (d.kind === 'lasso' && d.pts.length > 2) fillPolygon(BL.layer, BL.w, BL.h, d.pts.map((p) => toAnchorGrid(...p)), BL.tool === 'lassoErase' ? -1 : 1);
@@ -702,7 +715,7 @@ function drawBlurOverlay(ctx, w, h) {
     const p = motionToAnchor(), bg = b.ai && S.rep.seg ? S.rep.seg.background : null;
     const lay = BL.layer ? warpLayer(BL.layer, BL.w, BL.h, p) : null, mw = BL.layer ? BL.w : MASK_W, mh = BL.layer ? BL.h : maskH();
     if ((lay || bg) && (!bg || bg.length === mw * mh)) {
-      const m = combineSelection(lay, bg, { ai: b.ai, invert: b.invert }, mw * mh), id = new ImageData(mw, mh);
+      const m = feather(combineSelection(lay, bg, { ai: b.ai, invert: b.invert }, mw * mh), mw, mh, featherCells(b.feather)), id = new ImageData(mw, mh);
       for (let i = 0; i < m.length; i++) { id.data[4 * i] = 255; id.data[4 * i + 1] = 40; id.data[4 * i + 2] = 60; id.data[4 * i + 3] = m[i] * 75; }
       const t = canvas2d(mw, mh); t.getContext('2d').putImageData(id, 0, 0);
       ctx.imageSmoothingEnabled = true; ctx.drawImage(t, 0, 0, w, h);
@@ -712,8 +725,9 @@ function drawBlurOverlay(ctx, w, h) {
   ctx.lineWidth = Math.max(1.5, w / 400); ctx.strokeStyle = '#fff'; ctx.setLineDash([]);
   if (d && d.kind === 'lasso') { ctx.beginPath(); d.pts.forEach(([x, y], i) => (i ? ctx.lineTo(x * w, y * h) : ctx.moveTo(x * w, y * h))); ctx.stroke(); }
   if (BL.dir || b.type === 'motion' && b.on && BL.tool === 'none') { // the motion direction as an arrow (dragging: the drag itself)
-    const from = d && d.kind === 'dir' ? [d.from[0] * w, d.from[1] * h] : [w / 2 - Math.cos(b.angle * Math.PI / 180) * w * 0.15, h / 2 - Math.sin(b.angle * Math.PI / 180) * w * 0.15];
-    const to = d && d.kind === 'dir' ? [d.to[0] * w, d.to[1] * h] : [w / 2 + Math.cos(b.angle * Math.PI / 180) * w * 0.15, h / 2 + Math.sin(b.angle * Math.PI / 180) * w * 0.15];
+    const ca = Math.cos(b.angle * Math.PI / 180), sa = -Math.sin(b.angle * Math.PI / 180); // on screen (y down)
+    const from = d && d.kind === 'dir' ? [d.from[0] * w, d.from[1] * h] : [w / 2 - ca * w * 0.15, h / 2 - sa * w * 0.15];
+    const to = d && d.kind === 'dir' ? [d.to[0] * w, d.to[1] * h] : [w / 2 + ca * w * 0.15, h / 2 + sa * w * 0.15];
     if (BL.dir || d) {
       const a = Math.atan2(to[1] - from[1], to[0] - from[0]), hl = w / 40;
       ctx.strokeStyle = '#ffd34d'; ctx.lineWidth = Math.max(2, w / 300);
@@ -1503,6 +1517,7 @@ function showView(name) {
   if (name !== 'result') for (const id of ['origVideo', 'outVideo']) $(id).pause();
   if (name === 'wipe') drawWipe();
   if (name === 'preview') drawAdj();
+  syncStaleNote();
 }
 for (const [k, [tab]] of Object.entries(VIEWS)) $(tab).onclick = () => showView(k);
 // changing a control while a processed result is shown: switch back to the live preview so the change is visible

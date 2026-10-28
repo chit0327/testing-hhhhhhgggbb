@@ -97,6 +97,7 @@
           </div>
         </div>
       </div>
+      <div class="stale-note" id="staleNote" role="status" hidden>這是上次處理的結果，還沒有包含之後的調整（例如背景模糊）。<button type="button" id="staleApply" class="primary">套用並處理</button></div>
       <div class="view" id="resultCard" role="tabpanel" aria-labelledby="tabResult" hidden>
         <div class="compare-videos">
           <figure><figcaption id="origCap">原始影片</figcaption><video id="origVideo" controls muted playsinline></video><img id="origPhoto" alt="原始照片" hidden></figure>
@@ -266,8 +267,11 @@
               <label><input type="radio" name="blurType" value="motion"> 動態模糊</label>
             </div>
             <label class="slider"><span>模糊強度</span><input type="range" id="blurAmount" min="0" max="100" value="50"><output id="blurAmount-v">50</output></label>
+            <label class="slider"><span>邊界柔和度</span><input type="range" id="blurFeather" min="0" max="100" value="4"><output id="blurFeather-v">4</output></label>
+            <p class="info">邊界柔和度：0 是清楚的分界，數值越大，清晰和模糊之間的過渡越闊、越柔和。</p>
             <div id="blurDirRow" hidden>
-              <label class="slider"><span>方向</span><input type="range" class="dir" id="blurAngle" min="0" max="179" value="0"><output id="blurAngle-v">0°</output></label>
+              <label class="slider"><span>方向</span><input type="range" class="dir" id="blurAngle" min="0" max="359" value="0"><output id="blurAngle-v">0° →</output></label>
+              <p class="info">0° 向右、90° 向上、180° 向左、270° 向下，例如 45° 就是往右上斜。</p>
               <div class="row"><button type="button" id="blurDirBtn" aria-pressed="false">在畫面上拖動設定方向</button></div>
             </div>
             <p class="info" id="blurInfo"></p>

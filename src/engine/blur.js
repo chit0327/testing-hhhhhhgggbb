@@ -10,6 +10,8 @@ import { S2L, l2sFast, srgbToOklab } from './color.js';
 import { rollOff } from './render.js';
 
 export const BLUR_TYPES = ['gauss', 'bokeh', 'motion'];
+/** edge softness 0..1 → feather radius in mask-grid cells (384 wide): 0 ≈ a crisp edge, 1 ≈ 6 % of the frame width */
+export const featherCells = (f = 0.04) => 0.5 + 24 * Math.min(1, Math.max(0, f ?? 0.04)); // default 0.04 ≈ 1.5 cells
 export const BRUSH_SIZES = { s: 0.02, m: 0.05, l: 0.1 }; // brush radius as a share of the frame width
 export const TRACK_W = 160; // tracking luma width
 
@@ -314,8 +316,8 @@ function discBlur(buf, w, h, R) { // round aperture: sum of row chords via per-r
   }
   return out; // (unnormalized: the caller divides by the weight channel)
 }
-function lineBlur(buf, w, h, len, angleDeg) { // straight streak, centred, length len px, along angle (0° = →, 90° = ↓)
-  const out = new Float32Array(buf.length), K = Math.max(2, Math.ceil(len)), t = angleDeg * Math.PI / 180, dx = Math.cos(t), dy = Math.sin(t);
+function lineBlur(buf, w, h, len, angleDeg) { // straight streak, centred, length len px, along angle (0° = →, 90° = ↑)
+  const out = new Float32Array(buf.length), K = Math.max(2, Math.ceil(len)), t = angleDeg * Math.PI / 180, dx = Math.cos(t), dy = -Math.sin(t); // counter-clockwise degrees, screen y down
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     let s0 = 0, s1 = 0, s2 = 0, s3 = 0;
     for (let k = 0; k <= K; k++) {

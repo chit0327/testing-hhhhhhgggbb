@@ -220,3 +220,9 @@ input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radi
 #blurSizeRow { align-items: center; }
 .stage-media canvas.editing { cursor: crosshair; touch-action: none; }
 #blurDirBtn[aria-pressed="true"] { border-color: var(--acc); box-shadow: 0 0 0 2px var(--acc); }
+
+/* result tabs: notice when the shown result predates the current settings */
+.stale-note { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; margin: 0 0 8px; padding: 8px 12px; border-radius: 10px; background: #fff3c4; color: #4a3b00; font-size: 14px; }
+.stale-note[hidden] { display: none; }
+:root[data-theme="dark"] .stale-note { background: #4a3d12; color: #fff1c2; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) .stale-note { background: #4a3d12; color: #fff1c2; } }

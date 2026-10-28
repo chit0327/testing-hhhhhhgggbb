@@ -7,7 +7,7 @@ import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engin
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
 import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
-import { combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
+import { featherCells, combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
 import { feather, guidedFilter, resize } from './engine/masks.js';
 import { fitPairLUT } from './engine/pairfit.js';
 import { LOCAL_REGIONS, sanitizePrim } from './engine/primary.js';
@@ -112,7 +112,7 @@ function blurFrame(out, src, w, h, blur, seg, track, noTrack) {
     }
   }
   if (!bg && blur.ai && !lay) return null;
-  const m = feather(combineSelection(lay, bg, { ai: blur.ai, invert: blur.invert }, mw * mh), mw, mh, 1.5);
+  const m = feather(combineSelection(lay, bg, { ai: blur.ai, invert: blur.invert }, mw * mh), mw, mh, featherCells(blur.feather));
   applyBlur(out, w, h, { data: m, w: mw, h: mh }, blur);
   return info;
 }
