@@ -482,7 +482,7 @@ function describeLook(k) {
   }
   if (k.source === 'ai') parts.unshift('AI 調色圖');
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
-  if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ infer: '推斷風格', natural: '自然', faithful: '忠實', bold: '濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
+  if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
@@ -511,10 +511,13 @@ const ADJ = { // control id -> [look key, slider scale, display]
   shadowAmt: ['shadowAmt', 100, (v) => `${v}`], midAmt: ['midAmt', 100, (v) => `${v}`], hiAmt: ['hiAmt', 100, (v) => `${v}`],
   glow: ['glow', 100, (v) => `${v}`], glowRadius: ['glowRadius', 100, (v) => `${v}`],
   haze: ['haze', 100, (v) => `${v}`], hazeRadius: ['hazeRadius', 100, (v) => `${v}`],
+  hazeSoft: ['hazeSoft', 100, (v) => `${v}`], hazeBloom: ['hazeBloom', 100, (v) => `${v}`], hazeVeil: ['hazeVeil', 100, (v) => `${v}`],
+  personEv: ['personEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], bgEv: ['bgEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`],
+  skinFollow: ['skinFollow', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'glow', 'glowRadius', 'haze', 'hazeRadius', 'vignette', 'vignetteSize', 'blur'];
+const KEEP = ['amount', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -567,7 +570,7 @@ for (const el of document.querySelectorAll('input[name=source]')) {
   });
 }
 const candLook = (c) => ({ ...DEFAULT_LOOK, strength: 0, match: 0, source: 'reference', prim: sanitizePrim(c.prim), ...kept() });
-function applyAutoLook(mode = 'natural') {
+function applyAutoLook(mode = 'look') { // 風格: the stable default (same look on any footage)
   const st = S.grade.stats;
   if (!st) return;
   const c = (S.grade.cands || []).find((x) => x.mode === mode);
@@ -578,7 +581,7 @@ function applyAutoLook(mode = 'natural') {
   log('suggested', { look: { ...S.look.draft } });
   if (!$('adjustCard').hidden) { syncAdjustControls(); scheduleAdjPreview(); }
 }
-$('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.candMode || 'natural'); syncAdjustControls(); scheduleAdjPreview(); renderCands(); };
+$('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.candMode || 'look'); syncAdjustControls(); scheduleAdjPreview(); renderCands(); };
 
 // ---- background blur (背景模糊): the selection is the AI background and/or a layer painted on one frame (the
 // anchor: brush, eraser, lasso), kept in the anchor's coordinates. On other frames the layer is placed with the
@@ -819,6 +822,11 @@ function skinMaskFor(img) { // AI skin grid resampled to the frame (for the skin
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) m[y * w + x] = seg.skin[Math.min(mh - 1, Math.floor(y * mh / h)) * mw + Math.min(mw - 1, Math.floor(x * mw / w))];
   return m;
 }
+const CAND_NOTE = {
+  look: '（推薦：讀出參考圖的風格，同一張參考圖套在任何畫面都一致）',
+  lookStrong: '（同上，效果更強）',
+  natural: '（直接照搬參考圖的顏色：效果較強，但會隨畫面內容變化）',
+};
 async function renderCands() {
   const box = $('candBox');
   if (!S.rep || !(S.grade.cands || []).length || $('adjustCard').hidden) return;
@@ -844,7 +852,7 @@ async function renderCands() {
     card.dataset.mode = c.mode;
     const cv = document.createElement('canvas'); cv.width = img.width; cv.height = img.height; cv.getContext('2d').putImageData(r.imageData, 0, 0);
     const p = document.createElement('p');
-    p.textContent = `${c.label}${c.mode === 'infer' ? '（推斷參考圖的調色方式，不照搬它的顏色；內容和影片差很遠時較可靠）' : ''}：與參考圖色差 ΔE ${m.de.toFixed(1)}｜結構保留 ${m.structure.toFixed(3)}${m.skin !== null ? `｜膚色變化 ΔE ${m.skin.toFixed(1)}` : ''}${m.clip > 0.01 ? `｜裁切 ${(m.clip * 100).toFixed(1)}%` : ''}`;
+    p.textContent = `${c.label}${CAND_NOTE[c.mode] || ''}：與參考圖色差 ΔE ${m.de.toFixed(1)}｜結構保留 ${m.structure.toFixed(3)}${m.skin !== null ? `｜膚色變化 ΔE ${m.skin.toFixed(1)}` : ''}${m.clip > 0.01 ? `｜裁切 ${(m.clip * 100).toFixed(1)}%` : ''}`;
     card.append(cv, p);
     card.onclick = () => { applyAutoLook(c.mode); log('candidate-chosen', { mode: c.mode }); syncAdjustControls(); scheduleAdjPreview(); for (const el of box.children) el.classList.toggle('chosen', el.dataset.mode === c.mode); };
     cards.push(card);
@@ -855,7 +863,7 @@ async function renderCands() {
   const restore = nm && nm.amt > 0.02 ? `偵測到 LOG／平面素材（亮度範圍 ${nm.range.toFixed(2)}，正常約 0.6 以上），已先自動還原 ${Math.round(nm.amt * 100)}%，再匹配參考圖。` : '';
   const lr = S.grade.cands[0] && S.grade.cands[0].localReport;
   const localTxt = lr ? `局部調色：${['skin', 'background'].filter((k) => lr[k] && lr[k].adj && (lr[k].adj.a || lr[k].adj.b)).map((k) => LOCAL_NAMES[k]).join('、') || '參考圖或影片缺少可對應的區域，未使用'}（頭髮、衣服保持整體調色）。` : '';
-  $('candInfo').textContent = `${restore}${localTxt}原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調（「推斷風格」不追求接近參考圖的顏色分佈，ΔE 通常較大）；結構保留 1.000 代表構圖與紋理完全未變；膚色變化是和原片相比（LOG 還原和局部調色會刻意把膚色調向參考圖的自然膚色，所以不是越小越好，請以畫面判斷）。`;
+  $('candInfo').textContent = `${restore}${localTxt}原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調（「照搬」三個會追求接近參考圖的顏色分佈，ΔE 通常較小，但結果會隨畫面內容變化）；結構保留 1.000 代表構圖與紋理完全未變；膚色變化是和原片相比（LOG 還原和局部調色會刻意把膚色調向參考圖的自然膚色，所以不是越小越好，請以畫面判斷）。`;
   S.candResults = results;
   log('candidates-rendered', { results, original: ref0 });
 }
@@ -1340,7 +1348,7 @@ async function startProcessing() {
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const ap = S.look.applied.prim;
   const bl = S.look.applied.blur;
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai);
+  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv);
   if (needsSeg) await initSegmenter();
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   try {

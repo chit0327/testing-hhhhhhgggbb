@@ -28,6 +28,7 @@ export function neutralPrim() {
     // The renderer bakes one LUT per region and blends them by the region masks.
     local: null,                             // {skin, hair, clothes, background: {L, a, b, sat}} or null
     localAmt: 1,                             // strength of the local grade (pro panel)
+    skinFollow: 0,                           // 0..1 膚色偏向參考圖色調: 0 = protected natural skin, 1 = skin takes the grade's colour fully
     keep: 0,                                 // 0..1 share of the colour change removed (tone kept): region layers only
     whiteHold: 0,                            // 0..1: the region adjustment fades out on whites (they keep the white point)
     skinLine: 1,                             // skin protection: 1 = skin follows the grade within natural skin tones; 0 = keeps its original colour
@@ -123,7 +124,21 @@ export function hueInterp(vals, h) {
   return vals[0];
 }
 
-const SKIN_LINE = [(35 * Math.PI) / 180, (80 * Math.PI) / 180]; // OKLab hue range of natural skin
+// OKLab hue range of natural skin (vectorscope skin line ≈ 55–60°). 80° let skin turn yellow-green (sallow, 'a bit
+// cyan') under green-tinted looks; 70° keeps the warm–olive range
+export const SKIN_LINE = [(35 * Math.PI) / 180, (70 * Math.PI) / 180];
+/**
+ * A graded skin hue (radians) moved into the skin line: unchanged inside; a little outside (≤ 45°, e.g. an olive film
+ * look) → the nearest end; far outside (a cyan / teal grade: its direction means nothing for skin) → the skin's own
+ * original hue `own`, itself kept inside the line (the classic teal look keeps skin warm).
+ */
+export function skinHue(h, own = (SKIN_LINE[0] + SKIN_LINE[1]) / 2) {
+  const d = (x, y) => Math.abs(Math.atan2(Math.sin(x - y), Math.cos(x - y))), inside = (x) => d(x, (SKIN_LINE[0] + SKIN_LINE[1]) / 2) <= (SKIN_LINE[1] - SKIN_LINE[0]) / 2;
+  const nearest = (x) => (d(x, SKIN_LINE[0]) < d(x, SKIN_LINE[1]) ? SKIN_LINE[0] : SKIN_LINE[1]);
+  if (inside(h)) return h;
+  if (Math.min(d(h, SKIN_LINE[0]), d(h, SKIN_LINE[1])) <= Math.PI / 4) return nearest(h);
+  return inside(own) ? own : nearest(own);
+}
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 export function isNeutralPrim(p) {
   if (!p) return true;
@@ -146,21 +161,37 @@ export function compilePrim(p, opts = {}) {
     const prot = p.keep ? compilePrim(protectedPrim(base)) || ((r, g, b, o) => { o[0] = r; o[1] = g; o[2] = b; return o; }) : null;
     const k = p.keep || 0, line = p.skinLine !== 0, q = p.post || {}, hold = p.whiteHold || 0, satK = Math.pow(2, q.sat || 0), o1 = [0, 0, 0], o2 = [0, 0, 0], lb = [0, 0, 0], lp = [0, 0, 0];
     return function layer(r, g, b, out) {
+      let own; // the skin's own hue (protected grade, before the skin line)
       const c1 = full ? full(r, g, b, o1) : [r, g, b];
       srgbToOklab(c1[0], c1[1], c1[2], lb);
+      const gA = lb[1], gB = lb[2]; // the grade's own colour, before skin protection
       if (prot) {
         const c2 = prot(r, g, b, o2); srgbToOklab(c2[0], c2[1], c2[2], lp);
         if (line) { // skin follows the grade, pulled back only as far as natural skin tones (the vectorscope skin line)
           const Cp = Math.hypot(lp[1], lp[2]), Cg = Math.hypot(lb[1], lb[2]);
           const hp = Math.atan2(lp[2], lp[1]), hg = Cg > 0.01 ? Math.atan2(lb[2], lb[1]) : hp;
-          const h = Math.min(SKIN_LINE[1], Math.max(SKIN_LINE[0], hg)), C = Math.min(1.25 * Cp, Math.max(0.7 * Cp, Cg));
+          own = hp;
+          const h = skinHue(hg, hp), C = Math.min(1.25 * Cp, Math.max(0.7 * Cp, Cg));
           lp[0] = lb[0]; lp[1] = C * Math.cos(h); lp[2] = C * Math.sin(h);
         }
         for (let i = 0; i < 3; i++) lb[i] += (lp[i] - lb[i]) * k;
       }
       // whiteHold: whites (bright, near-neutral after the grade) keep the white point; the region tint fades out on them
       const wk = hold ? 1 - hold * smooth(0.7, 0.88, lb[0]) * (1 - smooth(0.03, 0.08, Math.hypot(lb[1], lb[2]))) : 1;
-      return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), lb[1] * satK + (q.a || 0) * wk, lb[2] * satK + (q.b || 0) * wk, out);
+      let A = lb[1] * satK + (q.a || 0) * wk, B = lb[2] * satK + (q.b || 0) * wk;
+      if (prot && line) {
+        // skin: a partial keep (忠實 / 濃烈) and the region's own adjustment may move it, but never outside natural skin
+        // tones, and never drained to grey (a grade pulling hard towards cyan, mixed 35 % back, lands near grey — which
+        // reads as cyan next to the graded surroundings)
+        const Cp = Math.hypot(lp[1], lp[2]), C0 = Math.hypot(A, B), C = Math.max(C0, 0.6 * Cp);
+        const h = skinHue(C0 > 0.005 ? Math.atan2(B, A) : Math.atan2(lp[2], lp[1]), own);
+        if (C > 0.005) { A = C * Math.cos(h); B = C * Math.sin(h); }
+      }
+      if (prot && p.skinFollow) { // 膚色偏向參考圖色調: skin moves towards the colour the grade gives it unprotected
+        const f = p.skinFollow;
+        A += (gA * satK + (q.a || 0) * wk - A) * f; B += (gB * satK + (q.b || 0) * wk - B) * f;
+      }
+      return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), A, B, out);
     };
   }
   if (opts.memo) { // plain grade, memoised per input colour (nested maps: number keys, no string building)
@@ -251,6 +282,7 @@ export function sanitizePrim(q) {
   p.keep = num(q.keep, 0, 1, 0);
   p.whiteHold = num(q.whiteHold, 0, 1, 0);
   p.skinLine = q.skinLine === 0 ? 0 : 1;
+  p.skinFollow = num(q.skinFollow, 0, 1, 0);
   p.post = adj(q.post);
   return p;
 }

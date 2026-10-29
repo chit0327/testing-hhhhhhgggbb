@@ -16,10 +16,12 @@ import { neutralPrim, compilePrim, sanitizePrim, curveFn, normTone, applyBal, HU
 import { structureScore } from './metrics.js';
 
 export const MODES = {
+  look: { label: '風格', skin: 1 },
+  lookStrong: { label: '風格・濃', skin: 1 },
   infer: { label: '推斷風格', skin: 1 },
-  natural: { label: '自然', tone: 0.6, cap: 0.1, color: 0.6, cast: 0.6, hue: 0.6, maxShift: 25, mute: -0.3, skin: 1, contrast: 0 },
-  faithful: { label: '忠實', tone: 1, cap: 0.16, color: 1, cast: 1, hue: 1, maxShift: 35, mute: -0.5, skin: 0.6, contrast: 0 },
-  bold: { label: '濃烈', tone: 1.2, cap: 0.2, color: 1.25, cast: 1.2, hue: 1.15, maxShift: 45, mute: -0.6, skin: 0.35, contrast: 0.04 },
+  natural: { label: '照搬・自然', tone: 0.6, cap: 0.1, color: 0.6, cast: 0.6, hue: 0.6, maxShift: 25, mute: -0.3, skin: 1, contrast: 0 },
+  faithful: { label: '照搬・忠實', tone: 1, cap: 0.16, color: 1, cast: 1, hue: 1, maxShift: 35, mute: -0.5, skin: 0.6, contrast: 0 },
+  bold: { label: '照搬・濃烈', tone: 1.2, cap: 0.2, color: 1.25, cast: 1.2, hue: 1.15, maxShift: 45, mute: -0.6, skin: 0.35, contrast: 0.04 },
 };
 
 const clamp = (v, a, b) => Math.min(b, Math.max(a, v));
@@ -221,14 +223,14 @@ function bandCastsLow(lab, frac) { // per lightness tercile (by rank): median a/
     return [med(1), med(2)];
   });
 }
-export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.12, norm = estimateNorm(srcLab) } = {}) {
+export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.12, norm = estimateNorm(srcLab), deltas = null } = {}) {
   const p = neutralPrim();
   p.norm = { amt: norm.amt, m: norm.m, Tm: norm.Tm, s: norm.s, sat: norm.sat };
   const srcR = norm.amt ? applyNormLab(srcLab, norm) : srcLab;
   const rl = []; for (let i = 0; i < refLab.length; i += 3) rl.push(refLab[i]);
   const sr = Float64Array.from(rl).sort(), qr = QS33.map((q) => sr[Math.min(sr.length - 1, Math.round(q * (sr.length - 1)))]);
   p.luma = safeLuma(CURVE_X.map((x) => clamp(x + clamp(interp(x, TYPICAL.Lq, qr) - x, -toneCap, toneCap) * tone, 0, 1)));
-  const delta = bandCastsLow(refLab, 0.05).map((c, b) => [(c[0] - TYPICAL.casts[b][0]) * cast, (c[1] - TYPICAL.casts[b][1]) * cast]);
+  const delta = deltas || bandCastsLow(refLab, 0.05).map((c, b) => [(c[0] - TYPICAL.casts[b][0]) * cast, (c[1] - TYPICAL.casts[b][1]) * cast]); // deltas: per-band casts given directly
   // wheels: the source's near-neutral samples (least colourful 20 % per band) must take on these casts
   const n = Math.min(2500, srcR.length / 3), st = Math.max(1, Math.floor(srcR.length / 3 / n)), rgb = [], sl = [];
   for (let i = 0, j = 0; j < n; i += 3 * st, j++) { rgb.push(oklabToSrgb(srcLab[i], srcLab[i + 1], srcLab[i + 2])); sl.push(srcR[i], srcR[i + 1], srcR[i + 2]); }
@@ -254,6 +256,61 @@ export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.
   solveWheels(p, bands, target, 5);
   p.skin = MODES.infer.skin;
   return { prim: p, report: { mode: 'infer', label: MODES.infer.label, norm, casts: delta } };
+}
+
+// ---- 風格 (stable look) ---------------------------------------------------------------------------------
+// The reference is read RELATIVE TO A TYPICAL PHOTO, not relative to the footage: the same reference gives the same grade
+// on any footage (the matching candidates copy the reference's colour distribution, i.e. its content: a pink room went
+// orange, a blue mug teal, skin sallow — "too unstable"). Every estimate is weighted by how far the reference lies beyond
+// the normal photo-to-photo variation (σ, measured on 59 natural photos): a James–Stein-like weight max(floor, 1 − c/m²).
+//   tone: quantiles vs typical (σ per quantile);  casts: median a/b of each tonal band vs typical (all pixels);
+//   colour character: per hue sector (8 hue-curve anchors) hue / chroma of the reference vs the typical photo's sector
+//   after the base grade, each weighted by its own m².
+// Measured (research/look_stable): known-look benchmark ΔE to the truth 11.11 (自然 11.64, none 11.91); grading set
+// closeness to the reference 14.2 (自然 14.8); stability — spread of a colour chart graded by fits on 6 different
+// footages — 1.9 (自然 9.8). Blind check with the user: preferred over 自然 5 : 3.
+const LOOK_TYP = {
+  LqSd: [0.1382, 0.1532, 0.1599, 0.1646, 0.166, 0.1671, 0.1673, 0.1663, 0.1659, 0.1805, 0.18, 0.1816, 0.1799, 0.1782, 0.1766, 0.1749, 0.1735, 0.172, 0.1709, 0.1699, 0.1684, 0.1638, 0.1616, 0.1622, 0.1609, 0.1565, 0.1501, 0.1424, 0.135, 0.1251, 0.1108, 0.0957, 0.0747],
+  casts: [[-0.0002, 0.0083], [-0.0035, 0.0098], [-0.0044, 0.0121]], castSd: [[0.0232, 0.049], [0.0301, 0.0533], [0.022, 0.0467]], // all pixels per band
+  sectors: [[39.9, 11.1, 0.0631, 0.0308, 0.486], [74.6, 13.3, 0.0614, 0.0342, 0.563], [96.9, 14.2, 0.0669, 0.0447, 0.612], [130.1, 8.6, 0.0566, 0.0432, 0.503],
+    [204.1, 10.5, 0.0342, 0.0119, 0.585], [254.2, 9.6, 0.054, 0.027, 0.627], [289.2, 11.5, 0.034, 0.0213, 0.46], [343.5, 6.8, 0.0344, 0.0174, 0.372]], // hue, hueSd, chroma, chromaSd, L
+};
+const LOOK = { toneFloor: 0.25, toneCap: 0.3, castMax: 2.5, castFloor: 0.25, kHue: 0.5, kChroma: 0.5, capHue: 20, capSkin: 10, capChroma: 0.5, minShare: 0.04 };
+export const LOOK_SCALE = { look: 2, lookStrong: 3 };
+const jsw = (m2, c = 1, floor = 0) => Math.max(floor, 1 - c / Math.max(m2, 1e-9));
+function lookSectors(lab, win = 30) { // per hue anchor: share of total chroma, chroma-weighted hue / chroma
+  const acc = HUE_ANCHORS.map(() => [0, 0, 0, 0]); let tot = 0;
+  for (let i = 0; i < lab.length; i += 3) {
+    const C = Math.hypot(lab[i + 1], lab[i + 2]); if (C < 0.02) continue; tot += C;
+    const h = (Math.atan2(lab[i + 2], lab[i + 1]) * 180) / Math.PI;
+    HUE_ANCHORS.forEach((a, k) => { if (Math.abs(angDiff(h, a)) > win) return; const t = acc[k]; t[0] += C; t[1] += C * Math.cos((h * Math.PI) / 180); t[2] += C * Math.sin((h * Math.PI) / 180); t[3] += C * C; });
+  }
+  return acc.map((t) => ({ share: tot ? t[0] / tot : 0, hue: ((Math.atan2(t[2], t[1]) * 180) / Math.PI + 360) % 360, chroma: t[0] ? t[3] / t[0] : 0 }));
+}
+/** 風格 / 風格・濃: the stable look (see above); mode 'look' (×2) or 'lookStrong' (×3). */
+export function fitLook(srcLab, refLab, mode = 'look', { norm = estimateNorm(srcLab) } = {}) {
+  const n = refLab.length / 3, L = []; for (let i = 0; i < n; i++) L.push(refLab[3 * i]); L.sort((a, b) => a - b);
+  const q = QS33.map((x) => L[Math.round(x * (n - 1))]);
+  const mt = q.reduce((s, v, k) => s + ((v - TYPICAL.Lq[k]) / LOOK_TYP.LqSd[k]) ** 2, 0) / q.length;
+  const deltas = bandCastsLow(refLab, 1).map((c, b) => {
+    const d = [c[0] - LOOK_TYP.casts[b][0], c[1] - LOOK_TYP.casts[b][1]], m2 = ((d[0] / LOOK_TYP.castSd[b][0]) ** 2 + (d[1] / LOOK_TYP.castSd[b][1]) ** 2) / 2, w = LOOK.castMax * jsw(m2, 1, LOOK.castFloor);
+    return [d[0] * w, d[1] * w];
+  });
+  const base = fitInferred(srcLab, refLab, { tone: jsw(mt, 1, LOOK.toneFloor), toneCap: LOOK.toneCap, deltas, norm });
+  const p = base.prim, f = compilePrim(p), rs = lookSectors(refLab), o = [0, 0, 0], l = [0, 0, 0];
+  rs.forEach((r, k) => {
+    if (r.share < LOOK.minShare) return;
+    const [th, thSd, tc, tcSd, tL] = LOOK_TYP.sectors[k];
+    const s = oklabToSrgb(tL, tc * Math.cos((th * Math.PI) / 180), tc * Math.sin((th * Math.PI) / 180)), g = f ? f(clamp(s[0], 0, 1), clamp(s[1], 0, 1), clamp(s[2], 0, 1), o) : s;
+    srgbToOklab(clamp(g[0], 0, 1), clamp(g[1], 0, 1), clamp(g[2], 0, 1), l); // the typical sector colour after the base grade
+    const h0 = angDiff(r.hue, (Math.atan2(l[2], l[1]) * 180) / Math.PI), c0 = Math.log2(Math.max(r.chroma, 1e-3) / Math.max(Math.hypot(l[1], l[2]), 1e-3));
+    const cap = k <= 1 ? LOOK.capSkin : LOOK.capHue; // red / orange carry skin
+    p.hueHue[k] = clamp(LOOK.kHue * h0 * jsw((h0 / thSd) ** 2), -cap, cap);
+    p.hueSat[k] = clamp(LOOK.kChroma * c0 * jsw((c0 / Math.log2(1 + tcSd / tc)) ** 2), -LOOK.capChroma, LOOK.capChroma);
+  });
+  const out = scalePrim(p, LOOK_SCALE[mode] || 2);
+  out.norm = p.norm; out.skin = MODES[mode].skin;
+  return { prim: out, report: { mode, label: MODES[mode].label, norm, weights: { tone: jsw(mt, 1, LOOK.toneFloor) } } };
 }
 
 /**
@@ -559,7 +616,7 @@ const STRENGTH = { natural: 0.65, faithful: 1, bold: 1.25 };
 const NEUTRAL = { natural: 0.8, faithful: 1, bold: 1 }; // grey balance towards the reference's neutral tint
 const WHITE = { natural: 1, faithful: 1, bold: 1 }; // white point: the reference's white, fully
 /**
- * All three interpretations, natural first: restoration → first pass (natural settings, the safest start)
+ * Candidates: 風格 and 風格・濃 first (stable, see fitLook), then the three matching interpretations, natural first: restoration → first pass (natural settings, the safest start)
  * → distribution refinement = 忠實; 自然 / 濃烈 are the same grade at 65 % / 125 % strength.
  */
 export function fitCandidates(srcLab, refLab, { refine = true, thumb = null, v2 = false, v3 = false, white = true, balance = false } = {}) {
@@ -570,8 +627,8 @@ export function fitCandidates(srcLab, refLab, { refine = true, thumb = null, v2 
   if (bal && thumb) { const d = new Uint8ClampedArray(thumb.data.length), c = [0, 0, 0]; for (let i = 0; i < d.length; i += 4) { applyBal(bal.bal, thumb.data[i] / 255, thumb.data[i + 1] / 255, thumb.data[i + 2] / 255, c); d[i] = c[0] * 255 + 0.5; d[i + 1] = c[1] * 255 + 0.5; d[i + 2] = c[2] * 255 + 0.5; d[i + 3] = 255; } thumb = { data: d, width: thumb.width, height: thumb.height }; }
   const withBal = (cands) => (bal ? cands.map((c) => ({ ...c, prim: { ...c.prim, bal: { ...bal.bal } }, report: { ...c.report, balance: { gains: bal.bal, confidence: bal.confidence, cast: bal.cast } } })) : cands);
   const norm = estimateNorm(srcLab);
-  const inferred = fitInferred(srcLab, refLab, { norm });
-  if (!refine) return withBal([inferred, ...['natural', 'faithful', 'bold'].map((m) => fitPrim(srcLab, refLab, m, { norm }))]);
+  const looks = ['look', 'lookStrong'].map((m) => fitLook(srcLab, refLab, m, { norm })); // 風格 first: the stable default
+  if (!refine) return withBal([...looks, ...['natural', 'faithful', 'bold'].map((m) => fitPrim(srcLab, refLab, m, { norm }))]);
   const first = fitPrim(srcLab, refLab, 'natural', { norm, keepAbsent: v2, tonePrior: v3 });
   const pick = (lab, n) => { const k = lab.length / 3, st = Math.max(1, Math.floor(k / n)), o = []; for (let i = 0; i < k; i += st) o.push(lab[3 * i], lab[3 * i + 1], lab[3 * i + 2]); return Float64Array.from(o); };
   const srcPick = pick(srcLab, 2000), srcRgb = new Float64Array(srcPick.length);
@@ -592,7 +649,7 @@ export function fitCandidates(srcLab, refLab, { refine = true, thumb = null, v2 
       refined = blendPrim(first.prim, ref.prim, a); back = 1 - a;
     }
   }
-  return withBal([inferred, ...['natural', 'faithful', 'bold'].map((mode) => {
+  return withBal([...looks, ...['natural', 'faithful', 'bold'].map((mode) => {
     let prim = scalePrim(refined, STRENGTH[mode]);
     if (v2) prim = neutralBalance(prim, srcLab, refUse, NEUTRAL[mode]).prim;
     if (white) { prim = whitePoint(prim, srcLab, refLab, WHITE[mode]).prim; prim.whiteHold = 1; } // refLab: refUse drops the brightest pixels

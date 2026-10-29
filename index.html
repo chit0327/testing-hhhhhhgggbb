@@ -140,7 +140,7 @@
           <summary>參考匹配</summary>
           <div class="cat-body">
             <h3>自動調色候選</h3>
-            <p class="info">依參考圖自動算出的幾種詮釋，挑一個即可；數值為實際畫面的量測結果。</p>
+            <p class="info">依參考圖自動算出的幾種詮釋，挑一個即可；數值為實際畫面的量測結果。「風格」是預設：它讀出參考圖相對一般照片的調色（明暗、色調、各種顏色的傾向），所以同一張參考圖套在不同畫面都一致。「照搬」三個直接把參考圖的顏色分佈搬過來，效果較強，但畫面內容和參考圖差很遠時容易出現偏色（例如粉紅色牆變橙）。</p>
             <div class="cands3" id="candBox"></div>
             <p class="info" id="candInfo"></p>
             <h3>整體調色強度</h3>
@@ -166,6 +166,16 @@
             <label class="slider"><span>接近參考程度</span><input type="range" id="adj-match" min="0" max="100" value="50"><output id="adj-match-v">50%</output></label>
             <label class="slider"><span>參考色彩強度</span><input type="range" id="adj-strength" min="0" max="100" value="100"><output id="adj-strength-v">100%</output></label>
             <label class="check"><input type="checkbox" id="adj-protect" checked> 保護材質顏色（避免草地、皮膚等被染成別的顏色）</label>
+          </div>
+        </details>
+
+        <details class="cat" id="catPeople">
+          <summary>人物、膚色與背景</summary>
+          <div class="cat-body">
+            <label class="slider"><span>膚色偏向參考圖</span><input type="range" id="adj-skinFollow" min="0" max="100" value="0"><output id="adj-skinFollow-v">0%</output></label>
+            <label class="slider"><span>人物亮度</span><input type="range" id="adj-personEv" min="-200" max="200" value="0"><output id="adj-personEv-v">0</output></label>
+            <label class="slider"><span>背景亮度</span><input type="range" id="adj-bgEv" min="-200" max="200" value="0"><output id="adj-bgEv-v">0</output></label>
+            <p class="info" id="peopleInfo">膚色偏向參考圖：0% 時臉色保持自然膚色，越往右越接近調色給畫面的色調（例如參考圖偏青，臉也會跟着偏青）；100% 等於完全不保護膚色。效果大小取決於所選調色對膚色的改變：「風格」較溫和，「照搬」較明顯。人物亮度和背景亮度用 AI 偵測人物，分開調亮或調暗，人物移動時會跟着走。需要 AI 辨識完成；畫面中沒有人物時不會有效果。快速預覽時膚色效果會在停下滑桿後才出現。</p>
           </div>
         </details>
 
@@ -285,9 +295,12 @@
             <label class="slider"><span>柔光範圍</span><input type="range" id="adj-glowRadius" min="0" max="100" value="50"><output id="adj-glowRadius-v">50</output></label>
             <label class="slider"><span>朦朧夢幻</span><input type="range" id="adj-haze" min="0" max="100" value="0"><output id="adj-haze-v">0</output></label>
             <label class="slider"><span>朦朧範圍</span><input type="range" id="adj-hazeRadius" min="0" max="100" value="50"><output id="adj-hazeRadius-v">50</output></label>
+            <label class="slider sub"><span>　柔化</span><input type="range" id="adj-hazeSoft" min="0" max="100" value="50"><output id="adj-hazeSoft-v">50</output></label>
+            <label class="slider sub"><span>　發光</span><input type="range" id="adj-hazeBloom" min="0" max="100" value="50"><output id="adj-hazeBloom-v">50</output></label>
+            <label class="slider sub"><span>　光幕</span><input type="range" id="adj-hazeVeil" min="0" max="100" value="50"><output id="adj-hazeVeil-v">50</output></label>
             <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
             <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
-            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻讓整個畫面像隔了一層霧，邊緣和燈光帶光暈、暗部變成淡淡的霧、對比變柔，範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
+            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
           </div>
         </details>
 

@@ -42,7 +42,7 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
-  delete full.blur;
+  delete full.blur; delete full.personEv; delete full.bgEv; delete full.skinFollow; // applied outside the main LUT
   const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
@@ -54,6 +54,22 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
 }
 
 const aiRegion = (kind, mh) => ({ id: `__${kind}`, kind, enabled: true, status: 'confirmed', edits: { w: MASK_W, h: mh, add: null, erase: null } });
+/**
+ * 人物亮度 / 背景亮度: exposure (stops) on the AI person and background masks, added to the lighting intent's
+ * field (same grid). Follows people from frame to frame like the other AI regions. Returns ev unchanged when
+ * both are 0 or the frame has no segmentation.
+ */
+function subjectEv(ev, look, src, w, h, seg, temporal) {
+  const pe = (look && look.personEv) || 0, be = (look && look.bgEv) || 0;
+  if ((!pe && !be) || !seg || !seg.person || !seg.background) return ev;
+  const mh = seg.person.length / MASK_W;
+  if (!Number.isInteger(mh) || (ev && (ev.w !== MASK_W || ev.h !== mh))) return ev;
+  const regs = [{ ...aiRegion('ai-person', mh), id: '__subject-person', ev: pe }, { ...aiRegion('ai-background', mh), id: '__subject-background', ev: be }];
+  const masks = regionMasks(regs, { seg, L: lightnessGrid(src, w, h, MASK_W, mh) }, MASK_W, mh, 0.01, temporal);
+  const add = evField(regs, masks, MASK_W, mh, 2);
+  if (ev) for (let i = 0; i < add.data.length; i++) add.data[i] = Math.max(-3, Math.min(3, add.data[i] + ev.data[i]));
+  return add;
+}
 /**
  * Region layers for this frame: skin protection and the automatic local grade. Each AI region (skin, hair,
  * clothes) gets its own LUT — the grade with that region's adjustment — and its temporally smoothed mask;
@@ -69,7 +85,7 @@ function layersFor(intent, look, src, w, h, seg, temporal, draft = false) {
   const regions = local && seg.hair ? ['skin', 'hair', 'clothes'] : ['skin'];
   const regs = regions.map((r) => aiRegion(`ai-${r}`, mh));
   const masks = regionMasks(regs, { seg, L: lightnessGrid(src, w, h, MASK_W, mh) }, MASK_W, mh, 0.006, temporal);
-  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), post: local ? scaled(prim, r) : null } }, { draft }), mask: { data, w: MASK_W, h: mh }, k: 1 });
+  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), skinFollow: r === 'skin' ? look.skinFollow || 0 : 0, post: local ? scaled(prim, r) : null } }, { draft }), mask: { data, w: MASK_W, h: mh }, k: 1 });
   const out = [layer('skin', masks['__ai-skin'])];
   if (regions.length > 1) { // hair and clothes share one layer (same adjustment): one LUT, one lookup per pixel
     const hm = masks['__ai-hair'], cm = masks['__ai-clothes'], m = new Float32Array(hm.length);
@@ -200,6 +216,7 @@ self.onmessage = (e) => {
         const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
         ev = evField(j.regions, masks, mw, mh);
       }
+      ev = subjectEv(ev, j.look, src, m.w, m.h, m.seg, j.temporal);
       const draft = !!m.draft && !m.jobId; // drafts only for one-off previews: processing always uses the full LUT
       // quick preview drops the region layers (skin protection, local grade) while a control moves, like an
       // editor's fast preview drops costly effects; they return with the full-quality frame

@@ -58,8 +58,10 @@ export const MOODS = [
     look: { exposure: -0.1, contrast: -0.25, highlights: -0.3, saturation: -0.25, temperature: 0.45, tint: 0.05, black: 0.1, white: 0.94, shadowHue: 35, shadowAmt: 0.3, hiHue: 70, hiAmt: 0.35, glow: 0.22, glowRadius: 0.6, vignette: 0.4 } },
   { id: 'thriller', group: 4, name: '冷峻懸疑', desc: '暗、偏綠青、高對比',
     look: { exposure: -0.35, contrast: 0.4, highlights: -0.2, saturation: -0.3, temperature: -0.2, tint: -0.3, shadowHue: 165, shadowAmt: 0.6, midHue: 170, midAmt: 0.15, vignette: 0.5 } },
-  { id: 'dreamy', group: 4, name: '夢幻朦朧', desc: '像隔了一層霧，燈光和邊緣帶光暈，柔和夢幻',
-    look: { exposure: 0.1, contrast: -0.15, highlights: -0.2, saturation: -0.1, temperature: 0.05, black: 0.04, hiHue: 345, hiAmt: 0.2, shadowHue: 300, shadowAmt: 0.15, haze: 0.55, hazeRadius: 0.6, glow: 0.25 } },
+  // 夢幻朦朧: tuned on a backlit portrait in sunset light (the user's example): soft pastel colours, warm peach light,
+  // lights blooming, shadows lifted by warm light (chroma ≈ 0.036, darkest 1 % at OKLab L ≈ 0.3, hue 40–55°)
+  { id: 'dreamy', group: 4, name: '夢幻朦朧', desc: '暖暖的逆光感，亮部向外發光，暗部被暖光提亮，顏色淡雅柔和',
+    look: { exposure: 0.1, contrast: -0.2, highlights: -0.25, saturation: -0.25, temperature: 0.2, tint: 0.1, black: 0.04, shadowHue: 30, shadowAmt: 0.3, hiHue: 75, hiAmt: 0.2, haze: 0.6, hazeRadius: 0.6 } },
   { id: 'vivid', group: 4, name: '高飽和活力', desc: '顏色鮮艷、對比強',
     look: { contrast: 0.3, highlights: -0.1, shadows: 0.1, saturation: 0.45 },
     hue: { orange: [0, 0.1], red: [0, 0.1] } },
