@@ -344,7 +344,12 @@ export const blurRadius = (type, amount, side) => (type === 'motion' ? 0.12 : ty
 export function applyBlur(img, w, h, mask, cfg) {
   const amount = Math.min(1, Math.max(0, cfg.amount || 0)), type = BLUR_TYPES.includes(cfg.type) ? cfg.type : 'gauss';
   if (!amount || !mask) return img;
-  const f = Math.max(1, Math.round(Math.max(w, h) / 480)), sw = Math.ceil(w / f), sh = Math.ceil(h / f);
+  // working grid: ≤ ~480 px; for bokeh fine enough that the disc spans ≥ 4 grid pixels — a small disc on a coarse grid
+  // shows the grid cells (discs of 1–2 cells are squares, and boosted highlights make them stand out as blocks)
+  // (Gaussian and motion blur stay smooth on the coarse grid; bokeh grid is at most ~1920 px for speed)
+  const coarse = Math.max(1, Math.round(Math.max(w, h) / 480));
+  const f = type === 'bokeh' ? Math.max(1, Math.round(Math.max(w, h) / 1920), Math.min(coarse, Math.floor(blurRadius(type, amount, Math.max(w, h)) / 4))) : coarse;
+  const sw = Math.ceil(w / f), sh = Math.ceil(h / f);
   const M = mask.data, mw = mask.w, mh = mask.h;
   const maskAt = (x, y) => bil(M, mw, mh, Math.min(mw - 1.001, Math.max(0, (x + 0.5) * mw / w - 0.5)), Math.min(mh - 1.001, Math.max(0, (y + 0.5) * mh / h - 0.5)));
   // working buffer: [r·m, g·m, b·m, m] in linear light (bokeh: highlights boosted so bright points open into discs)

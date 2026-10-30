@@ -877,7 +877,7 @@ function proSlider(parent, { min, max, value, label, get, set }) {
   const el = document.createElement('input'); el.type = 'range'; el.min = min; el.max = max; el.value = value; wrap.appendChild(el);
   el.addEventListener('input', () => { S.look.auto = false; set(proPrim(), +el.value); updateAdjState(); scheduleAdjPreview(); });
   parent.appendChild(wrap);
-  PRO.push({ el, get });
+  PRO.push({ el, get, label });
   return el;
 }
 function buildPro() {
@@ -934,6 +934,26 @@ function buildPro() {
   for (const el of document.querySelectorAll('.pro input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
 }
 buildPro();
+// ↺ reset button on every slider row of the panel: puts the row's sliders back to their defaults (DEFAULT_LOOK, the
+// neutral pro grade, the blur defaults) through their own input handlers, so state, labels and preview update as usual
+{
+  const def = new Map();
+  for (const [id, [key, scale]] of Object.entries(ADJ)) def.set($(`adj-${id}`), () => Math.round(DEFAULT_LOOK[key] * scale));
+  for (const c of PRO) def.set(c.el, /膚色保護/.test(c.label || '') ? () => (S.look.draft.source === 'reference' ? 100 : 0) : () => Math.round(c.get(neutralPrim()))); // skin protection is on by default for reference grading
+  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12]]) def.set($(id), () => v);
+  for (const row of $('adjustCard').querySelectorAll('label.slider, .tone-row, .wheel-row, .curve-row, .hue-row')) {
+    const inputs = [...row.querySelectorAll('input[type=range]')].filter((el) => def.has(el));
+    if (!inputs.length) continue;
+    const b = document.createElement('button'); b.type = 'button'; b.className = 'reset'; b.textContent = '↺';
+    const name = (row.querySelector('span') || {}).textContent || ''; b.title = b.ariaLabel = `重設${name.trim() ? `「${name.trim()}」` : ''}`;
+    b.addEventListener('click', (e) => {
+      e.preventDefault(); e.stopPropagation(); // inside a <label>: do not also focus / activate the slider
+      for (const el of inputs) { el.value = def.get(el)(); el.dispatchEvent(new Event('input', { bubbles: true })); }
+      log('slider-reset', { ids: inputs.map((el) => el.id || el.closest('[class$=row]')?.className || '') });
+    });
+    row.appendChild(b);
+  }
+}
 function syncPro() {
   const p = S.look.draft.prim || neutralPrim();
   for (const c of PRO) c.el.value = Math.round(c.get(p));
