@@ -32,6 +32,11 @@ export const MOODS = [
   { id: 'teal_orange', group: 1, name: '青橙電影', desc: '暗部和背景偏青、膚色偏橙',
     look: { contrast: 0.25, highlights: -0.1, temperature: -0.05, shadowHue: 205, shadowAmt: 0.9, midHue: 200, midAmt: 0.2, hiHue: 60, hiAmt: 0.45, vignette: 0.25 },
     hue: { green: [45, -0.3], yellow: [-10, -0.2], blue: [-20, 0], orange: [0, 0.25] } },
+  // 電影柔光: a Black Pro-Mist filter in late-afternoon sun (tuned on the user's example, a film still): bright parts
+  // glow in a tight halo hugging their edges, blacks stay deep (no veil), whites held below white, low saturation,
+  // warm highlights (example: darkest 1 % at OKLab L 0.18, brightest 1 % 0.81, chroma 0.032)
+  { id: 'promist', group: 1, name: '電影柔光', desc: '午後陽光，亮部柔柔地發光、暗部保持深沉，顏色淡雅，像加了柔光濾鏡的電影畫面',
+    look: { exposure: 0.1, highlights: -0.1, saturation: -0.35, temperature: 0.15, white: 0.95, hiHue: 80, hiAmt: 0.2, haze: 0.45, hazeRadius: 0.3, hazeSoft: 0.3, hazeBloom: 0.6, hazeVeil: 0 } },
   { id: 'cool_city', group: 1, name: '冷調都市', desc: '低飽和、偏青灰，帶點疏離感',
     look: { contrast: 0.15, saturation: -0.35, temperature: -0.35, tint: -0.08, black: 0.03, shadowHue: 200, shadowAmt: 0.4, vignette: 0.2 } },
   { id: 'pastel', group: 1, name: '粉彩復古', desc: '粉色、薄荷綠、淡黃，柔和夢幻',

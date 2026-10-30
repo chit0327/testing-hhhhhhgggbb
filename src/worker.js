@@ -2,7 +2,7 @@
 // LightingIntent it receives, and renders frames. The page never renders pixels itself, so the dialog
 // preview, the result preview and the export all come out of this one code path.
 import { fitGrade, bakeLUT, bakeLook, sampleOklab } from './engine/grade.js';
-import { fitCandidates } from './engine/autofit.js';
+import { fitCandidates, autoSkinFollow } from './engine/autofit.js';
 import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engine/intent.js';
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
@@ -10,10 +10,12 @@ import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
 import { featherCells, combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
 import { feather, guidedFilter, resize } from './engine/masks.js';
 import { fitPairLUT } from './engine/pairfit.js';
-import { LOCAL_REGIONS, sanitizePrim } from './engine/primary.js';
+import { LOCAL_REGIONS, sanitizePrim, neutralPrim } from './engine/primary.js';
+import { extractGradient } from './engine/gradmap.js';
 import { fitLocal, layerPrim } from './engine/local.js';
 
 let model = null;
+let refGrad = null; // 漸層映射: the reference's colour at each lightness (set when the grade is fitted)
 const pairs = new Map();       // pairId -> LUT distilled from an AI-graded frame (look.source === 'ai'); a few candidates
 const luts = new Map();      // key: look settings + preserve flag -> LUT (bounded cache)
 const jobs = new Map();      // jobId -> {intent, regions, hash, look, temporal}
@@ -40,6 +42,10 @@ const memoFor = (base) => {
 };
 function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
+  // 漸層映射: the reference's gradient, at the look's strength, as the last colour step of the pro stage (inside the
+  // region layers too, so protected skin does not receive it)
+  if (full.gradMap > 0 && refGrad && full.source === 'reference') full.prim = { ...(full.prim || neutralPrim()), gmap: { ...refGrad, amt: Math.min(1, full.gradMap) } };
+  delete full.gradMap;
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
   delete full.blur; delete full.personEv; delete full.bgEv; delete full.skinFollow; // applied outside the main LUT
@@ -158,6 +164,7 @@ self.onmessage = (e) => {
       const srcLab = new Float64Array(parts.reduce((n, q) => n + q.length, 0));
       let off = 0; for (const q of parts) { srcLab.set(q, off); off += q.length; }
       const refLab = sampleOklab(m.reference.data, m.reference.width, m.reference.height, 8000, { centre: 0.7, seed: 7 });
+      refGrad = extractGradient(unscale(refLab));
       const t2 = performance.now();
       const f0 = m.frames[Math.floor(m.frames.length / 2)], k = Math.min(1, 320 / f0.width); // texture-guard thumbnail
       const tw = Math.max(16, Math.round(f0.width * k)), th = Math.max(16, Math.round(f0.height * k)), td = new Uint8ClampedArray(tw * th * 4);
@@ -167,7 +174,7 @@ self.onmessage = (e) => {
       }
       const candidates = fitCandidates(unscale(srcLab), unscale(refLab), { thumb: { data: td, width: tw, height: th }, v2: !!m.v2, v3: !!m.v3, white: !!m.white, balance: !!m.balance })
         .map((c) => ({ mode: c.report.mode, label: c.report.label, prim: c.prim, residual: c.report.residual, norm: c.report.norm }));
-      self.postMessage({ type: 'fitted', id: m.id, ms: performance.now() - t, autofitMs: performance.now() - t2, src: model.src, ref: model.ref, palette: model.palette, candidates });
+      self.postMessage({ type: 'fitted', id: m.id, ms: performance.now() - t, autofitMs: performance.now() - t2, src: model.src, ref: model.ref, palette: model.palette, candidates, refGrad, skinFollow: autoSkinFollow(unscale(refLab)) });
     } else if (m.type === 'blur-selection') { // the painted selection and the frame it was painted on (tracking anchor)
       if (blurSels.size > 6) blurSels.delete(blurSels.keys().next().value);
       blurSels.set(m.selId, { layer: m.layer ? { data: new Float32Array(m.layer), w: m.w, h: m.h } : null, anchor: m.anchor ? pyramid({ w: m.anchor.w, h: m.anchor.h, data: new Float32Array(m.anchor.data) }) : null });

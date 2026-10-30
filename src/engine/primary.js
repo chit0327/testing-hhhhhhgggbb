@@ -5,6 +5,7 @@
 // renderer blends in a tone-only LUT (protectedPrim) inside the AI skin mask instead. The parameters are plain data so that the auto-fit and
 // Claude can set them, and the user can read and change them.
 import { srgbToOklab, oklabToSrgb } from './color.js';
+import { GMAP_N, gradientAt } from './gradmap.js';
 
 /** OKLab hue (degrees) of the eight hue-curve anchors and their names. */
 export const HUE_ANCHORS = [30, 70, 100, 145, 195, 255, 300, 340];
@@ -33,6 +34,7 @@ export function neutralPrim() {
     whiteHold: 0,                            // 0..1: the region adjustment fades out on whites (they keep the white point)
     skinLine: 1,                             // skin protection: 1 = skin follows the grade within natural skin tones; 0 = keeps its original colour
     post: null,                              // {L, a, b, sat}: the adjustment of the layer being baked
+    gmap: null,                              // 漸層映射 {a: [17], b: [17], amt 0..1}: colour moves towards the gradient's colour at its lightness (last step)
   };
 }
 
@@ -145,7 +147,7 @@ export function isNeutralPrim(p) {
   const w = (x) => !x.m && !x.a;
   return isNeutralBal(p.bal) && isNeutralNorm(p.norm) && !p.keep && isNeutralPost(p.post) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
     && [p.luma, p.red, p.green, p.blue].every(isIdentityCurve)
-    && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x));
+    && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x)) && !(p.gmap && p.gmap.amt);
 }
 
 /**
@@ -214,6 +216,7 @@ export function compilePrim(p, opts = {}) {
   const norm = isNeutralNorm(p.norm) ? null : p.norm, normSat = norm ? 1 + norm.amt * (norm.sat - 1) : 1;
   /** sRGB 0..1 in -> sRGB 0..1 out (out array). */
   const bal = isNeutralBal(p.bal) ? null : p.bal, cb = [0, 0, 0];
+  const gm = p.gmap && p.gmap.amt ? p.gmap : null, gab = [0, 0];
   return function apply(r, g, b, out) {
     if (bal) { applyBal(bal, r, g, b, cb); r = cb[0]; g = cb[1]; b = cb[2]; } // correction before restoration and grade
     if (norm) { // restoration first, like a CST node ahead of the grade
@@ -241,6 +244,10 @@ export function compilePrim(p, opts = {}) {
         lab[1] = cs * Math.cos((h * Math.PI) / 180); lab[2] = cs * Math.sin((h * Math.PI) / 180);
       }
     }
+    if (gm) { // 漸層映射, colour mode: lightness kept, colour towards the gradient's colour at this lightness
+      gradientAt(gm, lab[0], gab);
+      lab[1] += gm.amt * (gab[0] - lab[1]); lab[2] += gm.amt * (gab[1] - lab[2]);
+    }
     return oklabToSrgb(Math.min(1, Math.max(0, lab[0])), lab[1], lab[2], out);
   };
 }
@@ -250,6 +257,7 @@ export function protectedPrim(p) {
   const q = sanitizePrim({ ...p, keep: 0, post: null });
   for (const k of ['lift', 'gamma', 'gain', 'offset']) q[k] = { m: q[k].m, h: q[k].h, a: 0 };
   q.red = CURVE_X.slice(); q.green = CURVE_X.slice(); q.blue = CURVE_X.slice();
+  q.gmap = null; // the gradient map is a colour change: protected skin does not receive it
   q.sat = 0; q.hueHue = new Array(8).fill(0); q.hueSat = new Array(8).fill(0); q.hueLum = new Array(8).fill(0);
   return q;
 }
@@ -284,5 +292,8 @@ export function sanitizePrim(q) {
   p.skinLine = q.skinLine === 0 ? 0 : 1;
   p.skinFollow = num(q.skinFollow, 0, 1, 0);
   p.post = adj(q.post);
+  const gq = q.gmap;
+  if (gq && typeof gq === 'object' && Array.isArray(gq.a) && Array.isArray(gq.b) && gq.a.length === GMAP_N && gq.b.length === GMAP_N)
+    p.gmap = { a: gq.a.map((v) => num(v, -0.3, 0.3, 0)), b: gq.b.map((v) => num(v, -0.3, 0.3, 0)), amt: num(gq.amt, 0, 1, 0) };
   return p;
 }

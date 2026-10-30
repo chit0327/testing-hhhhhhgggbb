@@ -175,6 +175,8 @@ function fitGrade(key) {
     const ref = S.ref.imageData;
     const r = await engine.fit(frames, { data: ref.data, width: ref.width, height: ref.height }, { v2: AUTOFIT_V2, v3: AUTOFIT_V3, white: AUTOFIT_WHITE, balance: AUTOFIT_BALANCE });
     S.grade.stats = { src: r.src, ref: r.ref, palette: r.palette };
+    S.grade.refGrad = r.refGrad || null; drawGradStrip();
+    S.grade.autoSkinFollow = r.skinFollow || 0; // a reference whose whole picture is one colour (blue hour): skin follows
     S.grade.cands = (r.candidates || []).map((c) => (SKIN_KEEP ? { ...c, prim: { ...c.prim, skinLine: 0 } } : c));
     S.grade.refBands = bandColours(S.ref.imageData.data, S.ref.imageData.width, S.ref.imageData.height, { centre: 0.7, skipWhite: true });
     log('autofit', { ms: Math.round(r.autofitMs || 0), modes: S.grade.cands.map((c) => c.mode) });
@@ -513,11 +515,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   haze: ['haze', 100, (v) => `${v}`], hazeRadius: ['hazeRadius', 100, (v) => `${v}`],
   hazeSoft: ['hazeSoft', 100, (v) => `${v}`], hazeBloom: ['hazeBloom', 100, (v) => `${v}`], hazeVeil: ['hazeVeil', 100, (v) => `${v}`],
   personEv: ['personEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], bgEv: ['bgEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`],
-  skinFollow: ['skinFollow', 100, (v) => `${v}%`],
+  skinFollow: ['skinFollow', 100, (v) => `${v}%`], gradMap: ['gradMap', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
+const KEEP = ['amount', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -554,6 +556,19 @@ function syncStaleNote() {
   $('staleApply').disabled = $('adjApply').disabled;
 }
 $('staleApply').onclick = () => $('adjApply').click();
+$('adj-skinFollow').addEventListener('input', () => { S.look.skinFollowSet = true; });
+// 漸層映射: the reference's gradient (its colour at each lightness, dark → bright), drawn at full colour
+function drawGradStrip() {
+  const c = $('gradStrip'), g = S.grade && S.grade.refGrad, ctx = c.getContext('2d');
+  ctx.clearRect(0, 0, c.width, c.height);
+  if (!g) return;
+  const N = g.a.length, k = 2.2; // chroma exaggerated a little so the gradient's hues read clearly
+  for (let x = 0; x < c.width; x++) {
+    const L = 0.08 + 0.88 * x / (c.width - 1), t = L * (N - 1), i = Math.min(N - 2, Math.floor(t)), f = t - i;
+    const a = g.a[i] + f * (g.a[i + 1] - g.a[i]), b = g.b[i] + f * (g.b[i + 1] - g.b[i]), rgb = oklabToSrgb(L, a * k, b * k);
+    ctx.fillStyle = `rgb(${rgb.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)).join(',')})`; ctx.fillRect(x, 0, 1, c.height);
+  }
+}
 for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
   $(`adj-${id}`).addEventListener('input', (e) => { S.look.auto = false; S.look.draft[key] = e.target.value / scale; if (fmt) $(`adj-${id}-v`).textContent = fmt(+e.target.value); updateAdjState(); scheduleAdjPreview(); });
   $(`adj-${id}`).addEventListener('dblclick', () => { S.look.auto = false; S.look.draft[key] = DEFAULT_LOOK[key]; syncAdjustControls(); scheduleAdjPreview(); });
@@ -569,7 +584,8 @@ for (const el of document.querySelectorAll('input[name=source]')) {
     syncAdjustControls(); scheduleAdjPreview();
   });
 }
-const candLook = (c) => ({ ...DEFAULT_LOOK, strength: 0, match: 0, source: 'reference', prim: sanitizePrim(c.prim), ...kept() });
+// 膚色偏向參考圖 starts at the reference's automatic value until the user moves that slider
+const candLook = (c) => ({ ...DEFAULT_LOOK, strength: 0, match: 0, source: 'reference', prim: sanitizePrim(c.prim), ...kept(), ...(S.look.skinFollowSet ? {} : { skinFollow: S.grade.autoSkinFollow || 0 }) });
 function applyAutoLook(mode = 'look') { // 風格: the stable default (same look on any footage)
   const st = S.grade.stats;
   if (!st) return;
@@ -1295,6 +1311,11 @@ function drawAdj() {
   const ctx = c.getContext('2d');
   ctx.putImageData(p.src, 0, 0);
   ctx.putImageData(p.out, 0, 0, x, 0, w - x, h);
+  if ($('pvBw').checked) { // 黑白檢查: both sides as perceived lightness (OKLab L), the painter's value check; display only
+    const id = ctx.getImageData(0, 0, w, h), d = id.data, o = [0, 0, 0];
+    for (let i = 0; i < d.length; i += 4) { srgbToOklab(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255, o); const v = oklabToSrgb(o[0], 0, 0)[0] * 255; d[i] = d[i + 1] = d[i + 2] = v; }
+    ctx.putImageData(id, 0, 0);
+  }
   if (!editing) { ctx.fillStyle = '#fff'; ctx.fillRect(x - 1, 0, 2, h); }
   drawBlurOverlay(ctx, w, h);
 }
@@ -1308,6 +1329,7 @@ for (const b of document.querySelectorAll('[data-pvq]')) b.onclick = () => {
   log('preview-quality', { q: PV.q });
   clearTimeout(PV.finalTimer); requestRender(false);
 };
+$('pvBw').addEventListener('change', (e) => { log('bw-check', { on: e.target.checked }); drawAdj(); });
 $('pvFast').addEventListener('change', (e) => {
   PV.fast = e.target.checked;
   try { localStorage.setItem('zhaoyang-preview', JSON.stringify({ q: PV.q, fast: PV.fast })); } catch {}

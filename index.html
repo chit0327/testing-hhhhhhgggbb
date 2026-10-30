@@ -93,6 +93,7 @@
               <button type="button" role="radio" data-pvq="quarter" aria-checked="false">1/4</button>
             </div>
             <label class="pv-fast" title="拖動時先用較粗的調色表和一半解析度，放手後自動換成完整品質"><input type="checkbox" id="pvFast" checked> 快速預覽</label>
+            <label class="pv-fast" title="以黑白顯示預覽，檢查畫面的明暗關係（只影響顯示，不影響輸出）"><input type="checkbox" id="pvBw"> 黑白檢查</label>
             <span class="pv-info" id="pvInfo"></span>
           </div>
         </div>
@@ -146,6 +147,10 @@
             <h3>整體調色強度</h3>
             <label class="slider"><span>強度</span><input type="range" id="adj-amount" min="0" max="100" value="100"><output id="adj-amount-v">100%</output></label>
             <p class="info">0% 是原片，100% 是完整效果。調到 50–70% 通常更自然、膚色更耐看。不影響光暗設定的局部曝光。</p>
+            <h3>漸層映射</h3>
+            <label class="slider"><span>漸層映射</span><input type="range" id="adj-gradMap" min="0" max="100" value="0"><output id="adj-gradMap-v">0%</output></label>
+            <canvas id="gradStrip" width="320" height="14" aria-label="參考圖的漸層（暗 → 亮）"></canvas>
+            <p class="info">像畫畫先定黑白關係再上色：保留畫面每個位置的明暗，把顏色往參考圖在同一亮度的顏色拉近（上面的色帶是參考圖由暗到亮的顏色）。能讓整個畫面的顏色更統一；太高時，同樣亮度的物件會變成同一種顏色。皮膚有膚色保護時不受影響。</p>
             <h3>調色來源</h3>
             <div class="seg-choice" role="radiogroup" aria-label="調色來源">
               <label><input type="radio" name="source" value="reference" checked> 參考圖自動轉移</label>

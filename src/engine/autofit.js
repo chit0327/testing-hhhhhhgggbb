@@ -657,3 +657,21 @@ export function fitCandidates(srcLab, refLab, { refine = true, thumb = null, v2 
     return { prim, report: { ...first.report, mode, label: MODES[mode].label, distance: { first: ref.before, refined: ref.after }, structureBack: back } };
   })]);
 }
+
+/**
+ * 膚色偏向參考圖, automatic: a reference whose WHOLE picture carries one strong colour (blue hour: everything blue,
+ * mean colour ≈ 0.09–0.13) and almost no warm tones means faces in that light take the colour too — skin protection
+ * would leave a warm face pasted into a blue scene. Ordinary looks (film, teal / orange, a green forest: mean colour
+ * ≤ 0.06, or with warm tones) keep natural skin. lab: OKLab triples (a, b unscaled). Returns 0..0.85.
+ */
+export function autoSkinFollow(lab) {
+  let sa = 0, sb = 0, warm = 0, n = 0;
+  for (let i = 0; i < lab.length; i += 3) {
+    const L = lab[i], a = lab[i + 1], b = lab[i + 2], C = Math.hypot(a, b), h = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+    sa += a; sb += b; n++;
+    if (L > 0.3 && L < 0.9 && C > 0.03 && h >= 20 && h <= 95) warm++; // skin-like warm colours (skin, wood, warm light)
+  }
+  if (!n) return 0;
+  const sm = (lo, hi, x) => { const t = Math.min(1, Math.max(0, (x - lo) / (hi - lo))); return t * t * (3 - 2 * t); };
+  return +(0.85 * sm(0.06, 0.1, Math.hypot(sa / n, sb / n)) * (1 - sm(0.05, 0.15, warm / n))).toFixed(3);
+}
