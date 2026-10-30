@@ -281,7 +281,7 @@ export const DEFAULT_LOOK = {
   amount: 1,                    // 整體調色強度: blend of the whole look with the original colour (0 = original)
   personEv: 0, bgEv: 0, skinFollow: 0, gradMap: 0, // gradMap: 漸層映射 strength (the reference's gradient, colour mode)
   // 人物 / 背景亮度 (stops, AI masks) and 膚色偏向參考圖色調 (skin layer)
-  glow: 0, glowRadius: 0.5, haze: 0, hazeRadius: 0.5, hazeSoft: 0.5, hazeBloom: 0.5, hazeVeil: 0.5, // 柔光, 朦朧 (spatial: applied by the renderer, not the LUT)
+  glow: 0, glowRadius: 0.5, glowHue: 60, glowTint: 0, haze: 0, hazeRadius: 0.5, hazeSoft: 0.5, hazeBloom: 0.5, hazeVeil: 0.5, // 柔光, 朦朧 (spatial: applied by the renderer, not the LUT)
   vignette: 0, vignetteSize: 0.5, // 暗角: + darkens / − lightens the edges (spatial)
   prim: null,                   // pro stage (primary.js): wheels, curves, hue curves, skin protection; null = off
 };

@@ -231,3 +231,10 @@ input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radi
 button.reset { grid-column: -2; justify-self: end; width: 1.75em; height: 1.75em; padding: 0; border-radius: 50%; border: 1px solid transparent; background: transparent; color: var(--mut); font-size: 15px; line-height: 1; }
 button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color: var(--line); background: var(--card); }
 #gradStrip { display: block; width: 100%; height: 14px; border-radius: 4px; margin: 2px 0 6px; }
+.haze-presets { gap: 8px; flex-wrap: wrap; }
+.haze-presets button[aria-pressed="true"] { border-color: var(--acc); color: var(--acc); font-weight: 600; }
+.glow-wheel { display: flex; gap: 14px; align-items: center; margin: 4px 0 10px; }
+#glowWheel { width: 132px; height: 132px; flex: none; border-radius: 50%; cursor: crosshair; touch-action: none; }
+.glow-wheel-side { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
+.glow-wheel-side output { font: 13px ui-monospace, monospace; color: var(--mut); }
+.glow-wheel-side button.reset { grid-column: auto; justify-self: auto; }

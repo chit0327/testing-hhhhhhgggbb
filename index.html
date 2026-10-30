@@ -296,6 +296,13 @@
         <details class="cat" id="catFx">
           <summary>柔光、朦朧與暗角</summary>
           <div class="cat-body">
+            <h3>朦朧預設</h3>
+            <div class="row haze-presets" role="group" aria-label="朦朧預設">
+              <button type="button" data-haze="dreamy" title="整個畫面像隔了一層霧，暗部被光提亮（逆光人像那種）">夢幻朦朧</button>
+              <button type="button" data-haze="promist" title="亮部柔柔地發光、暗部保持深沉（黑柔焦濾鏡、電影畫面那種）">電影柔光</button>
+              <button type="button" data-haze="off">關閉</button>
+            </div>
+            <p class="info" id="hazePresetInfo">預設只會改這一區的柔光和朦朧設定，不會改顏色；套用後可以再用下面的滑桿微調。</p>
             <label class="slider"><span>柔光</span><input type="range" id="adj-glow" min="0" max="100" value="0"><output id="adj-glow-v">0</output></label>
             <label class="slider"><span>柔光範圍</span><input type="range" id="adj-glowRadius" min="0" max="100" value="50"><output id="adj-glowRadius-v">50</output></label>
             <label class="slider"><span>朦朧夢幻</span><input type="range" id="adj-haze" min="0" max="100" value="0"><output id="adj-haze-v">0</output></label>
@@ -303,6 +310,15 @@
             <label class="slider sub"><span>　柔化</span><input type="range" id="adj-hazeSoft" min="0" max="100" value="50"><output id="adj-hazeSoft-v">50</output></label>
             <label class="slider sub"><span>　發光</span><input type="range" id="adj-hazeBloom" min="0" max="100" value="50"><output id="adj-hazeBloom-v">50</output></label>
             <label class="slider sub"><span>　光幕</span><input type="range" id="adj-hazeVeil" min="0" max="100" value="50"><output id="adj-hazeVeil-v">50</output></label>
+            <h3>光芒顏色</h3>
+            <div class="glow-wheel">
+              <canvas id="glowWheel" width="132" height="132" role="slider" tabindex="0" aria-label="光芒顏色色輪：方向是顏色，離中心越遠越濃"></canvas>
+              <div class="glow-wheel-side">
+                <output id="glowWheel-v">原本的光色</output>
+                <p class="info">柔光和朦朧加上去的光的顏色：拖動色輪上的點，方向決定顏色，離中心越遠顏色越濃；中心是畫面原本的光色。</p>
+                <button type="button" class="reset" id="glowWheelReset" title="重設「光芒顏色」" aria-label="重設「光芒顏色」">↺</button>
+              </div>
+            </div>
             <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
             <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
             <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>

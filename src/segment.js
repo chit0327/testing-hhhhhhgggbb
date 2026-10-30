@@ -74,3 +74,23 @@ export function segment(source, mw, mh) {
     res.close();
   }
 }
+
+/**
+ * Segmentation in a worker thread (for processing: it then overlaps decoding and grading). Resolves to
+ * {segment(imageData, mw, mh) → Promise<grids>, close()}, or null when the worker cannot start here (the caller
+ * segments on the main thread instead). Results are the same model on the same pixels as segment().
+ */
+export async function startSegWorker() {
+  let w;
+  try { w = new Worker(new URL('./segworker.js', import.meta.url)); } catch { return null; }
+  const pending = new Map(); let seq = 0;
+  w.onmessage = (e) => { const m = e.data, p = pending.get(m.id); if (!p) return; pending.delete(m.id); m.type === 'error' ? p.reject(new Error(m.message)) : p.resolve(m); };
+  w.onerror = (e) => { for (const p of pending.values()) p.reject(new Error(e.message || 'segmentation worker failed')); pending.clear(); };
+  const call = (msg, transfer = []) => new Promise((resolve, reject) => { const id = ++seq; pending.set(id, { resolve, reject }); w.postMessage({ ...msg, id }, transfer); });
+  try { await Promise.race([call({ type: 'init' }), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000))]); }
+  catch { w.terminate(); return null; }
+  return {
+    segment(img, mw, mh) { const buf = img.data.slice().buffer; return call({ type: 'seg', data: buf, w: img.width, h: img.height, mw, mh }, [buf]).then((m) => m.r); },
+    close() { w.terminate(); },
+  };
+}

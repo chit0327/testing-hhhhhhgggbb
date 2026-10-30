@@ -3,7 +3,7 @@
 // frames), then the Lighting Intent's local exposure in LINEAR light on the graded pixels. Applying the
 // local exposure last makes it exact and predictable: +0.6 EV in a region is +0.6 EV in the output
 // (earlier, applying it before the LUT let the reference's contrast curve flatten brightened people).
-import { S2L, l2sFast } from './color.js';
+import { S2L, l2sFast, oklabToSrgb } from './color.js';
 
 const KNEE = 0.8; // linear luminance above which brightening is rolled off instead of clipped
 
@@ -59,18 +59,27 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
     gain = new Float32Array(ev.data.length);
     for (let i = 0; i < gain.length; i++) gain[i] = Math.pow(2, ev.data[i]);
   }
-  const col = [0, 0, 0], lin = [0, 0, 0];
+  const col = [0, 0, 0], lin = [0, 0, 0], sR = N * N * 3, sG = N * 3;
+  // per-column / per-row positions, computed once per frame (the same formulas the per-pixel code used)
+  let gx0 = null, gx1 = null, gfx = null;
+  if (gain) {
+    gx0 = new Int32Array(w); gx1 = new Int32Array(w); gfx = new Float64Array(w);
+    for (let x = 0; x < w; x++) { let fx = Math.min(gw - 1, Math.max(0, (x + 0.5) * gw / w - 0.5)); const x0 = Math.floor(fx); gx0[x] = x0; gx1[x] = Math.min(gw - 1, x0 + 1); gfx[x] = fx - x0; }
+  }
+  const lcol = LY.map((ly) => { const sm = ly.mask, a = new Int32Array(w); for (let x = 0; x < w; x++) a[x] = Math.min(sm.w - 1, Math.max(0, Math.round((x + 0.5) * sm.w / w - 0.5))); return a; });
+  const lrow = new Int32Array(LY.length);
   for (let y = 0; y < h; y++) {
     let fy = 0, y0 = 0, y1 = 0;
     if (gain) { fy = Math.min(gh - 1, Math.max(0, (y + 0.5) * gh / h - 0.5)); y0 = Math.floor(fy); y1 = Math.min(gh - 1, y0 + 1); fy -= y0; }
+    for (let li = 0; li < LY.length; li++) { const sm = LY[li].mask; lrow[li] = Math.min(sm.h - 1, Math.max(0, Math.round((y + 0.5) * sm.h / h - 0.5))) * sm.w; }
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * 4;
       if (L) { // trilinear 3D LUT lookup (global look)
         const fr = IX ? IX[src[p]] : src[p] / 255 * n1, fg = IX ? IX[src[p + 1]] : src[p + 1] / 255 * n1, fb = IX ? IX[src[p + 2]] : src[p + 2] / 255 * n1;
         const r0 = Math.min(n1 - 1, fr | 0), g0 = Math.min(n1 - 1, fg | 0), b0 = Math.min(n1 - 1, fb | 0);
-        const dr = fr - r0, dg = fg - g0, db = fb - b0, sR = N * N * 3, sG = N * 3;
+        const dr = fr - r0, dg = fg - g0, db = fb - b0, base = ((r0 * N + g0) * N + b0) * 3;
         for (let c = 0; c < 3; c++) {
-          const i000 = ((r0 * N + g0) * N + b0) * 3 + c;
+          const i000 = base + c;
           const c00 = L[i000] + (L[i000 + 3] - L[i000]) * db;
           const c01 = L[i000 + sG] + (L[i000 + sG + 3] - L[i000 + sG]) * db;
           const c10 = L[i000 + sR] + (L[i000 + sR + 3] - L[i000 + sR]) * db;
@@ -79,12 +88,11 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
           col[c] = c0 + (c1 - c0) * dr;
         }
         for (let li = 0; li < LY.length; li++) { // region layers: same lookup in the layer's LUT, mixed in by its mask
-          const ly = LY[li], sm = ly.mask, SL = ly.lut.data;
-          const mx = Math.min(sm.w - 1, Math.max(0, Math.round((x + 0.5) * sm.w / w - 0.5))), my = Math.min(sm.h - 1, Math.max(0, Math.round((y + 0.5) * sm.h / h - 0.5)));
-          const m = sm.data[my * sm.w + mx] * ly.k;
+          const ly = LY[li], SL = ly.lut.data;
+          const m = ly.mask.data[lrow[li] + lcol[li][x]] * ly.k;
           if (m > 0.004) {
             for (let c = 0; c < 3; c++) {
-              const i000 = ((r0 * N + g0) * N + b0) * 3 + c;
+              const i000 = base + c;
               const c00 = SL[i000] + (SL[i000 + 3] - SL[i000]) * db, c01 = SL[i000 + sG] + (SL[i000 + sG + 3] - SL[i000 + sG]) * db;
               const c10 = SL[i000 + sR] + (SL[i000 + sR + 3] - SL[i000 + sR]) * db, c11 = SL[i000 + sR + sG] + (SL[i000 + sR + sG + 3] - SL[i000 + sR + sG]) * db;
               const c0 = c00 + (c01 - c00) * dg, c1 = c10 + (c11 - c10) * dg;
@@ -95,8 +103,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
         }
       } else { col[0] = src[p] / 255; col[1] = src[p + 1] / 255; col[2] = src[p + 2] / 255; }
       if (gain) { // local exposure from the confirmed Lighting Intent
-        let fx = Math.min(gw - 1, Math.max(0, (x + 0.5) * gw / w - 0.5));
-        const x0 = Math.floor(fx), x1 = Math.min(gw - 1, x0 + 1); fx -= x0;
+        const x0 = gx0[x], x1 = gx1[x], fx = gfx[x];
         const a0 = gain[y0 * gw + x0] + (gain[y0 * gw + x1] - gain[y0 * gw + x0]) * fx;
         const a1 = gain[y1 * gw + x0] + (gain[y1 * gw + x1] - gain[y1 * gw + x0]) * fx;
         const k = a0 + (a1 - a0) * fy;
@@ -116,7 +123,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
 // ---- spatial effects: they depend on position / neighbours, so they cannot live in the LUT ------------
 // Both work in linear light on the finished frame and are defined relative to the frame size, so the
 // 640 px preview and the 1280 px export look the same.
-export const FX_KEYS = ['glow', 'glowRadius', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize'];
+export const FX_KEYS = ['glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize'];
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 function boxBlur(buf, w, h, r) { // in place, 3 channels, sliding window (clamped edges)
@@ -190,6 +197,14 @@ function sampleGrid(G, x, y, out) { // bilinear, full-resolution pixel (x, y)
  * shade); and the scene's light, in its own colour, is scattered evenly as a veil, so shadows are lifted by warm light
  * in a sunlit scene rather than by grey fog. In an already bright scene the bloom is scaled down so it does not wash out.
  */
+/** 光芒顏色: per-channel factors (linear light, luminance 1) for light tinted towards OKLab hue h, tint 0..1 */
+export function glowTintRGB(hue, tint) {
+  const t = Math.min(1, Math.max(0, tint));
+  if (!t) return [1, 1, 1];
+  const c = oklabToSrgb(0.75, 0.13 * t * Math.cos((hue * Math.PI) / 180), 0.13 * t * Math.sin((hue * Math.PI) / 180));
+  const l = c.map((v) => S2L[Math.round(Math.min(1, Math.max(0, v)) * 255)]), Y = 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
+  return l.map((v) => v / Math.max(Y, 1e-4));
+}
 export function applyEffects(img, w, h, fx) {
   const glow = Math.min(1, Math.max(0, fx.glow || 0)), vig = Math.min(1, Math.max(-1, fx.vignette || 0)), haze = Math.min(1, Math.max(0, fx.haze || 0));
   if (!glow && !vig && !haze) return img;
@@ -210,6 +225,9 @@ export function applyEffects(img, w, h, fx) {
     bk = Math.min(1, Math.sqrt(0.15 / Math.max(Y, 1e-4)));
     for (let c = 0; c < 3; c++) veil[c] = Y > 1e-4 ? lvl * acc[c] / Y : lvl;
   }
+  // 光芒顏色 (colour wheel): the added light (柔光, 朦朧's bloom and veil) tinted towards an OKLab hue; the tint keeps
+  // the light's brightness (channel factors normalised to luminance 1), tint 0 = the light's own colour
+  const tm = glowTintRGB(fx.glowHue ?? 60, fx.glowTint || 0);
   const vg = vig ? vignetteGain(w, h, vig, fx.vignetteSize ?? 0.5) : null;
   const lin = [0, 0, 0], bl = [0, 0, 0];
   for (let y = 0; y < h; y++) {
@@ -220,9 +238,9 @@ export function applyEffects(img, w, h, fx) {
         sampleGrid(H, x, y, bl);
         for (let c = 0; c < 3; c++) lin[c] += Math.min(1, haze * kSoft) * (bl[c] - lin[c]);
         sampleGrid(Bm, x, y, bl);
-        for (let c = 0; c < 3; c++) { const add = Math.min(1, haze * (kBloom * bk * Math.max(0, bl[c] - 0.6 * lin[c]) + kVeil * veil[c])); /* light spills into darker surroundings */ lin[c] = 1 - (1 - lin[c]) * (1 - add); }
+        for (let c = 0; c < 3; c++) { const add = Math.min(1, haze * tm[c] * (kBloom * bk * Math.max(0, bl[c] - 0.6 * lin[c]) + kVeil * veil[c])); /* light spills into darker surroundings */ lin[c] = 1 - (1 - lin[c]) * (1 - add); }
       }
-      if (G) { sampleGrid(G, x, y, bl); for (let c = 0; c < 3; c++) lin[c] += glow * 1.2 * bl[c]; }
+      if (G) { sampleGrid(G, x, y, bl); for (let c = 0; c < 3; c++) lin[c] += glow * 1.2 * tm[c] * bl[c]; }
       if (vg) { const g = vg[y * w + x]; lin[0] *= g; lin[1] *= g; lin[2] *= g; }
       const Y = 0.2126 * lin[0] + 0.7152 * lin[1] + 0.0722 * lin[2];
       if (Y > KNEE) { const s = rollOff(Y) / Y; lin[0] *= s; lin[1] *= s; lin[2] *= s; } // added light rolls off, never clips

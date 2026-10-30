@@ -519,7 +519,7 @@ const ADJ = { // control id -> [look key, slider scale, display]
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
+const KEEP = ['amount', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -540,6 +540,7 @@ function syncAdjustControls() {
   updateAdjState();
   markMood();
   syncBlurControls();
+  drawGlowWheel(); markHazePreset();
 }
 function updateAdjState() {
   const dirty = !S.look.applied || JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
@@ -556,6 +557,59 @@ function syncStaleNote() {
   $('staleApply').disabled = $('adjApply').disabled;
 }
 $('staleApply').onclick = () => $('adjApply').click();
+// 朦朧預設: haze / glow settings only (colour untouched), then the sliders fine-tune them
+const HAZE_PRESETS = {
+  dreamy: { glow: 0, haze: 0.6, hazeRadius: 0.6, hazeSoft: 0.5, hazeBloom: 0.5, hazeVeil: 0.5, glowTint: 0 },
+  // 電影柔光 (Black Pro-Mist in afternoon sun, the user's film still): tight glow, deep blacks (no veil), warm light
+  promist: { glow: 0, haze: 0.45, hazeRadius: 0.3, hazeSoft: 0.3, hazeBloom: 0.6, hazeVeil: 0, glowHue: 75, glowTint: 0.35 },
+  off: { glow: 0, haze: 0 },
+};
+const hazeKeys = ['glow', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'glowHue', 'glowTint'];
+function markHazePreset() {
+  const d = S.look.draft, on = (p) => Object.entries(HAZE_PRESETS[p]).every(([k, v]) => Math.abs((d[k] ?? DEFAULT_LOOK[k]) - v) < 1e-6);
+  for (const b of document.querySelectorAll('[data-haze]')) b.setAttribute('aria-pressed', String(b.dataset.haze !== 'off' && on(b.dataset.haze)));
+}
+for (const b of document.querySelectorAll('[data-haze]')) b.onclick = () => {
+  S.look.auto = false;
+  const p = HAZE_PRESETS[b.dataset.haze];
+  for (const k of hazeKeys) if (k in p) S.look.draft[k] = p[k]; else if (b.dataset.haze !== 'off') S.look.draft[k] = DEFAULT_LOOK[k];
+  log('haze-preset', { preset: b.dataset.haze });
+  syncAdjustControls(); scheduleAdjPreview();
+};
+// 光芒顏色 wheel: OKLab hue plane (a →, b ↑), radius = tint 0..1
+function drawGlowWheel() {
+  const c = $('glowWheel'), ctx = c.getContext('2d'), N = c.width, R = N / 2 - 6, id = ctx.createImageData(N, N);
+  for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+    const dx = (x - N / 2) / R, dy = (N / 2 - y) / R, r = Math.hypot(dx, dy), i = (y * N + x) * 4;
+    if (r > 1) continue;
+    const rgb = oklabToSrgb(0.78, 0.13 * dx, 0.13 * dy);
+    id.data[i] = Math.min(1, Math.max(0, rgb[0])) * 255; id.data[i + 1] = Math.min(1, Math.max(0, rgb[1])) * 255; id.data[i + 2] = Math.min(1, Math.max(0, rgb[2])) * 255;
+    id.data[i + 3] = 255 * Math.min(1, (1 - r) * R); // anti-aliased rim
+  }
+  ctx.putImageData(id, 0, 0);
+  const d = S.look.draft, t = d.glowTint ?? 0, h = ((d.glowHue ?? 60) * Math.PI) / 180, mx = N / 2 + Math.cos(h) * t * R, my = N / 2 - Math.sin(h) * t * R;
+  ctx.lineWidth = 2; ctx.strokeStyle = '#fff'; ctx.beginPath(); ctx.arc(mx, my, 6, 0, 2 * Math.PI); ctx.stroke();
+  ctx.strokeStyle = '#000'; ctx.lineWidth = 1; ctx.beginPath(); ctx.arc(mx, my, 7.5, 0, 2 * Math.PI); ctx.stroke();
+  $('glowWheel-v').textContent = t < 0.01 ? '原本的光色' : `色相 ${Math.round(d.glowHue ?? 60)}°・濃度 ${Math.round(t * 100)}%`;
+}
+function setGlowColour(hue, tint) {
+  S.look.auto = false;
+  S.look.draft.glowHue = Math.round(((hue % 360) + 360) % 360); S.look.draft.glowTint = Math.round(Math.min(1, Math.max(0, tint)) * 100) / 100;
+  drawGlowWheel(); markHazePreset(); updateAdjState(); scheduleAdjPreview();
+}
+{
+  const c = $('glowWheel');
+  const pick = (e) => { const r = c.getBoundingClientRect(), R = r.width / 2 - 6 * r.width / c.width, dx = e.clientX - r.left - r.width / 2, dy = r.top + r.height / 2 - e.clientY;
+    setGlowColour((Math.atan2(dy, dx) * 180) / Math.PI, Math.hypot(dx, dy) / R); };
+  c.addEventListener('pointerdown', (e) => { c.setPointerCapture(e.pointerId); pick(e); });
+  c.addEventListener('pointermove', (e) => { if (c.hasPointerCapture(e.pointerId)) pick(e); });
+  c.addEventListener('pointerup', () => log('glow-colour', { hue: S.look.draft.glowHue, tint: S.look.draft.glowTint }));
+  c.addEventListener('keydown', (e) => { // arrows: ←/→ hue, ↑/↓ strength
+    const d = S.look.draft, k = { ArrowLeft: [-10, 0], ArrowRight: [10, 0], ArrowUp: [0, 0.05], ArrowDown: [0, -0.05] }[e.key];
+    if (k) { e.preventDefault(); setGlowColour((d.glowHue ?? 60) + k[0], (d.glowTint ?? 0) + k[1]); }
+  });
+  $('glowWheelReset').onclick = () => setGlowColour(DEFAULT_LOOK.glowHue, 0);
+}
 $('adj-skinFollow').addEventListener('input', () => { S.look.skinFollowSet = true; });
 // 漸層映射: the reference's gradient (its colour at each lightness, dark → bright), drawn at full colour
 function drawGradStrip() {
@@ -1395,8 +1449,8 @@ async function startProcessing() {
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   try {
     const res = await processVideo({
-      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH,
-      look: S.look.applied, isCancelled: () => token !== S.job.token, keepFrames: window.__keepFrames || [],
+      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH,
+      look: S.look.applied, isCancelled: () => token !== S.job.token, keepFrames: window.__keepFrames || [], stream: !window.__noStream, segWorker: !window.__noSegWorker,
       onProgress: ({ done, total, elapsed }) => {
         $('progressBar').style.width = `${(done / total) * 100}%`;
         $('progressText').textContent = `${done} / ${total} 格　${elapsed.toFixed(1)} 秒`;
@@ -1412,7 +1466,7 @@ async function startProcessing() {
     + `（${describeLook(S.look.applied)}）`
     + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
     + (res.audio.kept ? `音訊：已保留原片音軌（${res.audio.codec}，未重新編碼）。` : `音訊：${res.audio.reason}。`);
-    log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio });
+    log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio, timing: res.timing });
     setPhase('done');
     updateAdjState();
     for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = false;

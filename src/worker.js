@@ -215,6 +215,7 @@ self.onmessage = (e) => {
       // one-off renders (dialog preview) carry their own intent; job renders reuse the job's state
       const j = m.jobId ? jobs.get(m.jobId) : { ...prepare(m.intent), look: m.look || null, temporal: null };
       if (!j) throw new Error(`unknown job ${m.jobId}`);
+      const T = {}, t0 = performance.now(); let tt = t0; const lap = (k) => { const x = performance.now(); T[k] = (T[k] || 0) + x - tt; tt = x; };
       const src = new Uint8ClampedArray(m.rgba);
       let ev = null;
       if (j.regions.length) {
@@ -224,16 +225,23 @@ self.onmessage = (e) => {
         ev = evField(j.regions, masks, mw, mh);
       }
       ev = subjectEv(ev, j.look, src, m.w, m.h, m.seg, j.temporal);
+      lap('masks');
       const draft = !!m.draft && !m.jobId; // drafts only for one-off previews: processing always uses the full LUT
       // quick preview drops the region layers (skin protection, local grade) while a control moves, like an
       // editor's fast preview drops costly effects; they return with the full-quality frame
       const layers = m.grade && !draft ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
-      const out = renderFrame(src, m.w, m.h, m.grade ? lutFor(j.intent, j.look, { draft }) : null, ev, undefined, null, layers);
+      lap('layers');
+      const lut = m.grade ? lutFor(j.intent, j.look, { draft }) : null;
+      lap('lut');
+      const out = renderFrame(src, m.w, m.h, lut, ev, undefined, null, layers);
+      lap('grade');
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
       const fx = m.grade ? fxOf(j.look) : null;
+      lap('blur');
       if (fx) applyEffects(out, m.w, m.h, fx); // after the blur: haze and glow spread over the blurred background too
+      lap('effects');
       const prim = j.look && j.look.prim;
-      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo,
+      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo, timing: T,
         skinProtected: layers.length > 0 && !!(prim && prim.skin), localGraded: layers.length > 1 }, [out.buffer]);
     }
   } catch (err) {

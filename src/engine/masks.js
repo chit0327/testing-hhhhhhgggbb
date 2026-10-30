@@ -18,11 +18,12 @@ export function resize(src, sw, sh, dw, dh) { // bilinear
 
 /** OKLab-like perceptual lightness (cube root of linear luminance) averaged on the mask grid. */
 export function lightnessGrid(rgba, w, h, mw, mh) {
-  const sum = new Float32Array(mw * mh), cnt = new Float32Array(mw * mh);
+  const sum = new Float32Array(mw * mh), cnt = new Float32Array(mw * mh), col = new Int32Array(w);
+  for (let x = 0; x < w; x++) col[x] = Math.min(mw - 1, Math.floor(x * mw / w)); // per column, once per frame
   for (let y = 0; y < h; y++) {
     const gy = Math.min(mh - 1, Math.floor(y * mh / h));
     for (let x = 0; x < w; x++) {
-      const p = (y * w + x) * 4, gi = gy * mw + Math.min(mw - 1, Math.floor(x * mw / w));
+      const p = (y * w + x) * 4, gi = gy * mw + col[x];
       sum[gi] += Math.cbrt(0.2126 * S2L[rgba[p]] + 0.7152 * S2L[rgba[p + 1]] + 0.0722 * S2L[rgba[p + 2]]);
       cnt[gi]++;
     }

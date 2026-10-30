@@ -44,7 +44,7 @@ export class EngineClient {
   render(img, opts) { // img: ImageData. Returns {imageData, intentHash, localApplied}
     const buf = img.data.slice().buffer;
     return this.call({ type: 'render', rgba: buf, w: img.width, h: img.height, ...opts }, [buf]).then((m) => ({
-      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index, blur: m.blur,
+      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index, blur: m.blur, timing: m.timing,
     }));
   }
 }
@@ -253,15 +253,44 @@ async function pickCodec(w, h, fps) {
  * worker (which received the intent via startJob), encoded with WebCodecs and muxed into MP4.
  * Returns {blob, frames, fps, width, height, codec, intentHash}.
  */
-export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, maskH, maxSide = 1280, onProgress, isCancelled, keepFrames = [] }) {
+// segmentation workers kept between jobs (the model loads once): two on a 4-core machine, up to three on more
+let segPool = null;
+async function segWorkers() {
+  if (segPool) return segPool;
+  const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 2));
+  const { startSegWorker } = await import('./segment.js');
+  const ws = (await Promise.all(Array.from({ length: n }, () => startSegWorker()))).filter(Boolean);
+  segPool = ws.length ? ws : null;
+  return segPool;
+}
+
+/**
+ * Process the whole clip: decode → (AI segmentation) → grade → encode, as a pipeline. Frames are decoded front to
+ * back with WebCodecs (vdecode.js; seeking the <video> element as the fallback), segmentation runs in worker
+ * threads and grading in the render worker, so the stages work on different frames at the same time (up to
+ * IN_FLIGHT frames). Frames reach the render worker strictly in order (its mask smoothing and blur tracking follow
+ * the frame order) and are encoded in order. segPrepare(canvas): the 256 px frame made ready for the model (LOG
+ * restoration), segmentFn: main-thread segmentation when no worker can run.
+ */
+const IN_FLIGHT = 4;
+export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, segPrepare = null, maskH, maxSide = 1280, onProgress, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
   const kept = {}, blurTrack = { frames: 0, lost: 0, chained: 0 };
+  // where the time goes (ms, summed over frames): grab = decode + draw + read the frame (main thread), seg = AI
+  // segmentation (in its workers, overlapped), render = grading in the render worker (its own split in .worker),
+  // wait = main thread waiting for finished frames, encode = waiting for the encoder queue
+  const timing = { grab: 0, seg: 0, render: 0, wait: 0, encode: 0, worker: {} }, now = () => performance.now();
   if (typeof VideoEncoder === 'undefined') throw new Error('此瀏覽器不支援 WebCodecs，無法輸出影片（請使用最新版 Chrome 或 Edge）');
   const { w, h } = fitSize(meta.width, meta.height, maxSide);
   const fps = meta.fps, n = meta.frameCount;
   const cfg = await pickCodec(w, h, fps);
+  const bytes = await (await fetch(meta.url)).arrayBuffer();
   // the source's audio is carried over as it is (AAC samples copied, not re-encoded)
   let audio;
-  try { audio = await extractAudio(await (await fetch(meta.url)).arrayBuffer()); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; }
+  try { audio = await extractAudio(bytes); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; }
+  let stream = null;
+  if (useStream && !(meta.video instanceof PhotoSet)) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await openFrameStream(bytes); } catch { stream = null; } }
+  const workers = needsSeg && useSegWorker && segPrepare ? await segWorkers() : null;
+  timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0;
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
     ...(audio.track ? { audio: { codec: 'aac', numberOfChannels: audio.track.numberOfChannels, sampleRate: audio.track.sampleRate } } : {}) });
   let encErr = null;
@@ -271,36 +300,64 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   const started = await engine.startJob(jobId, intentJson, look);
   const canvas = canvas2d(w, h);
   const segCanvas = canvas2d(256, Math.round(256 * h / w));
-  const t0 = performance.now();
+  const t0 = now();
+  const inflight = [];
+  let posted = Promise.resolve(), done = 0, segCalls = 0;
+  const finish = async (job) => { // in frame order: wait for the graded frame, then encode it
+    let tt = now();
+    const r = await job.render;
+    timing.wait += now() - tt;
+    for (const [k, v] of Object.entries(r.timing || {})) timing.worker[k] = (timing.worker[k] || 0) + v;
+    timing.render += Object.values(r.timing || {}).reduce((a, b) => a + b, 0);
+    if (r.blur && r.blur.tracked) { blurTrack.frames++; if (!r.blur.ok) blurTrack.lost++; if (r.blur.chained) blurTrack.chained++; }
+    if (keepFrames.includes(job.i)) kept[job.i] = { source: job.img, rendered: r.imageData };
+    if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
+    const frame = new VideoFrame(r.imageData.data, { format: 'RGBA', codedWidth: w, codedHeight: h, timestamp: Math.round(job.i * 1e6 / fps), duration: Math.round(1e6 / fps) });
+    encoder.encode(frame, { keyFrame: job.i % Math.max(1, Math.round(fps * 2)) === 0 });
+    frame.close();
+    tt = now();
+    while (encoder.encodeQueueSize > 4) await new Promise((res) => setTimeout(res, 5));
+    timing.encode += now() - tt;
+    done++;
+    onProgress && onProgress({ done, total: n, elapsed: (now() - t0) / 1000, preview: job.i % 10 === 0 ? r.imageData : null });
+  };
   try {
     for (let i = 0; i < n; i++) {
       if (isCancelled && isCancelled()) throw new Error('已取消');
       if (encErr) throw encErr;
       const t = frameTime(meta, i);
-      const img = await grabFrame(meta.video, t, w, h, canvas);
-      let seg = null;
+      let tt = now();
+      const img = stream ? await stream.frameAt(t, w, h, canvas) : await grabFrame(meta.video, t, w, h, canvas);
+      timing.grab += now() - tt;
+      let segP = Promise.resolve(null);
       if (needsSeg) {
         segCanvas.getContext('2d').drawImage(canvas, 0, 0, segCanvas.width, segCanvas.height);
-        seg = segmentFn(segCanvas, MASK_W, maskH);
+        if (workers) {
+          const sc = segPrepare(segCanvas), sImg = sc.getContext('2d').getImageData(0, 0, sc.width, sc.height), ts = now();
+          segP = workers[segCalls++ % workers.length].segment(sImg, MASK_W, maskH).then((g) => { timing.seg += now() - ts; return g; });
+        } else { tt = now(); segP = Promise.resolve(segmentFn(segCanvas, MASK_W, maskH)); timing.seg += now() - tt; }
       }
-      const r = await engine.render(img, { jobId, index: i, seg, grade: true });
-      if (r.blur && r.blur.tracked) { blurTrack.frames++; if (!r.blur.ok) blurTrack.lost++; if (r.blur.chained) blurTrack.chained++; }
-      if (keepFrames.includes(i)) kept[i] = { source: img, rendered: r.imageData };
-      if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
-      const frame = new VideoFrame(r.imageData.data, { format: 'RGBA', codedWidth: w, codedHeight: h, timestamp: Math.round(i * 1e6 / fps), duration: Math.round(1e6 / fps) });
-      encoder.encode(frame, { keyFrame: i % Math.max(1, Math.round(fps * 2)) === 0 });
-      frame.close();
-      while (encoder.encodeQueueSize > 4) await new Promise((res) => setTimeout(res, 5));
-      onProgress && onProgress({ done: i + 1, total: n, elapsed: (performance.now() - t0) / 1000, preview: i % 10 === 0 ? r.imageData : null });
+      // post to the render worker in frame order (after this frame's masks and the previous frame's post)
+      const step = posted.then(() => segP).then((seg) => ({ r: engine.render(img, { jobId, index: i, seg, grade: true }) }));
+      posted = step.then(() => {}, () => {});
+      const render = step.then((o) => o.r);
+      render.catch(() => {}); // (handled when finished, in order)
+      inflight.push({ i, img, render });
+      if (inflight.length >= IN_FLIGHT) await finish(inflight.shift());
     }
+    while (inflight.length) await finish(inflight.shift());
+    let tf = now();
     await encoder.flush();
+    timing.encode += now() - tf;
+    timing.total = now() - t0;
     if (encErr) throw encErr;
     if (audio.track) audio.written = muxAudio(muxer, audio, (n * 1e6) / fps);
     muxer.finalize();
   } finally {
+    if (stream) stream.close();
     engine.endJob(jobId);
     if (encoder.state !== 'closed') encoder.close();
   }
-  return { blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }), frames: n, fps, width: w, height: h, codec: cfg.codec, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, kept, blurTrack,
+  return { blob: new Blob([muxer.target.buffer], { type: 'video/mp4' }), frames: n, fps, width: w, height: h, codec: cfg.codec, intentHash: started.intentHash, lookHash: started.lookHash, jobRegions: started.regions, kept, blurTrack, timing,
     audio: audio.track ? { kept: true, codec: audio.track.codec, samples: audio.written } : { kept: false, reason: audio.skipped } };
 }
