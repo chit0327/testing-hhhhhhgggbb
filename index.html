@@ -78,6 +78,10 @@
       <div class="view" id="viewPreview" role="tabpanel" aria-labelledby="tabPreview">
         <div class="stage-media">
           <canvas id="adjCanvas" aria-label="調色預覽：左邊原始、右邊調色結果"></canvas>
+          <figure class="ref-pip" id="refPip" hidden title="參考圖：按一下放大／縮小，拖動可以移開">
+            <img id="refPipImg" alt="參考圖" draggable="false">
+            <figcaption>參考圖</figcaption>
+          </figure>
           <div class="stage-empty" id="stageEmpty">
             <p>完成「光暗設定」後，這裏會顯示代表影格的調色預覽。</p>
             <button type="button" id="stageIntent" class="primary">開啟光暗設定</button>
@@ -94,6 +98,7 @@
             </div>
             <label class="pv-fast" title="拖動時先用較粗的調色表和一半解析度，放手後自動換成完整品質"><input type="checkbox" id="pvFast" checked> 快速預覽</label>
             <label class="pv-fast" title="以黑白顯示預覽，檢查畫面的明暗關係（只影響顯示，不影響輸出）"><input type="checkbox" id="pvBw"> 黑白檢查</label>
+            <label class="pv-fast" title="在預覽角落顯示參考圖，方便對照"><input type="checkbox" id="pvRef" checked> 參考圖</label>
             <span class="pv-info" id="pvInfo"></span>
           </div>
         </div>
@@ -272,7 +277,7 @@
               <label><input type="radio" name="blurSize" value="l"> 大</label>
             </div>
             <label class="check"><input type="checkbox" id="blurInvert"> 反轉遮罩（模糊選取範圍以外的部分）</label>
-            <label class="check"><input type="checkbox" id="blurShow" checked> 在畫面上顯示選取範圍（紅色）</label>
+            <label class="check"><input type="checkbox" id="blurShow" checked> 顯示遮罩（紅色斜線）：顯示時畫面暫時不模糊，方便檢查和擦除</label>
             <div class="row"><button type="button" id="blurClear">清除筆刷和套索</button></div>
             <p class="info">選了工具後直接在左邊畫面上塗抹、圈選或點選。筆刷、套索和魔術棒會跟着鏡頭移動（以你塗抹的那一格畫面為準，自動追蹤平移、推近拉遠）；AI 背景每一格都會重新偵測。AI 只分辨「人」和「其他」，所以動物、物件也算背景；不想模糊的地方用橡皮擦或「套索移除」擦掉即可（也會擦掉 AI 選到的部分）。</p>
             <h3>模糊效果</h3>

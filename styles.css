@@ -238,3 +238,8 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 .glow-wheel-side { display: flex; flex-direction: column; align-items: flex-start; gap: 4px; min-width: 0; }
 .glow-wheel-side output { font: 13px ui-monospace, monospace; color: var(--mut); }
 .glow-wheel-side button.reset { grid-column: auto; justify-self: auto; }
+.ref-pip { position: absolute; top: 18px; right: 18px; margin: 0; width: clamp(110px, 24%, 260px); background: #111; border: 2px solid rgba(255,255,255,.85); border-radius: 8px; box-shadow: 0 4px 16px rgba(0,0,0,.45); overflow: hidden; cursor: grab; touch-action: none; user-select: none; z-index: 2; }
+.ref-pip.big { width: clamp(180px, 48%, 560px); }
+.ref-pip.dragging { cursor: grabbing; opacity: .85; }
+.ref-pip img { display: block; width: 100%; height: auto; pointer-events: none; }
+.ref-pip figcaption { position: absolute; left: 0; top: 0; padding: 1px 7px; font-size: 11px; color: #fff; background: rgba(0,0,0,.55); border-bottom-right-radius: 6px; }

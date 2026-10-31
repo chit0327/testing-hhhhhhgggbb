@@ -83,6 +83,7 @@ $('refInput').addEventListener('change', async (e) => {
     S.ref = { status: 'ready', id, file, bitmap: bmp, imageData: imageDataOf(bmp, 512) };
     const img = $('refPreview');
     img.src = URL.createObjectURL(file); img.hidden = false;
+    $('refPipImg').src = img.src; syncRefPip();
     $('refInfo').textContent = `${file.name}　${bmp.width}×${bmp.height}`;
     log('ref-loaded', { name: file.name });
   } catch (err) {
@@ -678,23 +679,28 @@ function syncBlurControls() {
   $('blurDirRow').hidden = b.type !== 'motion';
   $('blurDirBtn').setAttribute('aria-pressed', String(BL.dir));
   $('adjCanvas').classList.toggle('editing', blurEditing());
+  syncRefPip();
 }
 const blurEditing = () => (BL.tool !== 'none' || BL.dir) && !$('catBlur').hidden && $('catBlur').open && !$('viewPreview').hidden;
-$('blurOn').addEventListener('change', (e) => editBlur({ on: e.target.checked }));
+$('blurOn').addEventListener('change', (e) => { if (e.target.checked) $('blurShow').checked = false; editBlur({ on: e.target.checked }); }); // turning blur on: show the result
+// 顯示遮罩 is separate from 開啟模糊: while the mask is shown, the preview is rendered WITHOUT the blur (sharp picture,
+// so the selection can be checked and erased precisely); the look itself (and the processed file) is unchanged
+const maskShown = () => $('blurShow').checked && !$('catBlur').hidden && $('catBlur').open && !$('viewPreview').hidden;
+function previewLook() { const d = S.look.draft; return maskShown() && d.blur && d.blur.on ? { ...d, blur: { ...d.blur, on: false } } : d; }
 $('blurAi').addEventListener('change', (e) => { editBlur({ ai: e.target.checked }); if (e.target.checked && !(S.rep && S.rep.seg)) $('blurInfo').textContent = 'AI 背景偵測還沒有結果（請先完成光暗設定的 AI 辨識），可以先用筆刷或套索。'; });
 $('blurInvert').addEventListener('change', (e) => editBlur({ invert: e.target.checked }));
-$('blurShow').addEventListener('change', () => drawAdj());
+$('blurShow').addEventListener('change', () => { drawAdj(); scheduleAdjPreview(); });
 for (const el of document.querySelectorAll('input[name=blurType]')) el.addEventListener('change', () => editBlur({ type: el.value }));
 $('blurAmount').addEventListener('input', (e) => { $('blurAmount-v').textContent = e.target.value; editBlur({ amount: e.target.value / 100 }); });
 $('blurAngle').addEventListener('input', (e) => { editBlur({ angle: +e.target.value }); });
 $('blurFeather').addEventListener('input', (e) => { editBlur({ feather: e.target.value / 100 }); });
 // narrow screens: the panel is below the picture, so bring the picture into view to draw on it
 const showCanvasForEditing = () => { if (window.innerWidth <= 1024 && blurEditing()) $('adjCanvas').scrollIntoView({ block: 'center', behavior: 'instant' }); };
-for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; $('blurTolRow').hidden = !BL.tool.startsWith('wand'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
+for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; if (BL.tool !== 'none' && !$('blurShow').checked) { $('blurShow').checked = true; scheduleAdjPreview(); } /* selecting: show the mask */ $('blurTolRow').hidden = !BL.tool.startsWith('wand'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
 $('blurTol').addEventListener('input', (e) => { BL.tol = +e.target.value; $('blurTol-v').textContent = e.target.value; });
 for (const el of document.querySelectorAll('input[name=blurSize]')) el.addEventListener('change', () => { BL.size = el.value; drawAdj(); showCanvasForEditing(); });
 $('blurDirBtn').onclick = () => { BL.dir = !BL.dir; syncBlurControls(); drawAdj(); showCanvasForEditing(); };
-$('catBlur').addEventListener('toggle', () => { syncBlurControls(); drawAdj(); });
+$('catBlur').addEventListener('toggle', () => { syncBlurControls(); drawAdj(); if (blurOf().on) scheduleAdjPreview(); }); // (mask shown only while the panel is open)
 $('blurClear').onclick = () => { BL.layer = null; BL.curSel = null; BL.motion.clear(); editBlur({ selId: null }); log('blur-cleared'); };
 
 // motion from the current preview frame to the anchor (cached per frame time)
@@ -784,14 +790,22 @@ async function commitSelection() {
 function drawBlurOverlay(ctx, w, h) {
   const b = blurOf(), panel = !$('catBlur').hidden && $('catBlur').open;
   if (!panel) return;
-  if ($('blurShow').checked && (b.on || BL.layer)) {
+  if ($('blurShow').checked) { // the selection as thick red diagonal stripes (shown whether or not the blur is on)
     const p = motionToAnchor(), bg = b.ai && S.rep.seg ? S.rep.seg.background : null;
     const lay = BL.layer ? warpLayer(BL.layer, BL.w, BL.h, p) : null, mw = BL.layer ? BL.w : MASK_W, mh = BL.layer ? BL.h : maskH();
     if ((lay || bg) && (!bg || bg.length === mw * mh)) {
       const m = feather(combineSelection(lay, bg, { ai: b.ai, invert: b.invert }, mw * mh), mw, mh, featherCells(b.feather)), id = new ImageData(mw, mh);
-      for (let i = 0; i < m.length; i++) { id.data[4 * i] = 255; id.data[4 * i + 1] = 40; id.data[4 * i + 2] = 60; id.data[4 * i + 3] = m[i] * 75; }
+      for (let i = 0; i < m.length; i++) { id.data[4 * i] = 255; id.data[4 * i + 1] = 255; id.data[4 * i + 2] = 255; id.data[4 * i + 3] = m[i] * 255; }
       const t = canvas2d(mw, mh); t.getContext('2d').putImageData(id, 0, 0);
-      ctx.imageSmoothingEnabled = true; ctx.drawImage(t, 0, 0, w, h);
+      const s = canvas2d(w, h), sc = s.getContext('2d'); // the mask at picture size, then stripes kept only inside it
+      sc.imageSmoothingEnabled = true; sc.drawImage(t, 0, 0, w, h);
+      ctx.save(); ctx.globalAlpha = 0.18; ctx.imageSmoothingEnabled = true; ctx.drawImage(s, 0, 0); ctx.restore(); // (white mask, faint: the whole area a little lighter)
+      sc.globalCompositeOperation = 'source-in';
+      const gap = Math.max(10, Math.round(w / 45)), lw = Math.max(3, gap * 0.38);
+      sc.strokeStyle = 'rgba(230, 20, 30, 0.85)'; sc.lineWidth = lw; sc.beginPath();
+      for (let k = -h; k < w + h; k += gap) { sc.moveTo(k, h); sc.lineTo(k + h, 0); } // 45° stripes
+      sc.stroke();
+      ctx.drawImage(s, 0, 0);
     }
   }
   const d = BL.drag;
@@ -1344,7 +1358,7 @@ async function pumpRenders() {
         const side = job.draft ? Math.max(320, PV_SIDE[PV.q] / 2) : PV_SIDE[PV.q];
         const src = await previewFrame(side), t0 = performance.now();
         const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
-        const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: S.look.draft, draft: job.draft });
+        const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: previewLook(), draft: job.draft });
         if (seq !== adjSeq) continue;
         const ms = performance.now() - t0;
         adjRendered = r.imageData;
@@ -1383,6 +1397,36 @@ for (const b of document.querySelectorAll('[data-pvq]')) b.onclick = () => {
   log('preview-quality', { q: PV.q });
   clearTimeout(PV.finalTimer); requestRender(false);
 };
+// 參考圖 picture-in-picture on the grading preview: click toggles small / large, drag moves it (kept inside the
+// picture area, remembered as a fraction so it stays put when the panel resizes)
+const PIP = { x: null, y: null, drag: null };
+function syncRefPip() {
+  const on = S.ref && S.ref.status === 'ready' && $('pvRef').checked && !!$('refPipImg').getAttribute('src') && !$('adjCanvas').hidden && !blurEditing(); // (hidden while painting a blur selection)
+  $('refPip').hidden = !on;
+  if (on && PIP.x !== null) placeRefPip();
+}
+function placeRefPip() {
+  const box = $('refPip').parentElement.getBoundingClientRect(), el = $('refPip'), w = el.offsetWidth, h = el.offsetHeight;
+  const x = Math.min(Math.max(0, PIP.x * box.width), Math.max(0, box.width - w)), y = Math.min(Math.max(0, PIP.y * box.height), Math.max(0, box.height - h));
+  el.style.left = `${x}px`; el.style.top = `${y}px`; el.style.right = 'auto';
+}
+{
+  const el = $('refPip');
+  el.addEventListener('pointerdown', (e) => { const r = el.getBoundingClientRect(); PIP.drag = { id: e.pointerId, dx: e.clientX - r.left, dy: e.clientY - r.top, x0: e.clientX, y0: e.clientY, moved: false }; el.setPointerCapture(e.pointerId); });
+  el.addEventListener('pointermove', (e) => {
+    const d = PIP.drag; if (!d || d.id !== e.pointerId) return;
+    if (!d.moved && Math.hypot(e.clientX - d.x0, e.clientY - d.y0) < 4) return;
+    d.moved = true; el.classList.add('dragging');
+    const box = el.parentElement.getBoundingClientRect();
+    PIP.x = (e.clientX - d.dx - box.left) / box.width; PIP.y = (e.clientY - d.dy - box.top) / box.height; placeRefPip();
+  });
+  const end = (e) => { const d = PIP.drag; if (!d || d.id !== e.pointerId) return; PIP.drag = null; el.classList.remove('dragging');
+    if (!d.moved) { el.classList.toggle('big'); if (PIP.x !== null) placeRefPip(); log('ref-pip', { big: el.classList.contains('big') }); } };
+  el.addEventListener('pointerup', end); el.addEventListener('pointercancel', end);
+  window.addEventListener('resize', () => { if (!el.hidden && PIP.x !== null) placeRefPip(); });
+  $('pvRef').addEventListener('change', () => { syncRefPip(); try { localStorage.setItem('zhaoyang-refpip', $('pvRef').checked ? '1' : '0'); } catch {} });
+  try { if (localStorage.getItem('zhaoyang-refpip') === '0') $('pvRef').checked = false; } catch {}
+}
 $('pvBw').addEventListener('change', (e) => { log('bw-check', { on: e.target.checked }); drawAdj(); });
 $('pvFast').addEventListener('change', (e) => {
   PV.fast = e.target.checked;
@@ -1591,6 +1635,7 @@ $('videoPreview').addEventListener('loadedmetadata', (e) => { if (e.target.curre
 $('refRemove').onclick = () => {
   S.ref = { status: 'empty', id: S.ref.id + 1 };
   $('refInput').value = ''; $('refPreview').hidden = true; $('refPreview').removeAttribute('src'); $('refInfo').textContent = '';
+  $('refPipImg').removeAttribute('src'); syncRefPip();
   log('ref-removed');
   assetsChanged('ref');
 };
@@ -1608,6 +1653,7 @@ function setAdjustVisible(on) {
   $('adjustCard').hidden = !on;
   $('stageEmpty').hidden = on;
   $('adjCanvas').hidden = !on;
+  syncRefPip();
 }
 function resetResultViews() {
   $('tabResult').disabled = true; $('tabWipe').disabled = true; $('progressWrap').hidden = true;
