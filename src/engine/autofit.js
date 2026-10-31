@@ -323,6 +323,10 @@ export function fitLook(srcLab, refLab, mode = 'look', { norm = estimateNorm(src
   });
   const out = scalePrim(p, LOOK_SCALE[mode] || 2);
   out.norm = p.norm; out.skin = MODES[mode].skin;
+  // a light 同類對應 (like with like: walls to walls, foliage to foliage, sky to sky) — benchmark 11.11 → 10.89, grading-set
+  // closeness 13.6 → 12.6 with stability unchanged (6.9 → 7.0); stronger matching overshoots when the classes' content differs
+  // (風格 only: on 風格・濃, already pushed ×3, the tint across a tonal-band edge cost texture on flat footage — 0.933 < 0.94)
+  if (mode === 'look') { const reg = withRegion(srcLab, refLab, out, 0.3); out.tint = reg.tint; out.hueHue = reg.hueHue; out.hueSat = reg.hueSat; }
   return { prim: out, report: { mode, label: MODES[mode].label, norm, weights: { tone: jsw(mt, 1, LOOK.toneFloor) } } };
 }
 
@@ -785,20 +789,60 @@ export function withFollow(srcLab, refLab, prim, s) {
   const p = sanitizePrim(prim);
   const full = fitInferred(srcLab, refLab, { tone: 1, toneCap: 0.3, deltas: [[0, 0], [0, 0], [0, 0]], norm: p.norm && p.norm.amt ? p.norm : { amt: 0 } }).prim.luma;
   p.luma = safeLuma(p.luma.map((v, i) => v + (full[i] - v) * k));
-  const norm = p.norm && p.norm.amt ? p.norm : null, bands = neutralBands(srcLab, norm ? applyNormLab(srcLab, norm) : srcLab);
-  // the source's neutral tones take on the reference's actual tint per tonal band (its mean a / b there) — the user asked
-  // for the reference's look itself, so neither shrunk nor relative to a typical photo. Laid on as a tint per tonal band
-  // (primary.js tint) that spares saturated blues: the candidate's wheels stay, and warming the scene leaves its sky blue
-  // (pushing the wheels / white balance instead turned the sky grey-green). Solved by fixed-point steps on the band means.
-  const now = bands(p), t = refCasts(refLab, true), target = now.map((b, i) => [b[0] + (t[i][0] - b[0]) * k, b[1] + (t[i][1] - b[1]) * k]);
-  // the band means are linear in the six tint numbers, but the source's tonal bands straddle the tint's (a dark band can
-  // span lo and mid): solved together by least squares with a small ridge (one-band-at-a-time steps fought each other)
-  const keys = ['lo', 'mid', 'hi'], setT = (x) => { p.tint = { lo: [x[0], x[1]], mid: [x[2], x[3]], hi: [x[4], x[5]] }; };
-  const flat = (bs) => bs.flatMap((b) => b), h = 0.01;
-  setT([0, 0, 0, 0, 0, 0]); const b0 = flat(bands(p)), r = flat(target).map((v, i) => v - b0[i]);
-  const J = [0, 1, 2, 3, 4, 5].map((q) => { const x = [0, 0, 0, 0, 0, 0]; x[q] = h; setT(x); return flat(bands(p)).map((v, i) => (v - b0[i]) / h); }); // J[q][i]
-  const RIDGE = 0.02, A = J.map((ja, a) => J.map((jb, b) => ja.reduce((s, v, i) => s + v * jb[i], 0) + (a === b ? RIDGE : 0)));
-  const x = solveLinear(A, J.map((ja) => ja.reduce((s, v, i) => s + v * r[i], 0))) || [0, 0, 0, 0, 0, 0];
-  setT(x.map((v) => clamp(v, -0.08, 0.08)));
+  // colours by 同類對應 (like with like) at the full strength k: walls towards the reference's walls, foliage towards its
+  // foliage, sky towards its sky — a class missing in either image is left alone, blues are spared by the tint
+  return withRegion(srcLab, refLab, p, k);
+}
+
+/**
+ * 同類對應 (region matching): compare like with like. Every sample of both images is put in a class by its colour —
+ * sky (blue, bright), foliage (green), surfaces (everything else: walls, ground, roads, objects) — and each class of
+ * the source is moved towards the same class of the reference: surfaces per tonal band by a tint (primary.js tint, which
+ * spares blues), foliage and sky by the hue curves at their anchors. A reference that is warm only because its walls are
+ * golden then warms the source's walls, not its sky; a class missing in either image is left alone. k: strength 0..1.
+ */
+const regionOf = (L, a, b) => {
+  const C = Math.hypot(a, b), h = ((Math.atan2(b, a) * 180) / Math.PI + 360) % 360;
+  if (h >= 200 && h <= 290 && L > 0.55 && C > 0.012) return 'sky';
+  if (h >= 95 && h <= 170 && C > 0.03 && L < 0.85) return 'foliage';
+  return 'surface';
+};
+export function withRegion(srcLab, refLab, prim, k = 1) {
+  const s = clamp(k, 0, 1);
+  if (!s) return prim;
+  const p = sanitizePrim(prim), norm = p.norm && p.norm.amt ? p.norm : null, srcR = norm ? applyNormLab(srcLab, norm) : srcLab;
+  const pick = (lab, cls) => { const o = []; for (let i = 0; i < lab.length; i += 3) if (regionOf(lab[i], lab[i + 1], lab[i + 2]) === cls) o.push(i); return o; };
+  const nS = srcLab.length / 3, nR = refLab.length / 3, MIN = 0.03;
+  // source samples as sRGB (graded through prim each time) with their class from the restored source
+  const rgb = []; for (let i = 0; i < srcLab.length; i += 3) rgb.push(oklabToSrgb(srcLab[i], srcLab[i + 1], srcLab[i + 2]));
+  const graded = (q) => { const f = compilePrim(q), lab = new Float64Array(srcLab.length), o = [0, 0, 0], l = [0, 0, 0]; for (let j = 0; j < rgb.length; j++) { const c = f ? f(rgb[j][0], rgb[j][1], rgb[j][2], o) : rgb[j]; srgbToOklab(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), l); lab[3 * j] = l[0]; lab[3 * j + 1] = l[1]; lab[3 * j + 2] = l[2]; } return lab; };
+  // ---- surfaces: mean a / b per tonal band (rank within the class), source graded vs reference
+  const sS = pick(srcR, 'surface'), sR = pick(refLab, 'surface');
+  if (sS.length / nS > MIN && sR.length / nR > MIN) {
+    const bandsOfIdx = (lab, idx) => { const o = idx.slice().sort((x, y) => lab[x] - lab[y]); return [0, 1, 2].map((b) => { const part = o.slice(Math.floor((b * o.length) / 3), Math.floor(((b + 1) * o.length) / 3)); let a = 0, bb = 0; for (const i of part) { a += lab[i + 1]; bb += lab[i + 2]; } return [a / part.length, bb / part.length]; }); };
+    const ref = bandsOfIdx(refLab, sR), order = sS.slice().sort((x, y) => srcR[x] - srcR[y]); // bands fixed by the source's own lightness
+    const bandOf = new Map(); order.forEach((i, r) => bandOf.set(i, Math.min(2, Math.floor((3 * r) / order.length))));
+    const bands = (q) => { const lab = graded(q), acc = [[0, 0, 0], [0, 0, 0], [0, 0, 0]]; for (const i of sS) { const t = acc[bandOf.get(i)]; t[0] += lab[i + 1]; t[1] += lab[i + 2]; t[2]++; } return acc.map((t) => [t[0] / (t[2] || 1), t[1] / (t[2] || 1)]); };
+    const now = bands(p), target = now.map((b, i) => [b[0] + (ref[i][0] - b[0]) * s, b[1] + (ref[i][1] - b[1]) * s]);
+    const setT = (x) => { p.tint = { lo: [x[0], x[1]], mid: [x[2], x[3]], hi: [x[4], x[5]] }; }, flat = (bs) => bs.flatMap((b) => b), h = 0.01;
+    const t0 = p.tint ? [p.tint.lo[0], p.tint.lo[1], p.tint.mid[0], p.tint.mid[1], p.tint.hi[0], p.tint.hi[1]] : [0, 0, 0, 0, 0, 0];
+    setT(t0); const b0 = flat(bands(p)), r = flat(target).map((v, i) => v - b0[i]);
+    const J = [0, 1, 2, 3, 4, 5].map((q) => { const x = t0.slice(); x[q] += h; setT(x); return flat(bands(p)).map((v, i) => (v - b0[i]) / h); });
+    const A = J.map((ja, a) => J.map((jb, b) => ja.reduce((acc, v, i) => acc + v * jb[i], 0) + (a === b ? 0.02 : 0)));
+    const dx = solveLinear(A, J.map((ja) => ja.reduce((acc, v, i) => acc + v * r[i], 0))) || [0, 0, 0, 0, 0, 0];
+    setT(t0.map((v, i) => clamp(v + dx[i], -0.08, 0.08)));
+  }
+  // ---- foliage and sky: hue / chroma at their hue-curve anchors (green 145, blue 255), two passes
+  for (const [cls, anchor] of [['foliage', 3], ['sky', 5]]) {
+    const iS = pick(srcR, cls), iR = pick(refLab, cls);
+    if (iS.length / nS < MIN || iR.length / nR < MIN) continue;
+    const meanHC = (lab, idx) => { let x = 0, y = 0, c = 0; for (const i of idx) { const C = Math.hypot(lab[i + 1], lab[i + 2]); x += lab[i + 1]; y += lab[i + 2]; c += C; } return [(Math.atan2(y, x) * 180) / Math.PI, c / idx.length]; };
+    const [hr, cr] = meanHC(refLab, iR);
+    for (let pass = 0; pass < 2; pass++) {
+      const [hs, cs] = meanHC(graded(p), iS);
+      p.hueHue[anchor] = clamp(p.hueHue[anchor] + angDiff(hr, hs) * s, -25, 25);
+      p.hueSat[anchor] = clamp(p.hueSat[anchor] + Math.log2(Math.max(cr, 1e-3) / Math.max(cs, 1e-3)) * s, -0.6, 0.6);
+    }
+  }
   return p;
 }

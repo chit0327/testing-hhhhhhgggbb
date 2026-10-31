@@ -891,6 +891,50 @@ async function renderMoodThumbs() {
   log('mood-thumbs', { n: MOODS.length });
 }
 $('catMood').addEventListener('toggle', () => renderMoodThumbs());
+
+// ---- 快速微調（四選一）: four variations of the current look side by side; picking one applies it and offers four
+// finer ones around it (like an eye test: "this one or that one"), so the user's eye decides, not a guess
+const PICK = { step: 1, round: 1, run: 0, shownFor: '' };
+function pickVariants(d, st) {
+  const c = (v, lo, hi) => Math.min(hi, Math.max(lo, v)), ref = d.source === 'reference' && !moodOnly();
+  return [
+    { id: 'warm', name: '更暖', look: { ...d, temperature: c(d.temperature + 0.15 * st, -1, 1), tint: c(d.tint + 0.03 * st, -1, 1) } },
+    { id: 'cool', name: '更冷', look: { ...d, temperature: c(d.temperature - 0.15 * st, -1, 1) } },
+    { id: 'moody', name: '更暗、更有氣氛', look: { ...d, exposure: c(d.exposure - 0.2 * st, -2, 2), contrast: c(d.contrast + 0.08 * st, -1, 1), highlights: c(d.highlights - 0.1 * st, -1, 1) } },
+    ref ? { id: 'ref', name: '更像參考圖', look: { ...d, follow: c((d.follow || 0) + 0.3 * st, 0, 1) } }
+      : { id: 'bright', name: '更亮、更清爽', look: { ...d, exposure: c(d.exposure + 0.2 * st, -2, 2), shadows: c(d.shadows + 0.1 * st, -1, 1) } },
+  ];
+}
+async function renderPicks() {
+  if (!S.rep || $('adjustCard').hidden || !$('catPick').open) return;
+  const key = JSON.stringify(S.look.draft) + '|' + PICK.step;
+  if (PICK.shownFor === key) return;
+  const run = ++PICK.run, src = await previewFrame(320), intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
+  await S.grade.ready;
+  const vs = pickVariants(S.look.draft, PICK.step), grid = $('pickGrid');
+  grid.innerHTML = '';
+  for (const v of vs) {
+    const b = document.createElement('button'); b.type = 'button'; b.dataset.pick = v.id;
+    const cv = document.createElement('canvas'); cv.width = src.width; cv.height = src.height;
+    const lab = document.createElement('span'); lab.textContent = v.name;
+    b.append(cv, lab); grid.appendChild(b);
+    b.onclick = () => { // apply, then four finer variations around it
+      S.look.auto = false; S.look.draft = v.look; PICK.step = Math.max(0.25, PICK.step * 0.6); PICK.round++;
+      $('pickRound').textContent = `第 ${PICK.round} 輪`;
+      log('pick', { id: v.id, round: PICK.round - 1 });
+      syncAdjustControls(); scheduleAdjPreview(); renderPicks();
+    };
+  }
+  for (const v of vs) {
+    const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: v.look, draft: true });
+    if (run !== PICK.run) return;
+    const cv = grid.querySelector(`[data-pick="${v.id}"] canvas`); cv.getContext('2d').putImageData(r.imageData, 0, 0);
+  }
+  PICK.shownFor = key;
+  log('pick-rendered', { round: PICK.round, step: PICK.step });
+}
+$('catPick').addEventListener('toggle', () => renderPicks());
+$('pickRestart').onclick = () => { PICK.step = 1; PICK.round = 1; $('pickRound').textContent = '第 1 輪'; renderPicks(); };
 function syncRefMode() { // reference-only controls are hidden without a reference; the moods open instead
   const none = moodOnly();
   $('catMatch').hidden = none; $('aiPanel').hidden = none;
@@ -1366,7 +1410,7 @@ async function pumpRenders() {
         drawAdj();
         $('pvInfo').textContent = `${src.width}×${src.height}・${job.draft ? '快速（17³）' : '完整品質（41³）'}・${Math.round(ms)} ms`;
         if (job.draft) log('adjust-preview-draft', { w: src.width, ms: Math.round(ms) });
-        else { drawScopes(); log('adjust-preview', { look: { ...S.look.draft }, w: src.width, ms: Math.round(ms) }); }
+        else { drawScopes(); log('adjust-preview', { look: { ...S.look.draft }, w: src.width, ms: Math.round(ms) }); setTimeout(renderPicks, 0); } // (四選一 follows the current look, when open)
       } catch (err) { $('adjState').textContent = `預覽失敗：${err.message}`; }
     }
   } finally { PV.busy = false; }

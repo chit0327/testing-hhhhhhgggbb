@@ -243,3 +243,9 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 .ref-pip.dragging { cursor: grabbing; opacity: .85; }
 .ref-pip img { display: block; width: 100%; height: auto; pointer-events: none; }
 .ref-pip figcaption { position: absolute; left: 0; top: 0; padding: 1px 7px; font-size: 11px; color: #fff; background: rgba(0,0,0,.55); border-bottom-right-radius: 6px; }
+.pick-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 6px 0 8px; }
+.pick-grid button { padding: 0; border-radius: 8px; overflow: hidden; background: var(--card); text-align: left; }
+.pick-grid button:hover, .pick-grid button:focus-visible { border-color: var(--acc); }
+.pick-grid canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #222; }
+.pick-grid span { display: block; padding: 4px 8px; font-size: 13px; }
+.pick-round { color: var(--mut); font-size: 13px; margin-right: auto; align-self: center; }
