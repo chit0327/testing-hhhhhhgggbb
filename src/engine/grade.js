@@ -279,7 +279,7 @@ export const DEFAULT_LOOK = {
   hiHue: 100, hiAmt: 0,         // ... highlights
   source: 'reference',          // 'reference' (natural transfer) | 'ai' (LUT distilled from an AI-graded frame)
   amount: 1,                    // 整體調色強度: blend of the whole look with the original colour (0 = original)
-  personEv: 0, bgEv: 0, skinFollow: 0, gradMap: 0, // gradMap: 漸層映射 strength (the reference's gradient, colour mode)
+  personEv: 0, bgEv: 0, skinFollow: 0, gradMap: 0, follow: 0, // follow: 跟隨參考圖程度 (0 = the candidate as fitted); gradMap: 漸層映射 strength (the reference's gradient, colour mode)
   // 人物 / 背景亮度 (stops, AI masks) and 膚色偏向參考圖色調 (skin layer)
   glow: 0, glowRadius: 0.5, glowHue: 60, glowTint: 0, haze: 0, hazeRadius: 0.5, hazeSoft: 0.5, hazeBloom: 0.5, hazeVeil: 0.5, // 柔光, 朦朧 (spatial: applied by the renderer, not the LUT)
   vignette: 0, vignetteSize: 0.5, // 暗角: + darkens / − lightens the edges (spatial)

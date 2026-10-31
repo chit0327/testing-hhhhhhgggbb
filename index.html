@@ -152,6 +152,9 @@
             <h3>整體調色強度</h3>
             <label class="slider"><span>強度</span><input type="range" id="adj-amount" min="0" max="100" value="100"><output id="adj-amount-v">100%</output></label>
             <p class="info">0% 是原片，100% 是完整效果。調到 50–70% 通常更自然、膚色更耐看。不影響光暗設定的局部曝光。</p>
+            <h3>跟隨參考圖程度</h3>
+            <label class="slider"><span>跟隨參考圖</span><input type="range" id="adj-follow" min="0" max="100" value="0"><output id="adj-follow-v">0%</output></label>
+            <p class="info">0% 是上面選的候選本身（「風格」為了穩定，對不確定的明暗和冷暖只套用一部分）。往右拉，明暗和冷暖會逐步完整跟隨參考圖：例如參考圖較暗、亮部偏暖金色、暗部偏青，結果也會跟着變。參考圖是強烈風格、而你想更像它時使用；太高時，參考圖本身場景的光線（例如夕陽）也會被當成調色套上。</p>
             <h3>漸層映射</h3>
             <label class="slider"><span>漸層映射</span><input type="range" id="adj-gradMap" min="0" max="100" value="0"><output id="adj-gradMap-v">0%</output></label>
             <canvas id="gradStrip" width="320" height="14" aria-label="參考圖的漸層（暗 → 亮）"></canvas>

@@ -56,7 +56,8 @@ function hueWindow(lab, h, win) {
 
 /**
  * LOG / flat-profile detection and restoration from the source alone (no reference involved): footage whose
- * lightness spans less than a normal image (q1..q99 under 0.6 OKLab L) is stretched around its median so that
+ * lightness spans less than a normal image (q1..q99 under 0.6 OKLab L), or whose colour is very weak with lifted blacks
+ * (a flat camera profile that keeps bright whites), is stretched around its median so that
  * q1 / q99 land near 0.22 / 0.88, and its chroma is raised towards a normal level (mean 0.03), both scaled by
  * how flat it is. Normal footage gets amt 0 (untouched). The creative fit then starts from a Rec.709-like
  * image instead of fighting the flat profile with capped curves.
@@ -67,7 +68,11 @@ export function estimateNorm(srcLab) {
   const n = Ls.length; C /= Math.max(1, n);
   const s = Float64Array.from(Ls).sort(), q = (t) => s[Math.min(n - 1, Math.round(t * (n - 1)))];
   const q1 = q(0.01), m = q(0.5), q99 = q(0.99), range = q99 - q1;
-  const amt = clamp((0.6 - range) / 0.2, 0, 1);
+  // flat by its range, or by its colour: a LOG / flat camera profile keeps bright whites (range near normal) but has
+  // lifted blacks and very weak colour (measured: flat clips chroma 0.006–0.016 with blacks at 0.22–0.35; every normal
+  // clip and reference ≥ 0.027 — faded-film references lift their blacks too, but keep normal colour)
+  const flatRange = clamp((0.6 - range) / 0.2, 0, 1), flatColour = clamp((0.024 - C) / 0.008, 0, 1) * clamp((q1 - 0.12) / 0.08, 0, 1);
+  const amt = Math.max(flatRange, flatColour);
   const Tm = clamp(m + (0.6 - m) * 0.7, 0.3, 0.7), HI = 0.995, LO = 0.05;
   const slope = (target, x, bound) => { // slope that sends source x to target through the tanh roll-off
     const span = Math.abs(bound - Tm), want = Math.abs(target - Tm) / span;
@@ -223,15 +228,11 @@ function bandCastsLow(lab, frac) { // per lightness tercile (by rank): median a/
     return [med(1), med(2)];
   });
 }
-export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.12, norm = estimateNorm(srcLab), deltas = null } = {}) {
-  const p = neutralPrim();
-  p.norm = { amt: norm.amt, m: norm.m, Tm: norm.Tm, s: norm.s, sat: norm.sat };
-  const srcR = norm.amt ? applyNormLab(srcLab, norm) : srcLab;
-  const rl = []; for (let i = 0; i < refLab.length; i += 3) rl.push(refLab[i]);
-  const sr = Float64Array.from(rl).sort(), qr = QS33.map((q) => sr[Math.min(sr.length - 1, Math.round(q * (sr.length - 1)))]);
-  p.luma = safeLuma(CURVE_X.map((x) => clamp(x + clamp(interp(x, TYPICAL.Lq, qr) - x, -toneCap, toneCap) * tone, 0, 1)));
-  const delta = deltas || bandCastsLow(refLab, 0.05).map((c, b) => [(c[0] - TYPICAL.casts[b][0]) * cast, (c[1] - TYPICAL.casts[b][1]) * cast]); // deltas: per-band casts given directly
-  // wheels: the source's near-neutral samples (least colourful 20 % per band) must take on these casts
+/**
+ * The source's near-neutral samples (least colourful 20 % of each tonal band, judged on the restored source srcR):
+ * returns bands(prim) → the mean a/b of those samples per band after the grade prim (dark / mid / bright).
+ */
+function neutralBands(srcLab, srcR) {
   const n = Math.min(2500, srcR.length / 3), st = Math.max(1, Math.floor(srcR.length / 3 / n)), rgb = [], sl = [];
   for (let i = 0, j = 0; j < n; i += 3 * st, j++) { rgb.push(oklabToSrgb(srcLab[i], srcLab[i + 1], srcLab[i + 2])); sl.push(srcR[i], srcR[i + 1], srcR[i + 2]); }
   const order = Array.from({ length: n }, (_, i) => i).sort((x, y) => sl[3 * x] - sl[3 * y]), band = new Uint8Array(n), keep = new Uint8Array(n);
@@ -252,6 +253,18 @@ export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.
     }
     return a.map((t) => [t[0] / (t[2] || 1), t[1] / (t[2] || 1)]);
   };
+  return bands;
+}
+export function fitInferred(srcLab, refLab, { tone = 0.5, cast = 1, toneCap = 0.12, norm = estimateNorm(srcLab), deltas = null } = {}) {
+  const p = neutralPrim();
+  p.norm = { amt: norm.amt, m: norm.m, Tm: norm.Tm, s: norm.s, sat: norm.sat };
+  const srcR = norm.amt ? applyNormLab(srcLab, norm) : srcLab;
+  const rl = []; for (let i = 0; i < refLab.length; i += 3) rl.push(refLab[i]);
+  const sr = Float64Array.from(rl).sort(), qr = QS33.map((q) => sr[Math.min(sr.length - 1, Math.round(q * (sr.length - 1)))]);
+  p.luma = safeLuma(CURVE_X.map((x) => clamp(x + clamp(interp(x, TYPICAL.Lq, qr) - x, -toneCap, toneCap) * tone, 0, 1)));
+  const delta = deltas || bandCastsLow(refLab, 0.05).map((c, b) => [(c[0] - TYPICAL.casts[b][0]) * cast, (c[1] - TYPICAL.casts[b][1]) * cast]); // deltas: per-band casts given directly
+  // wheels: the source's near-neutral samples (least colourful 20 % per band) must take on these casts
+  const bands = neutralBands(srcLab, srcR);
   const base = bands(p), target = base.map((b, i) => [b[0] + delta[i][0], b[1] + delta[i][1]]);
   solveWheels(p, bands, target, 5);
   p.skin = MODES.infer.skin;
@@ -455,6 +468,7 @@ export function whitePoint(p, srcLab, refLab, strength = 1) {
 }
 
 /** Damped Gauss-Seidel Newton on the Lift / Gamma / Gain colour so that bands(p) reaches target. */
+// one wheel at a time (the automatic fits: 風格, 照搬 grey balance — validated, benchmarked behaviour)
 function solveWheels(p, bands, target, iters) {
   const wheels = ['lift', 'gamma', 'gain'], vec = wheels.map((w) => { const t = (p[w].h * Math.PI) / 180; return [Math.cos(t) * p[w].a, Math.sin(t) * p[w].a]; });
   const setW = () => wheels.forEach((w, i) => { const a = Math.hypot(vec[i][0], vec[i][1]); p[w] = { m: p[w].m, h: ((Math.atan2(vec[i][1], vec[i][0]) * 180) / Math.PI + 360) % 360, a: clamp(a, 0, 1) }; });
@@ -479,6 +493,77 @@ function solveWheels(p, bands, target, iters) {
       vec[i] = v0; setW();
     }
   }
+}
+
+/**
+ * Lift / Gamma / Gain colour (6 numbers: a / b direction × amount per wheel) so that the three tonal bands reach their
+ * target tints, solved JOINTLY (damped Gauss–Newton on all six at once) — used where the user asked for a cast
+ * (參考圖色偏 / 跟隨參考圖程度). The wheels overlap (gain also moves the midtones); the one-at-a-time solver accepts a step
+ * only when the total error falls, so it can leave a wheel at 0 when its own band improves about as much as a
+ * neighbouring band worsens — fine for the automatic fits' modest casts, but it dropped a large warm highlight cast
+ * the user wanted. (Research note: with this solver for the automatic fits, 風格's cast strength castMax 2.5 → 1.0
+ * scored better on the 242-case benchmark — 風格 ΔE 11.11 → 10.46, 風格・濃 12.22 → 11.33 — but changed other unit-tested
+ * behaviour; left for a separate round.)
+ */
+function solveWheelsJoint(p, bands, target, iters, MU = 1e-4, wheels = ['lift', 'gamma', 'gain']) {
+  const n = wheels.length * 2;
+  let x = wheels.flatMap((w) => { const t = (p[w].h * Math.PI) / 180; return [Math.cos(t) * p[w].a, Math.sin(t) * p[w].a]; });
+  const set = (v) => wheels.forEach((w, i) => { let vx = v[2 * i], vy = v[2 * i + 1]; const a = Math.hypot(vx, vy); if (a > 1) { vx /= a; vy /= a; }
+    p[w] = { m: p[w].m, h: ((Math.atan2(vy, vx) * 180) / Math.PI + 360) % 360, a: clamp(Math.hypot(vx, vy), 0, 1) }; });
+  const resid = (v) => { set(v); const bs = bands(p); return bs.flatMap((b, i) => [target[i][0] - b[0], target[i][1] - b[1]]); };
+  // cost: band errors² + MU × wheel amounts² — the gentlest wheels that reach the targets (without it the overlap lets
+  // two wheels fight at full strength in opposite colours, e.g. gamma full blue against gain full orange). MU 0.01 for
+  // the automatic fits (benchmark: 風格 ΔE 11.11 → 10.74; it also keeps uncertain casts small), 0.001 when the user
+  // asked for the cast (參考圖色偏): 0.0001 — the three wheels act alike on a footage's neutral tones (badly conditioned),
+  // so even 0.001 held the wheels back to a third of the asked cast
+  const sq = (r, v) => r.reduce((s, q) => s + q * q, 0) + MU * v.reduce((s, q) => s + q * q, 0);
+  let r = resid(x), e = sq(r, x), lambda = 1e-4;
+  const h = 0.05;
+  for (let it = 0; it < iters * 2; it++) {
+    const J = []; // 6 residuals × n parameters, finite differences
+    for (let k = 0; k < n; k++) { const xk = x.slice(); xk[k] += h; const rk = resid(xk); J.push(rk.map((v, i) => (r[i] - v) / h)); } // J[k][i] = d(band_i)/d(x_k)
+    const A = Array.from({ length: n }, (_, a) => Array.from({ length: n }, (_, b) => J[a].reduce((s, v, i) => s + v * J[b][i], 0) + (a === b ? MU : 0)));
+    const g = Array.from({ length: n }, (_, a) => J[a].reduce((s, v, i) => s + v * r[i], 0) - MU * x[a]);
+    let improved = false;
+    for (let tries = 0; tries < 6 && !improved; tries++) {
+      const M = A.map((row, a) => row.map((v, b) => v + (a === b ? lambda * (A[a][a] + 1e-6) : 0)));
+      const d = solveLinear(M, g);
+      if (!d) { lambda *= 10; continue; }
+      const len = Math.hypot(...d), step = len > 0.35 ? d.map((v) => (v * 0.35) / len) : d;
+      const xn = x.map((v, k) => v + step[k]), rn = resid(xn), en = sq(rn, xn);
+      if (en < e) { x = xn; r = rn; e = en; lambda = Math.max(1e-6, lambda / 3); improved = true; } else lambda *= 10;
+    }
+    if (!improved) break;
+  }
+  set(x);
+}
+function solveBal(p, bands, target, k) {
+  const bal0 = p.bal || { r: 1, g: 1, b: 1 };
+  let x = [Math.log(bal0.r), Math.log(bal0.b)]; // red and blue gains (log), green fixed
+  const set = (v) => { p.bal = { r: Math.exp(clamp(v[0], -0.4 * k, 0.4 * k)), g: 1, b: Math.exp(clamp(v[1], -0.4 * k, 0.4 * k)) }; };
+  const resid = (v) => { set(v); return bands(p).flatMap((b, i) => [target[i][0] - b[0], target[i][1] - b[1]]); };
+  const sq = (r) => r.reduce((s, q) => s + q * q, 0);
+  let r = resid(x), e = sq(r);
+  for (let it = 0; it < 8; it++) {
+    const h = 0.02, J = [0, 1].map((q) => { const xq = x.slice(); xq[q] += h; const rq = resid(xq); return rq.map((v, i) => (r[i] - v) / h); });
+    const A = [[0, 0], [0, 0]], g = [0, 0];
+    for (let a = 0; a < 2; a++) { for (let b = 0; b < 2; b++) A[a][b] = J[a].reduce((s, v, i) => s + v * J[b][i], 0) + (a === b ? 1e-5 : 0); g[a] = J[a].reduce((s, v, i) => s + v * r[i], 0); }
+    const d = solveLinear(A, g); if (!d) break;
+    let improved = false;
+    for (let t = 1; t > 0.05 && !improved; t /= 2) { const xn = [x[0] + d[0] * t, x[1] + d[1] * t], rn = resid(xn), en = sq(rn); if (en < e) { x = xn; r = rn; e = en; improved = true; } }
+    if (!improved) break;
+  }
+  set(x);
+}
+function solveLinear(M, b) { // small dense system, Gaussian elimination with partial pivoting
+  const n = b.length, a = M.map((row, i) => [...row, b[i]]);
+  for (let c = 0; c < n; c++) {
+    let pv = c; for (let r = c + 1; r < n; r++) if (Math.abs(a[r][c]) > Math.abs(a[pv][c])) pv = r;
+    if (Math.abs(a[pv][c]) < 1e-12) return null;
+    [a[c], a[pv]] = [a[pv], a[c]];
+    for (let r = 0; r < n; r++) if (r !== c) { const f = a[r][c] / a[c][c]; for (let k = c; k <= n; k++) a[r][k] -= f * a[c][k]; }
+  }
+  return a.map((row, i) => row[n] / row[i]);
 }
 
 // ---- distribution refinement ------------------------------------------------------------------------
@@ -674,4 +759,46 @@ export function autoSkinFollow(lab) {
   if (!n) return 0;
   const sm = (lo, hi, x) => { const t = Math.min(1, Math.max(0, (x - lo) / (hi - lo))); return t * t * (3 - 2 * t); };
   return +(0.85 * sm(0.06, 0.1, Math.hypot(sa / n, sb / n)) * (1 - sm(0.05, 0.15, warm / n))).toFixed(3);
+}
+
+/**
+ * 跟隨參考圖程度 (user-set, 0..1): 風格 is deliberately cautious — it shrinks what it cannot tell from the reference's content
+ * (one sunny photo is warm because of its light, not its grade; benchmark-validated), which drops a strong look the user
+ * does want. This moves a candidate towards the reference: its tone curve towards the reference's full tone (quantiles
+ * vs a typical photo, weight 1), and the source's near-neutral tones towards the reference's full cast per tonal band
+ * (refCasts: its mean colour vs a typical photo's), solved jointly (solveWheelsJoint, then the white balance) so a
+ * large cast is actually reached. Continuous from s = 0
+ * (the candidate unchanged); everything else in prim (restoration, hue curves, local grade, skin) is kept.
+ */
+// the reference's MEAN colour per tonal band (by rank) — the mean, not the median: a cosy look's golden areas may be a
+// quarter of the picture, which the median ignores. relative: vs the typical photo's (a cast); absolute: as it is
+export function refCasts(refLab, absolute = false) {
+  const n = refLab.length / 3, idx = Array.from({ length: n }, (_, i) => i).sort((x, y) => refLab[3 * x] - refLab[3 * y]);
+  // saturated blues (sky, blue objects) are left out, as the follow tint spares them on the source too: like with like
+  // (a blue mug in a warm reference pulled the target cool); greyish teal (a look's cool shadows) still counts
+  const blue = (i) => { const C = Math.hypot(refLab[3 * i + 1], refLab[3 * i + 2]), h = (Math.atan2(refLab[3 * i + 2], refLab[3 * i + 1]) * 180) / Math.PI; return C > 0.03 && Math.abs(((h - 245 + 540) % 360) - 180) < 50; };
+  return [0, 1, 2].map((b) => { const part = idx.slice(Math.floor((b * n) / 3), Math.floor(((b + 1) * n) / 3)); let sa = 0, sb = 0, m = 0; for (const i of part) { if (blue(i)) continue; sa += refLab[3 * i + 1]; sb += refLab[3 * i + 2]; m++; } m = Math.max(1, m); return absolute ? [sa / m, sb / m] : [sa / m - LOOK_TYP.casts[b][0], sb / m - LOOK_TYP.casts[b][1]]; });
+}
+export function withFollow(srcLab, refLab, prim, s) {
+  const k = clamp(s, 0, 1);
+  if (!k) return prim;
+  const p = sanitizePrim(prim);
+  const full = fitInferred(srcLab, refLab, { tone: 1, toneCap: 0.3, deltas: [[0, 0], [0, 0], [0, 0]], norm: p.norm && p.norm.amt ? p.norm : { amt: 0 } }).prim.luma;
+  p.luma = safeLuma(p.luma.map((v, i) => v + (full[i] - v) * k));
+  const norm = p.norm && p.norm.amt ? p.norm : null, bands = neutralBands(srcLab, norm ? applyNormLab(srcLab, norm) : srcLab);
+  // the source's neutral tones take on the reference's actual tint per tonal band (its mean a / b there) — the user asked
+  // for the reference's look itself, so neither shrunk nor relative to a typical photo. Laid on as a tint per tonal band
+  // (primary.js tint) that spares saturated blues: the candidate's wheels stay, and warming the scene leaves its sky blue
+  // (pushing the wheels / white balance instead turned the sky grey-green). Solved by fixed-point steps on the band means.
+  const now = bands(p), t = refCasts(refLab, true), target = now.map((b, i) => [b[0] + (t[i][0] - b[0]) * k, b[1] + (t[i][1] - b[1]) * k]);
+  // the band means are linear in the six tint numbers, but the source's tonal bands straddle the tint's (a dark band can
+  // span lo and mid): solved together by least squares with a small ridge (one-band-at-a-time steps fought each other)
+  const keys = ['lo', 'mid', 'hi'], setT = (x) => { p.tint = { lo: [x[0], x[1]], mid: [x[2], x[3]], hi: [x[4], x[5]] }; };
+  const flat = (bs) => bs.flatMap((b) => b), h = 0.01;
+  setT([0, 0, 0, 0, 0, 0]); const b0 = flat(bands(p)), r = flat(target).map((v, i) => v - b0[i]);
+  const J = [0, 1, 2, 3, 4, 5].map((q) => { const x = [0, 0, 0, 0, 0, 0]; x[q] = h; setT(x); return flat(bands(p)).map((v, i) => (v - b0[i]) / h); }); // J[q][i]
+  const RIDGE = 0.02, A = J.map((ja, a) => J.map((jb, b) => ja.reduce((s, v, i) => s + v * jb[i], 0) + (a === b ? RIDGE : 0)));
+  const x = solveLinear(A, J.map((ja) => ja.reduce((s, v, i) => s + v * r[i], 0))) || [0, 0, 0, 0, 0, 0];
+  setT(x.map((v) => clamp(v, -0.08, 0.08)));
+  return p;
 }

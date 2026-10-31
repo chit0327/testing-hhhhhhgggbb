@@ -34,6 +34,7 @@ export function neutralPrim() {
     whiteHold: 0,                            // 0..1: the region adjustment fades out on whites (they keep the white point)
     skinLine: 1,                             // skin protection: 1 = skin follows the grade within natural skin tones; 0 = keeps its original colour
     post: null,                              // {L, a, b, sat}: the adjustment of the layer being baked
+    tint: null,                              // 跟隨參考圖: {lo, mid, hi: [a, b]} OKLab tint per tonal band; saturated blues (sky) are spared
     gmap: null,                              // 漸層映射 {a: [17], b: [17], amt 0..1}: colour moves towards the gradient's colour at its lightness (last step)
   };
 }
@@ -142,12 +143,13 @@ export function skinHue(h, own = (SKIN_LINE[0] + SKIN_LINE[1]) / 2) {
   return inside(own) ? own : nearest(own);
 }
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+const hasTint = (t) => !!t && [t.lo, t.mid, t.hi].some((v) => v && (v[0] || v[1]));
 export function isNeutralPrim(p) {
   if (!p) return true;
   const w = (x) => !x.m && !x.a;
   return isNeutralBal(p.bal) && isNeutralNorm(p.norm) && !p.keep && isNeutralPost(p.post) && w(p.lift) && w(p.gamma) && w(p.gain) && w(p.offset) && !p.sat
     && [p.luma, p.red, p.green, p.blue].every(isIdentityCurve)
-    && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x)) && !(p.gmap && p.gmap.amt);
+    && [p.hueHue, p.hueSat, p.hueLum].every((v) => v.every((x) => !x)) && !(p.gmap && p.gmap.amt) && !hasTint(p.tint);
 }
 
 /**
@@ -216,7 +218,7 @@ export function compilePrim(p, opts = {}) {
   const norm = isNeutralNorm(p.norm) ? null : p.norm, normSat = norm ? 1 + norm.amt * (norm.sat - 1) : 1;
   /** sRGB 0..1 in -> sRGB 0..1 out (out array). */
   const bal = isNeutralBal(p.bal) ? null : p.bal, cb = [0, 0, 0];
-  const gm = p.gmap && p.gmap.amt ? p.gmap : null, gab = [0, 0];
+  const gm = p.gmap && p.gmap.amt ? p.gmap : null, gab = [0, 0], tn = hasTint(p.tint) ? p.tint : null;
   return function apply(r, g, b, out) {
     if (bal) { applyBal(bal, r, g, b, cb); r = cb[0]; g = cb[1]; b = cb[2]; } // correction before restoration and grade
     if (norm) { // restoration first, like a CST node ahead of the grade
@@ -244,6 +246,14 @@ export function compilePrim(p, opts = {}) {
         lab[1] = cs * Math.cos((h * Math.PI) / 180); lab[2] = cs * Math.sin((h * Math.PI) / 180);
       }
     }
+    if (tn) { // 跟隨參考圖 tint per tonal band, sparing saturated blues: warming a scene must not grey its sky
+      const L = lab[0], wl = 1 - smooth(0.2, 0.5, L), wh = smooth(0.45, 0.8, L), wm = Math.max(0, 1 - wl - wh);
+      const C = Math.hypot(lab[1], lab[2]), h = (Math.atan2(lab[2], lab[1]) * 180) / Math.PI;
+      // blues, pale ones included (a hazy sky is only chroma ~0.03), fully spared; greys (chroma < 0.006) take the whole tint
+      const blue = smooth(0.006, 0.02, C) * Math.max(0, Math.cos((((h - 245 + 540) % 360) - 180) * Math.PI / 120)); // ±60° around 245°
+      const k = 1 - blue;
+      lab[1] += k * (wl * tn.lo[0] + wm * tn.mid[0] + wh * tn.hi[0]); lab[2] += k * (wl * tn.lo[1] + wm * tn.mid[1] + wh * tn.hi[1]);
+    }
     if (gm) { // 漸層映射, colour mode: lightness kept, colour towards the gradient's colour at this lightness
       gradientAt(gm, lab[0], gab);
       lab[1] += gm.amt * (gab[0] - lab[1]); lab[2] += gm.amt * (gab[1] - lab[2]);
@@ -257,6 +267,7 @@ export function protectedPrim(p) {
   const q = sanitizePrim({ ...p, keep: 0, post: null });
   for (const k of ['lift', 'gamma', 'gain', 'offset']) q[k] = { m: q[k].m, h: q[k].h, a: 0 };
   q.red = CURVE_X.slice(); q.green = CURVE_X.slice(); q.blue = CURVE_X.slice();
+  q.tint = null; // (the follow tint is a colour change too)
   q.gmap = null; // the gradient map is a colour change: protected skin does not receive it
   q.sat = 0; q.hueHue = new Array(8).fill(0); q.hueSat = new Array(8).fill(0); q.hueLum = new Array(8).fill(0);
   return q;
@@ -292,6 +303,8 @@ export function sanitizePrim(q) {
   p.skinLine = q.skinLine === 0 ? 0 : 1;
   p.skinFollow = num(q.skinFollow, 0, 1, 0);
   p.post = adj(q.post);
+  const tq = q.tint, pair = (v) => (Array.isArray(v) && v.length === 2 ? [num(v[0], -0.1, 0.1, 0), num(v[1], -0.1, 0.1, 0)] : [0, 0]);
+  if (tq && typeof tq === 'object') p.tint = { lo: pair(tq.lo), mid: pair(tq.mid), hi: pair(tq.hi) };
   const gq = q.gmap;
   if (gq && typeof gq === 'object' && Array.isArray(gq.a) && Array.isArray(gq.b) && gq.a.length === GMAP_N && gq.b.length === GMAP_N)
     p.gmap = { a: gq.a.map((v) => num(v, -0.3, 0.3, 0)), b: gq.b.map((v) => num(v, -0.3, 0.3, 0)), amt: num(gq.amt, 0, 1, 0) };

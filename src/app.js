@@ -516,11 +516,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   haze: ['haze', 100, (v) => `${v}`], hazeRadius: ['hazeRadius', 100, (v) => `${v}`],
   hazeSoft: ['hazeSoft', 100, (v) => `${v}`], hazeBloom: ['hazeBloom', 100, (v) => `${v}`], hazeVeil: ['hazeVeil', 100, (v) => `${v}`],
   personEv: ['personEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], bgEv: ['bgEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`],
-  skinFollow: ['skinFollow', 100, (v) => `${v}%`], gradMap: ['gradMap', 100, (v) => `${v}%`],
+  skinFollow: ['skinFollow', 100, (v) => `${v}%`], gradMap: ['gradMap', 100, (v) => `${v}%`], follow: ['follow', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
