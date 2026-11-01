@@ -1,10 +1,10 @@
 :root { --bg: #f4efe6; --fg: #2a2622; --mut: #6f685e; --card: #fbf8f2; --line: #e2dacb; --acc: #0a66d8; --warn: #c2410c; --ok: #15803d; --stage: #1b1b1e; --head: 56px; color-scheme: light; }
 /* dark: deep grey, not black (follows the system unless the viewer picked a theme) */
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; color-scheme: dark; } }
-:root[data-theme="dark"] { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; --page-bg: radial-gradient(1100px 620px at 12% -12%, rgba(56, 130, 160, .30), transparent 62%), radial-gradient(900px 560px at 105% -5%, rgba(190, 120, 60, .17), transparent 60%), radial-gradient(1000px 700px at 50% 120%, rgba(70, 80, 150, .18), transparent 65%), linear-gradient(180deg, #1e222b 0%, #16181e 100%); --glass: rgba(38, 40, 48, .72); --stage-bg: linear-gradient(160deg, #1d2129 0%, #121419 100%); color-scheme: dark; } }
+:root[data-theme="dark"] { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; --page-bg: radial-gradient(1100px 620px at 12% -12%, rgba(56, 130, 160, .30), transparent 62%), radial-gradient(900px 560px at 105% -5%, rgba(190, 120, 60, .17), transparent 60%), radial-gradient(1000px 700px at 50% 120%, rgba(70, 80, 150, .18), transparent 65%), linear-gradient(180deg, #1e222b 0%, #16181e 100%); --glass: rgba(38, 40, 48, .72); --stage-bg: linear-gradient(160deg, #1d2129 0%, #121419 100%); color-scheme: dark; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { margin: 0; background: var(--bg); color: var(--fg); font: 15px/1.55 system-ui, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+body { margin: 0; background: var(--bg); background: var(--page-bg, var(--bg)); background-color: var(--bg); background-attachment: fixed; min-height: 100vh; color: var(--fg); font: 15px/1.55 system-ui, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 h1 { margin: 0; font-size: 20px; } h2 { font-size: 16px; margin: 0 0 10px; }
 .sub, .info { color: var(--mut); margin: 4px 0; font-size: 13px; }
@@ -241,3 +241,22 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 .pick-grid canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #222; }
 .pick-grid span { display: block; padding: 4px 8px; font-size: 13px; }
 .pick-round { color: var(--mut); font-size: 13px; margin-right: auto; align-self: center; }
+
+/* the control panel in three tabs (簡易調色 / 效果 / 專業調色): only the chosen tab's categories show */
+.panel-tabs { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 4px; padding: 4px; margin-bottom: 10px; border: 1px solid var(--line); border-radius: 12px; background: var(--card); position: sticky; top: 0; z-index: 3; }
+.panel-tabs button { font: inherit; font-size: 14px; font-weight: 600; padding: 8px 4px; border: 0; border-radius: 9px; background: transparent; color: var(--mut); cursor: pointer; }
+.panel-tabs button[aria-selected="true"] { background: var(--acc); color: #fff; }
+.panel-tabs button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
+#adjustCard[data-tab="simple"] > details:not([data-group="simple"]),
+#adjustCard[data-tab="fx"] > details:not([data-group="fx"]),
+#adjustCard[data-tab="pro"] > details:not([data-group="pro"]) { display: none; }
+
+/* dark theme: not flat black — a soft gradient behind the page, and the header / panel let it show through */
+.top, .panel, .panel-actions { background: var(--glass, var(--card)); }
+@supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { .top, .panel, .panel-actions { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); } }
+.stage { background: var(--stage-bg, var(--stage)); }
+
+/* theme switch: cross-fade (view transitions) or colour easing (fallback), 0.45 s */
+html.theme-vt::view-transition-old(root), html.theme-vt::view-transition-new(root) { animation-duration: .45s; animation-timing-function: ease-in-out; }
+html.theme-anim, html.theme-anim * { transition: background-color .45s ease, color .45s ease, border-color .45s ease, fill .45s ease, stroke .45s ease !important; }
+@media (prefers-reduced-motion: reduce) { html.theme-anim, html.theme-anim * { transition: none !important; } }

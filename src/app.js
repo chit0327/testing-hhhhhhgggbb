@@ -1431,6 +1431,19 @@ async function saveFile(name, blob) {
 
 // ------------------------------------------------------------------ pages, upload controls, workspace views
 S.page = 'upload';
+// ---- the control panel's three tabs. Opening a category (by code or a test) brings its tab forward.
+function showTab(tab) {
+  const card = $('adjustCard');
+  if (card.dataset.tab === tab) return;
+  card.dataset.tab = tab;
+  for (const b of card.querySelectorAll('.panel-tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
+  log('panel-tab', { tab });
+}
+for (const b of document.querySelectorAll('#adjustCard .panel-tabs [data-tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));
+// (a MutationObserver rather than 'toggle': it runs right after the change, before the next event, so whatever opened
+// the category can use it at once)
+const tabObserver = new MutationObserver((list) => { for (const m of list) if (m.target.open) showTab(m.target.dataset.group); });
+for (const d of document.querySelectorAll('#adjustCard > details[data-group]')) tabObserver.observe(d, { attributes: true, attributeFilter: ['open'] });
 function unloadVideo(v) { v.pause(); if (v.getAttribute('src')) { v.removeAttribute('src'); v.load(); } }
 function showPage(p) {
   S.page = p;
@@ -1687,10 +1700,28 @@ function applyTheme(choice) {
   const eff = choice || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   for (const b of document.querySelectorAll('[data-theme-choice]')) b.setAttribute('aria-checked', String(b.dataset.themeChoice === eff));
 }
+// switching is animated (not an instant jump): a cross-fade of the whole page where the browser has view transitions
+// (the gradient background cannot be animated by CSS), otherwise colours, backgrounds and borders ease over 0.45 s;
+// nothing moves for viewers who ask for reduced motion
+const THEME_MS = 450;
+function switchTheme(choice) {
+  const root = document.documentElement;
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) { applyTheme(choice); return 'none'; }
+  if (document.startViewTransition) {
+    root.classList.add('theme-vt');
+    const t = document.startViewTransition(() => applyTheme(choice));
+    t.finished.finally(() => root.classList.remove('theme-vt'));
+    return 'view-transition';
+  }
+  root.classList.add('theme-anim');
+  applyTheme(choice);
+  setTimeout(() => root.classList.remove('theme-anim'), THEME_MS + 50);
+  return 'css';
+}
 for (const b of document.querySelectorAll('[data-theme-choice]')) b.onclick = () => {
-  applyTheme(b.dataset.themeChoice);
+  const how = switchTheme(b.dataset.themeChoice);
   try { localStorage.setItem(THEME_KEY, b.dataset.themeChoice); } catch {}
-  log('theme', { theme: b.dataset.themeChoice });
+  log('theme', { theme: b.dataset.themeChoice, transition: how });
 };
 applyTheme((() => { try { return localStorage.getItem(THEME_KEY); } catch { return null; } })());
 

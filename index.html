@@ -132,8 +132,13 @@
         </div>
       </section>
 
-      <div id="adjustCard" hidden>
-        <details class="cat" id="catMood">
+      <div id="adjustCard" data-tab="simple" hidden>
+        <div class="panel-tabs" role="tablist" aria-label="調色分類">
+          <button type="button" role="tab" data-tab="simple" aria-selected="true">簡易調色</button>
+          <button type="button" role="tab" data-tab="fx" aria-selected="false">效果</button>
+          <button type="button" role="tab" data-tab="pro" aria-selected="false">專業調色</button>
+        </div>
+        <details class="cat" id="catMood" data-group="simple">
           <summary>氛圍色調</summary>
           <div class="cat-body">
             <p class="info" id="moodLead">不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。</p>
@@ -142,7 +147,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catMatch" open>
+        <details class="cat" id="catMatch" data-group="simple" open>
           <summary>參考匹配</summary>
           <div class="cat-body">
             <h3>自動調色候選</h3>
@@ -177,7 +182,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catPick">
+        <details class="cat" id="catPick" data-group="simple">
           <summary>快速微調（四選一）</summary>
           <div class="cat-body">
             <p class="info">不用自己調滑桿：選四張裏最喜歡的一張，會在它的基礎上再給你四個更細微的選擇。兩三輪就能調到喜歡的感覺；之後仍可用滑桿微調。</p>
@@ -186,7 +191,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catPeople">
+        <details class="cat" id="catPeople" data-group="simple">
           <summary>人物、膚色與背景</summary>
           <div class="cat-body">
             <label class="slider"><span>膚色偏向參考圖</span><input type="range" id="adj-skinFollow" min="0" max="100" value="0"><output id="adj-skinFollow-v">0%</output></label>
@@ -196,7 +201,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catTone">
+        <details class="cat" id="catTone" data-group="pro">
           <summary>曝光與亮度</summary>
           <div class="cat-body">
             <label class="slider"><span>曝光</span><input type="range" id="adj-exposure" min="-200" max="200" value="0"><output id="adj-exposure-v">0</output></label>
@@ -209,7 +214,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catColour">
+        <details class="cat" id="catColour" data-group="simple">
           <summary>色溫、色調與飽和度</summary>
           <div class="cat-body">
             <label class="slider"><span>飽和度</span><input type="range" id="adj-saturation" min="-100" max="100" value="0"><output id="adj-saturation-v">0</output></label>
@@ -219,7 +224,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catZones">
+        <details class="cat" id="catZones" data-group="pro">
           <summary>陰影、中間調與高光</summary>
           <div class="cat-body">
             <h3>分區色調</h3>
@@ -231,7 +236,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catCurves">
+        <details class="cat" id="catCurves" data-group="pro">
           <summary>色彩曲線</summary>
           <div class="cat-body">
             <div class="curve-editor">
@@ -249,7 +254,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catLocal">
+        <details class="cat" id="catLocal" data-group="fx">
           <summary>局部調色及遮罩</summary>
           <div class="cat-body">
             <p class="info">AI 遮罩（人物、皮膚、背景）與局部曝光在「光暗設定」裏確認和修改。</p>
@@ -258,7 +263,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catBlur">
+        <details class="cat" id="catBlur" data-group="fx">
           <summary>背景模糊</summary>
           <div class="cat-body">
             <label class="check"><input type="checkbox" id="blurOn"> 開啟模糊</label>
@@ -305,7 +310,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catFx">
+        <details class="cat" id="catFx" data-group="fx">
           <summary>柔光、朦朧與暗角</summary>
           <div class="cat-body">
             <h3>朦朧預設</h3>
@@ -337,7 +342,7 @@
           </div>
         </details>
 
-        <details class="cat scopes" id="scopes">
+        <details class="cat scopes" id="scopes" data-group="pro">
           <summary>示波器</summary>
           <div class="cat-body">
             <div class="scope-bar">
@@ -357,7 +362,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catExport">
+        <details class="cat" id="catExport" data-group="fx">
           <summary>匯出設定</summary>
           <div class="cat-body">
             <h3 id="exportKindTitle">影片</h3>
