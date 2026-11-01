@@ -1700,22 +1700,17 @@ function applyTheme(choice) {
   const eff = choice || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   for (const b of document.querySelectorAll('[data-theme-choice]')) b.setAttribute('aria-checked', String(b.dataset.themeChoice === eff));
 }
-// switching is animated (not an instant jump): a cross-fade of the whole page where the browser has view transitions
-// (the gradient background cannot be animated by CSS), otherwise colours, backgrounds and borders ease over 0.45 s;
-// nothing moves for viewers who ask for reduced motion
-const THEME_MS = 450;
+// switching is animated, not an instant jump: colours, backgrounds, borders and the dark gradient layer fade over
+// 0.9 s with a gentle ease in and out (like Apple's appearance change). The same in every browser (view transitions
+// were not used: older Safari has none); nothing moves for viewers who ask for reduced motion.
+const THEME_MS = 900;
+let themeTimer = 0;
 function switchTheme(choice) {
   const root = document.documentElement;
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) { applyTheme(choice); return 'none'; }
-  if (document.startViewTransition) {
-    root.classList.add('theme-vt');
-    const t = document.startViewTransition(() => applyTheme(choice));
-    t.finished.finally(() => root.classList.remove('theme-vt'));
-    return 'view-transition';
-  }
   root.classList.add('theme-anim');
   applyTheme(choice);
-  setTimeout(() => root.classList.remove('theme-anim'), THEME_MS + 50);
+  clearTimeout(themeTimer); themeTimer = setTimeout(() => root.classList.remove('theme-anim'), THEME_MS + 100);
   return 'css';
 }
 for (const b of document.querySelectorAll('[data-theme-choice]')) b.onclick = () => {

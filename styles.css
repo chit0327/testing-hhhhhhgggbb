@@ -1,10 +1,10 @@
-:root { --bg: #f4efe6; --fg: #2a2622; --mut: #6f685e; --card: #fbf8f2; --line: #e2dacb; --acc: #0a66d8; --warn: #c2410c; --ok: #15803d; --stage: #1b1b1e; --head: 56px; color-scheme: light; }
+:root { --grad-o: 0; --page-grad: radial-gradient(1100px 620px at 12% -12%, rgba(56, 130, 160, .30), transparent 62%), radial-gradient(900px 560px at 105% -5%, rgba(190, 120, 60, .17), transparent 60%), radial-gradient(1000px 700px at 50% 120%, rgba(70, 80, 150, .18), transparent 65%), linear-gradient(180deg, #1e222b 0%, #16181e 100%); --bg: #f4efe6; --fg: #2a2622; --mut: #6f685e; --card: #fbf8f2; --line: #e2dacb; --acc: #0a66d8; --warn: #c2410c; --ok: #15803d; --stage: #1b1b1e; --head: 56px; color-scheme: light; }
 /* dark: deep grey, not black (follows the system unless the viewer picked a theme) */
-@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; --page-bg: radial-gradient(1100px 620px at 12% -12%, rgba(56, 130, 160, .30), transparent 62%), radial-gradient(900px 560px at 105% -5%, rgba(190, 120, 60, .17), transparent 60%), radial-gradient(1000px 700px at 50% 120%, rgba(70, 80, 150, .18), transparent 65%), linear-gradient(180deg, #1e222b 0%, #16181e 100%); --glass: rgba(38, 40, 48, .72); --stage-bg: linear-gradient(160deg, #1d2129 0%, #121419 100%); color-scheme: dark; } }
-:root[data-theme="dark"] { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; --page-bg: radial-gradient(1100px 620px at 12% -12%, rgba(56, 130, 160, .30), transparent 62%), radial-gradient(900px 560px at 105% -5%, rgba(190, 120, 60, .17), transparent 60%), radial-gradient(1000px 700px at 50% 120%, rgba(70, 80, 150, .18), transparent 65%), linear-gradient(180deg, #1e222b 0%, #16181e 100%); --glass: rgba(38, 40, 48, .72); --stage-bg: linear-gradient(160deg, #1d2129 0%, #121419 100%); color-scheme: dark; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; --grad-o: 1; --glass: rgba(38, 40, 48, .72); --stage-bg: linear-gradient(160deg, #1d2129 0%, #121419 100%); color-scheme: dark; } }
+:root[data-theme="dark"] { --bg: #1d1e22; --fg: #ececee; --mut: #a2a2aa; --card: #26272c; --line: #3a3b42; --acc: #5aa0ff; --warn: #fb923c; --ok: #4ade80; --stage: #141518; --grad-o: 1; --glass: rgba(38, 40, 48, .72); --stage-bg: linear-gradient(160deg, #1d2129 0%, #121419 100%); color-scheme: dark; }
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-body { margin: 0; background: var(--bg); background: var(--page-bg, var(--bg)); background-color: var(--bg); background-attachment: fixed; min-height: 100vh; color: var(--fg); font: 15px/1.55 system-ui, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
+body { margin: 0; background: var(--bg); min-height: 100vh; min-height: 100dvh; color: var(--fg); font: 15px/1.55 system-ui, "PingFang TC", "Noto Sans TC", "Microsoft JhengHei", sans-serif; }
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
 h1 { margin: 0; font-size: 20px; } h2 { font-size: 16px; margin: 0 0 10px; }
 .sub, .info { color: var(--mut); margin: 4px 0; font-size: 13px; }
@@ -64,7 +64,7 @@ fieldset label { display: block; margin: 3px 0; } legend { font-weight: 600; pad
 .dlg-foot { display: flex; gap: 10px; align-items: center; justify-content: flex-end; padding: 10px 18px 14px; border-top: 1px solid var(--line); }
 .warn { color: var(--warn); font-size: 13px; margin-right: auto; }
 /* page 2: workspace — video stage on the left (≈ 68 %), adjustment panel on the right with its own scroll */
-body.is-work { height: 100vh; height: 100dvh; overflow: hidden; display: flex; flex-direction: column; }
+body.is-work { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; /* (no min-height: on iPad Safari 100vh is taller than the visible area and would push the bottom bars off screen) */ display: flex; flex-direction: column; }
 .work { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(0, 68fr) minmax(340px, 32fr); }
 .stage-col { min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 10px; padding: 12px 14px 12px max(14px, env(safe-area-inset-left, 0px)); }
 .view-tabs { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -256,7 +256,11 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { .top, .panel, .panel-actions { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); } }
 .stage { background: var(--stage-bg, var(--stage)); }
 
-/* theme switch: cross-fade (view transitions) or colour easing (fallback), 0.45 s */
-html.theme-vt::view-transition-old(root), html.theme-vt::view-transition-new(root) { animation-duration: .45s; animation-timing-function: ease-in-out; }
-html.theme-anim, html.theme-anim * { transition: background-color .45s ease, color .45s ease, border-color .45s ease, fill .45s ease, stroke .45s ease !important; }
+/* theme switch: everything fades over 0.9 s */
+/* like Apple's appearance change: a slow, soft cross-fade (0.9 s, gentle ease in and out) */
+html.theme-anim, html.theme-anim *, html.theme-anim *::before { transition: background-color .9s cubic-bezier(.45, 0, .25, 1), color .9s cubic-bezier(.45, 0, .25, 1), border-color .9s cubic-bezier(.45, 0, .25, 1), fill .9s cubic-bezier(.45, 0, .25, 1), stroke .9s cubic-bezier(.45, 0, .25, 1), opacity .9s cubic-bezier(.45, 0, .25, 1) !important; }
 @media (prefers-reduced-motion: reduce) { html.theme-anim, html.theme-anim * { transition: none !important; } }
+
+/* the dark gradient lives on its own fixed layer and is shown by opacity, so it fades in and out with the theme
+   (a gradient image itself cannot be animated) */
+body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: var(--page-grad); opacity: var(--grad-o); }
