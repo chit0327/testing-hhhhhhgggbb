@@ -7,21 +7,17 @@
 // to seeking): no WebCodecs, not MP4 / MOV, a rotated clip (the <video> element applies the rotation, the
 // decoder does not), or a codec the decoder does not support.
 
+import { sampleReader } from './mp4index.js';
+
 const LOOKAHEAD = 6; // decoded frames kept ahead of the one asked for (bounded memory: VideoFrames hold GPU / decoder buffers)
 
-async function demux(bytes) {
-  const { createFile, MP4BoxBuffer, DataStream } = await import('../vendor/mp4box/mp4box.all.mjs');
-  const file = createFile(), samples = [];
-  let info = null, failed = null, track = null;
-  file.onError = (e) => { failed = String(e); };
-  file.onSamples = (id, user, list) => { for (const s of list) samples.push(s); };
-  file.onReady = (i) => {
-    info = i; track = i.videoTracks && i.videoTracks[0];
-    if (track) { file.setExtractionOptions(track.id, null, { nbSamples: track.nb_samples }); file.start(); }
-  };
-  file.appendBuffer(MP4BoxBuffer.fromArrayBuffer(bytes, 0));
-  file.flush();
-  if (failed || !info || !track || !samples.length) return null;
+async function demux(src) { // src: {file, info} from openMp4 (the index only: sample data is read on demand)
+  const { DataStream } = await import('../vendor/mp4box/mp4box.all.mjs');
+  const { file, info } = src;
+  const track = info.videoTracks && info.videoTracks[0];
+  if (!track) return null;
+  const samples = file.getTrackById(track.id).samples;
+  if (!samples || !samples.length) return null;
   // decoder description: the codec configuration box (avcC / hvcC / vpcC / av1C) without its 8-byte header
   let description;
   for (const e of file.getTrackById(track.id).mdia.minf.stbl.stsd.entries) {
@@ -33,31 +29,41 @@ async function demux(bytes) {
   return { track, samples, description, rotated };
 }
 
-export async function openFrameStream(bytes) {
+/** blob: the source File; src: its parsed index (openMp4). */
+export async function openFrameStream(blob, src, { lookahead = LOOKAHEAD } = {}) {
   if (typeof VideoDecoder === 'undefined' || typeof EncodedVideoChunk === 'undefined') return null;
   let d;
-  try { d = await demux(bytes); } catch { return null; }
+  try { d = src ? await demux(src) : null; } catch { return null; }
   if (!d || d.rotated) return null;
   const { track, samples, description } = d;
+  const read = sampleReader(blob, samples);
   const config = { codec: track.codec, codedWidth: track.video.width, codedHeight: track.video.height, ...(description ? { description } : {}), optimizeForLatency: false };
   try { const s = await VideoDecoder.isConfigSupported(config); if (!s.supported) return null; } catch { return null; }
   const origin = Math.min(...samples.map((s) => s.cts)) / track.timescale; // media time 0 = first presented frame
   const ready = []; // decoded frames, presentation order
   let waiting = null, error = null, fed = 0, flushed = false, done = false; // done: flush finished, every frame delivered
   const decoder = new VideoDecoder({
-    output: (f) => { ready.push(f); if (waiting) { const w = waiting; waiting = null; w(); } },
-    error: (e) => { error = e; if (waiting) { const w = waiting; waiting = null; w(); } },
+    output: (f) => { ready.push(f); wake(); },
+    error: (e) => { error = e; wake(); },
   });
   decoder.configure(config);
-  const feed = () => { // keep the decoder busy, but only a few frames ahead
-    while (fed < samples.length && ready.length + decoder.decodeQueueSize < LOOKAHEAD + 4) {
-      const s = samples[fed++];
-      decoder.decode(new EncodedVideoChunk({ type: s.is_sync ? 'key' : 'delta', timestamp: Math.round(((s.cts / s.timescale) - origin) * 1e6), duration: Math.round((s.duration / s.timescale) * 1e6), data: s.data }));
-    }
-    if (fed >= samples.length && !flushed) { flushed = true; decoder.flush().then(() => { done = true; if (waiting) { const w = waiting; waiting = null; w(); } }, (e) => { error = error || e; done = true; if (waiting) { const w = waiting; waiting = null; w(); } }); }
+  let feeding = null;
+  const canFeed = () => fed < samples.length && ready.length + decoder.decodeQueueSize < lookahead + 4 && decoder.state === 'configured';
+  const feed = () => { // keep the decoder busy, but only a few frames ahead (sample data read from the file as needed)
+    if (feeding) return feeding;
+    feeding = (async () => {
+      while (canFeed()) {
+        const k = fed++, s = samples[k], data = await read(k);
+        if (decoder.state !== 'configured') return;
+        decoder.decode(new EncodedVideoChunk({ type: s.is_sync ? 'key' : 'delta', timestamp: Math.round(((s.cts / s.timescale) - origin) * 1e6), duration: Math.round((s.duration / s.timescale) * 1e6), data }));
+      }
+      if (fed >= samples.length && !flushed && decoder.state === 'configured') { flushed = true; decoder.flush().then(() => { done = true; wake(); }, (e) => { error = error || e; done = true; wake(); }); }
+    })().catch((e) => { error = error || e; wake(); }).finally(() => { feeding = null; if (waiting && (canFeed() || (fed >= samples.length && !flushed))) feed(); }); // (room appeared while it was finishing)
+    return feeding;
   };
+  const wake = () => { if (waiting) { const w = waiting; waiting = null; w(); } };
   // (the decode queue being empty does not mean every frame is out: the decoder holds the last few for reordering until the flush ends)
-  const more = () => new Promise((res) => { waiting = res; feed(); if (done) setTimeout(res, 0); });
+  const more = () => new Promise((res) => { waiting = res; feed(); if (done || error) setTimeout(res, 0); });
   let last = null; // the frame currently "on screen" (kept until a later one is needed)
   return {
     codec: track.codec,

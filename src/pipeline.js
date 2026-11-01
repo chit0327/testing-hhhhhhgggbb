@@ -41,8 +41,10 @@ export class EngineClient {
     return this.call({ type: 'blur-selection', selId, layer: lb, w: layer && layer.w, h: layer && layer.h, anchor: anchor ? { data: ab, w: anchor.w, h: anchor.h } : null }, [lb, ab].filter(Boolean));
   }
   endJob(jobId) { this.worker.postMessage({ type: 'end-job', jobId }); }
-  render(img, opts) { // img: ImageData. Returns {imageData, intentHash, localApplied}
-    const buf = img.data.slice().buffer;
+  render(img, opts, { give = false } = {}) { // img: ImageData. Returns {imageData, intentHash, localApplied}
+    // give: the caller no longer needs img, so its pixels are moved to the worker instead of copied (one frame-sized
+    // buffer less per frame while processing)
+    const buf = give ? img.data.buffer : img.data.slice().buffer;
     return this.call({ type: 'render', rgba: buf, w: img.width, h: img.height, ...opts }, [buf]).then((m) => ({
       imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index, blur: m.blur, timing: m.timing,
     }));
@@ -63,6 +65,13 @@ const once = (el, ev) => new Promise((res, rej) => {
 const UA = typeof navigator !== 'undefined' ? navigator.userAgent : '';
 export const WEBKIT = typeof window !== 'undefined' && window.__webkitMode !== undefined ? !!window.__webkitMode
   : /AppleWebKit/.test(UA) && (!/Chrome\/|Chromium|Edg\//.test(UA) || /CriOS|FxiOS|EdgiOS/.test(UA));
+// iPad / iPhone (every browser there is WebKit) and devices reporting ≤ 4 GB: a browser tab gets far less memory
+// (an iPad tab is stopped at roughly 1–1.5 GB), so processing keeps less in flight there: AI segmentation on the
+// main thread with the model already loaded for the preview (no extra copy of it per worker), 2 frames in flight
+// instead of 4, 2 decoded frames ahead instead of 6. Same graded frames, slower.
+const IOS = /iPad|iPhone|iPod/.test(UA) || (typeof navigator !== 'undefined' && navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+export const lowMemory = () => (typeof window !== 'undefined' && window.__lowMemory !== undefined ? !!window.__lowMemory
+  : IOS || (typeof navigator !== 'undefined' && navigator.deviceMemory > 0 && navigator.deviceMemory <= 4));
 let workVideo = null;
 
 /** Load a video file into a hidden <video> and measure size, duration and frame rate. */
@@ -76,7 +85,7 @@ export async function probeVideo(file) {
   document.body.appendChild(video);
   video.src = URL.createObjectURL(file);
   await once(video, 'loadeddata');
-  const info = { video, url: video.src, width: video.videoWidth, height: video.videoHeight, duration: video.duration, fps: 30, fpsMeasured: false };
+  const info = { video, file, url: video.src, width: video.videoWidth, height: video.videoHeight, duration: video.duration, fps: 30, fpsMeasured: false };
   if (!info.width || !isFinite(info.duration)) throw new Error('無法讀取影片尺寸或時長');
   if ('requestVideoFrameCallback' in video) { // estimate the frame rate from presented-frame media times
     const times = [];
@@ -257,6 +266,7 @@ async function pickCodec(w, h, fps) {
 let segPool = null;
 async function segWorkers() {
   if (segPool) return segPool;
+  // each worker holds its own copy of the model (~150 MB); none on low-memory devices (lowMemory(), see above)
   const n = Math.max(1, Math.min(3, (navigator.hardwareConcurrency || 2) - 2));
   const { startSegWorker } = await import('./segment.js');
   const ws = (await Promise.all(Array.from({ length: n }, () => startSegWorker()))).filter(Boolean);
@@ -272,7 +282,7 @@ async function segWorkers() {
  * the frame order) and are encoded in order. segPrepare(canvas): the 256 px frame made ready for the model (LOG
  * restoration), segmentFn: main-thread segmentation when no worker can run.
  */
-const IN_FLIGHT = 4;
+const IN_FLIGHT = 4, IN_FLIGHT_LOW = 2;
 export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, segPrepare = null, maskH, maxSide = 1280, onProgress, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
   const kept = {}, blurTrack = { frames: 0, lost: 0, chained: 0 };
   // where the time goes (ms, summed over frames): grab = decode + draw + read the frame (main thread), seg = AI
@@ -283,14 +293,19 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   const { w, h } = fitSize(meta.width, meta.height, maxSide);
   const fps = meta.fps, n = meta.frameCount;
   const cfg = await pickCodec(w, h, fps);
-  const bytes = await (await fetch(meta.url)).arrayBuffer();
+  const low = lowMemory();
+  // the source is read from the file as needed (its index first, sample data in windows): never the whole file in memory
+  const blob = meta.video instanceof PhotoSet ? null : (meta.file || await (await fetch(meta.url)).blob());
+  let index = null;
+  if (blob) { try { const { openMp4 } = await import('./mp4index.js'); index = await openMp4(blob); } catch { index = null; } }
   // the source's audio is carried over as it is (AAC samples copied, not re-encoded)
   let audio;
-  try { audio = await extractAudio(bytes); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; }
+  if (!blob) audio = { skipped: '照片沒有音軌' };
+  else { try { audio = await extractAudio(blob, index); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; } }
   let stream = null;
-  if (useStream && !(meta.video instanceof PhotoSet)) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await openFrameStream(bytes); } catch { stream = null; } }
-  const workers = needsSeg && useSegWorker && segPrepare ? await segWorkers() : null;
-  timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0;
+  if (useStream && blob && index) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await openFrameStream(blob, index, { lookahead: low ? 2 : 6 }); } catch { stream = null; } }
+  const workers = needsSeg && useSegWorker && segPrepare && !low ? await segWorkers() : null;
+  timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0; timing.lowMemory = low;
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
     ...(audio.track ? { audio: { codec: 'aac', numberOfChannels: audio.track.numberOfChannels, sampleRate: audio.track.sampleRate } } : {}) });
   let encErr = null;
@@ -338,12 +353,12 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
         } else { tt = now(); segP = Promise.resolve(segmentFn(segCanvas, MASK_W, maskH)); timing.seg += now() - tt; }
       }
       // post to the render worker in frame order (after this frame's masks and the previous frame's post)
-      const step = posted.then(() => segP).then((seg) => ({ r: engine.render(img, { jobId, index: i, seg, grade: true }) }));
+      const step = posted.then(() => segP).then((seg) => ({ r: engine.render(img, { jobId, index: i, seg, grade: true }, { give: !keepFrames.includes(i) }) }));
       posted = step.then(() => {}, () => {});
       const render = step.then((o) => o.r);
       render.catch(() => {}); // (handled when finished, in order)
       inflight.push({ i, img, render });
-      if (inflight.length >= IN_FLIGHT) await finish(inflight.shift());
+      if (inflight.length >= (low ? IN_FLIGHT_LOW : IN_FLIGHT)) await finish(inflight.shift());
     }
     while (inflight.length) await finish(inflight.shift());
     let tf = now();

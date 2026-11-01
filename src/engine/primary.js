@@ -157,6 +157,7 @@ export function isNeutralPrim(p) {
  * by the LUTs baked for one render: the main LUT and the region layers evaluate the same base grade at the
  * same grid nodes, so each plain (non-layer) grade is computed once per input colour. Same results.
  */
+const BLUE_U = [Math.cos((245 * Math.PI) / 180), Math.sin((245 * Math.PI) / 180)]; // OKLab direction of sky blue
 export function compilePrim(p, opts = {}) {
   if (isNeutralPrim(p)) return null;
   if (p.keep || !isNeutralPost(p.post)) { // region layer: the grade, part of its colour change removed, then the region's own adjustment
@@ -246,13 +247,18 @@ export function compilePrim(p, opts = {}) {
         lab[1] = cs * Math.cos((h * Math.PI) / 180); lab[2] = cs * Math.sin((h * Math.PI) / 180);
       }
     }
-    if (tn) { // 跟隨參考圖 tint per tonal band, sparing saturated blues: warming a scene must not grey its sky
+    if (tn) { // 跟隨參考圖 tint per tonal band, sparing blues: warming a scene must not grey its sky
       const L = lab[0], wl = 1 - smooth(0.2, 0.5, L), wh = smooth(0.45, 0.8, L), wm = Math.max(0, 1 - wl - wh);
-      const C = Math.hypot(lab[1], lab[2]), h = (Math.atan2(lab[2], lab[1]) * 180) / Math.PI;
-      // blues, pale ones included (a hazy sky is only chroma ~0.03), fully spared; greys (chroma < 0.006) take the whole tint
-      const blue = smooth(0.006, 0.02, C) * Math.max(0, Math.cos((((h - 245 + 540) % 360) - 180) * Math.PI / 120)); // ±60° around 245°
-      const k = 1 - blue;
-      lab[1] += k * (wl * tn.lo[0] + wm * tn.mid[0] + wh * tn.hi[0]); lab[2] += k * (wl * tn.lo[1] + wm * tn.mid[1] + wh * tn.hi[1]);
+      const ta = wl * tn.lo[0] + wm * tn.mid[0] + wh * tn.hi[0], tb = wl * tn.lo[1] + wm * tn.mid[1] + wh * tn.hi[1];
+      // blueness: distance into the cone ±60° around 245° (projection on the blue direction less the sideways part).
+      // The spared share ramps with it over a width tied to the tint's size: a narrow ramp would turn the faint
+      // colour blocks of compressed video in pale blue-grey walls (one block a shade bluer than the next) into
+      // patches with and without the tint; with width ≥ 0.77·|tint| neighbouring colours drift apart at most
+      // ~2.5× (was ~6×). Greys still take ~85 % of the tint, a pale hazy sky (chroma 0.03) is fully spared.
+      const v = lab[1] * BLUE_U[0] + lab[2] * BLUE_U[1], w = Math.abs(lab[2] * BLUE_U[0] - lab[1] * BLUE_U[1]);
+      const width = Math.max(0.01, 0.77 * Math.hypot(ta, tb));
+      const k = 1 - Math.min(1, Math.max(0, (v - 0.577 * w) / width + 0.15));
+      lab[1] += k * ta; lab[2] += k * tb;
     }
     if (gm) { // 漸層映射, colour mode: lightness kept, colour towards the gradient's colour at this lightness
       gradientAt(gm, lab[0], gab);
