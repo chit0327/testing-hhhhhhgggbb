@@ -1333,6 +1333,7 @@ async function startProcessing() {
     const res = await processVideo({
       engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH,
       look: S.look.applied, isCancelled: () => token !== S.job.token, keepFrames: window.__keepFrames || [], stream: !window.__noStream, segWorker: !window.__noSegWorker,
+      onStage: (text) => { if (token === S.job.token) { $('progressText').textContent = text; log('processing-stage', { text }); } },
       onProgress: ({ done, total, elapsed }) => {
         $('progressBar').style.width = `${(done / total) * 100}%`;
         $('progressText').textContent = `${done} / ${total} 格　${elapsed.toFixed(1)} 秒`;

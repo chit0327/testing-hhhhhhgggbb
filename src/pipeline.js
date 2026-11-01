@@ -131,16 +131,25 @@ const presented = (video, ms) => new Promise((res) => { // next presented frame,
   else requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); res(); }));
 });
 
+// 'seeked', or false after ms: iPad Safari sometimes never fires it, which used to leave processing at 正在處理 forever
+const seekedWithin = (video, ms) => Promise.race([once(video, 'seeked').then(() => true), new Promise((res) => setTimeout(() => res(false), ms))]);
+export const seekStats = { timeouts: 0 };
+
 export async function seek(video, t) {
   if (Math.abs(video.currentTime - t) < 1e-4 && video.readyState >= 2) return;
-  const p = once(video, 'seeked');
   // wait for the new frame to be presented, in every browser: 'seeked' can fire before it is decoded (WebKit
   // always, Chromium under load), and drawing then grabs the previous frame (non-deterministic fits,
   // duplicated frames in the export)
-  const shown = presented(video, 400);
-  video.currentTime = t;
-  await p;
-  await shown;
+  for (const [attempt, ms] of [3000, 6000, 15000].entries()) { // (a slow 4K seek on a tablet gets time; a lost event is asked again)
+    const p = seekedWithin(video, ms);
+    const shown = presented(video, 400);
+    video.currentTime = attempt ? t + attempt * 1e-3 : t; // (a retry asks again, a hair later: same frame)
+    const ok = await p;
+    await shown;
+    if (ok) return;
+    seekStats.timeouts++;
+  }
+  throw new Error('瀏覽器沒有回應影片跳轉（逐格讀取影片失敗）。請重新整理頁面再試；如果仍然失敗，請把影片剪短或轉成 1080p。');
 }
 
 function isBlank(d) { // every sampled pixel black (or fully transparent): the frame was not decoded yet
@@ -165,7 +174,7 @@ export function grabFrame(video, t, w, h, canvas = canvas2d(w, h)) {
       const img = ctx.getImageData(0, 0, w, h);
       // a genuinely black frame stays black; an undecoded one fills in after a nudge
       if (!isBlank(img.data) || attempt >= 3) return img;
-      if (attempt === 1) { await video.play().catch(() => {}); video.pause(); video.currentTime = t; await once(video, 'seeked'); }
+      if (attempt === 1) { await video.play().catch(() => {}); video.pause(); video.currentTime = t; await seekedWithin(video, 4000); }
       await presented(video, 300);
     }
   };
@@ -283,7 +292,9 @@ async function segWorkers() {
  * restoration), segmentFn: main-thread segmentation when no worker can run.
  */
 const IN_FLIGHT = 4, IN_FLIGHT_LOW = 2;
-export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, segPrepare = null, maskH, maxSide = 1280, onProgress, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
+// a stage that stops answering ends the job with a message instead of 正在處理 forever
+const withTimeout = (p, ms, what) => { let timer; return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${what}，處理已停止。請重新整理頁面再試。`)), ms); })]).finally(() => clearTimeout(timer)); };
+export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, segPrepare = null, maskH, maxSide = 1280, onProgress, onStage = () => {}, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
   const kept = {}, blurTrack = { frames: 0, lost: 0, chained: 0 };
   // where the time goes (ms, summed over frames): grab = decode + draw + read the frame (main thread), seg = AI
   // segmentation (in its workers, overlapped), render = grading in the render worker (its own split in .worker),
@@ -292,21 +303,27 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   if (typeof VideoEncoder === 'undefined') throw new Error('此瀏覽器不支援 WebCodecs，無法輸出影片（請使用最新版 Chrome 或 Edge）');
   const { w, h } = fitSize(meta.width, meta.height, maxSide);
   const fps = meta.fps, n = meta.frameCount;
+  onStage('準備影片編碼器…');
   const cfg = await pickCodec(w, h, fps);
   const low = lowMemory();
   // the source is read from the file as needed (its index first, sample data in windows): never the whole file in memory
   const blob = meta.video instanceof PhotoSet ? null : (meta.file || await (await fetch(meta.url)).blob());
   let index = null;
-  if (blob) { try { const { openMp4 } = await import('./mp4index.js'); index = await openMp4(blob); } catch { index = null; } }
+  onStage('讀取影片檔…');
+  if (blob) { try { const { openMp4 } = await import('./mp4index.js'); index = await withTimeout(openMp4(blob), 20000, '讀取影片索引'); } catch { index = null; } }
   // the source's audio is carried over as it is (AAC samples copied, not re-encoded)
   let audio;
+  onStage('讀取原片音軌…');
   if (!blob) audio = { skipped: '照片沒有音軌' };
-  else { try { audio = await extractAudio(blob, index); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; } }
+  else { try { audio = await withTimeout(extractAudio(blob, index), 30000, '讀取音訊'); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; } }
   let stream = null;
+  onStage('開啟解碼器…');
   // WebKit (iPad / iPhone / Safari): its WebCodecs decoder failed on users' clips ("Decoder failure"), so the proven
   // seeking path is used there; elsewhere a decoder error mid-clip falls back to seeking (below)
-  if (useStream && blob && index && !WEBKIT) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await openFrameStream(blob, index, { lookahead: low ? 2 : 6 }); } catch { stream = null; } }
+  if (useStream && blob && index && !WEBKIT) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await withTimeout(openFrameStream(blob, index, { lookahead: low ? 2 : 6 }), 10000, '開啟解碼器'); } catch { stream = null; } }
+  if (needsSeg && useSegWorker && segPrepare && !low) onStage('載入 AI 人物分割模型…');
   const workers = needsSeg && useSegWorker && segPrepare && !low ? await segWorkers() : null;
+  const seekT0 = seekStats.timeouts;
   timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0; timing.lowMemory = low;
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
     ...(audio.track ? { audio: { codec: 'aac', numberOfChannels: audio.track.numberOfChannels, sampleRate: audio.track.sampleRate } } : {}) });
@@ -314,15 +331,17 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   const encoder = new VideoEncoder({ output: (chunk, md) => muxer.addVideoChunk(chunk, md), error: (e) => { encErr = e; } });
   encoder.configure(cfg);
   const jobId = `job${Date.now().toString(36)}`;
+  onStage('準備調色…');
   const started = await engine.startJob(jobId, intentJson, look);
   const canvas = canvas2d(w, h);
   const segCanvas = canvas2d(256, Math.round(256 * h / w));
   const t0 = now();
+  onStage(`處理第 1 / ${n} 格…`);
   const inflight = [];
   let posted = Promise.resolve(), done = 0, segCalls = 0;
   const finish = async (job) => { // in frame order: wait for the graded frame, then encode it
     let tt = now();
-    const r = await job.render;
+    const r = await withTimeout(job.render, 120000, `調色第 ${job.i + 1} 格超過 2 分鐘沒有回應`);
     timing.wait += now() - tt;
     for (const [k, v] of Object.entries(r.timing || {})) timing.worker[k] = (timing.worker[k] || 0) + v;
     timing.render += Object.values(r.timing || {}).reduce((a, b) => a + b, 0);
@@ -348,14 +367,17 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
       if (stream) {
         try {
           if (window.__failDecodeAt === i) throw new Error('Decoder failure (test)');
-          img = await stream.frameAt(t, w, h, canvas);
+          // a decoder that silently stops giving frames (seen on a desktop with a camera .mov) must not hang the job
+          const frame = window.__stallDecodeAt === i ? new Promise(() => {}) : stream.frameAt(t, w, h, canvas);
+          img = await withTimeout(frame, window.__decodeTimeoutMs || 15000, `解碼器 ${((window.__decodeTimeoutMs || 15000) / 1000)} 秒沒有輸出第 ${i + 1} 格`);
         } catch (e) { // the browser's decoder gave up (seen on iPad: "Decoder failure"): the rest by seeking, same frames
           timing.decoderFallback = { at: i, message: String(e && e.message || e) };
+          onStage(`解碼器沒有回應，改用逐格讀取（第 ${i + 1} / ${n} 格）…`);
           try { stream.close(); } catch { /* already closed */ }
           stream = null;
         }
       }
-      if (!img) img = await grabFrame(meta.video, t, w, h, canvas);
+      if (!img) img = await withTimeout(grabFrame(meta.video, t, w, h, canvas), 60000, `讀取第 ${i + 1} 格影像超過 60 秒沒有回應`);
       timing.grab += now() - tt;
       let segP = Promise.resolve(null);
       if (needsSeg) {
@@ -378,6 +400,7 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
     await encoder.flush();
     timing.encode += now() - tf;
     timing.total = now() - t0;
+    timing.seekTimeouts = seekStats.timeouts - seekT0; // 'seeked' that never came and was asked for again
     if (encErr) throw encErr;
     if (audio.track) audio.written = muxAudio(muxer, audio, (n * 1e6) / fps);
     muxer.finalize();
