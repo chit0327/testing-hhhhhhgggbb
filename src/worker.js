@@ -55,7 +55,7 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   if (full.follow > 0 && full.prim && full.source === 'reference' && fitStore) full.prim = followed(full.prim, Math.min(1, full.follow));
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
-  delete full.blur; delete full.personEv; delete full.bgEv; delete full.skinFollow; // applied outside the main LUT
+  delete full.blur; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; // applied outside the main LUT
   const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
@@ -89,16 +89,23 @@ function subjectEv(ev, look, src, w, h, seg, temporal) {
  * the background's adjustment lives in the main LUT. Returns [] when nothing is local.
  */
 function layersFor(intent, look, src, w, h, seg, temporal, draft = false) {
-  const prim = look && look.prim;
+  const skinSat = (look && look.skinSat) || 0; // 膚色飽和度 (−1..1): only the AI skin mask, ×2^(0.6·v) chroma
+  const prim = (look && look.prim) || (skinSat ? neutralPrim() : null);
   if (!prim || !seg) return [];
   const local = !!prim.local && (prim.localAmt ?? 1) > 0;
-  if (!local && !prim.skin) return [];
+  if (!local && !prim.skin && !skinSat) return [];
   const mh = Math.round(MASK_W * h / w);
   if (!seg.skin || seg.skin.length !== MASK_W * mh) return [];
   const regions = local && seg.hair ? ['skin', 'hair', 'clothes'] : ['skin'];
   const regs = regions.map((r) => aiRegion(`ai-${r}`, mh));
   const masks = regionMasks(regs, { seg, L: lightnessGrid(src, w, h, MASK_W, mh) }, MASK_W, mh, 0.006, temporal);
-  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), skinFollow: r === 'skin' ? look.skinFollow || 0 : 0, post: local ? scaled(prim, r) : null } }, { draft }), mask: { data, w: MASK_W, h: mh }, k: 1 });
+  const postOf = (r) => { // the region's own adjustment, plus 膚色飽和度 on the skin layer
+    const q = local ? scaled(prim, r) : null;
+    if (r !== 'skin' || !skinSat) return q;
+    const b = q || { L: 0, a: 0, b: 0, sat: 0 };
+    return { ...b, sat: (b.sat || 0) + 0.6 * skinSat };
+  };
+  const layer = (r, data) => ({ lut: lutFor(intent, { ...look, prim: { ...layerPrim(prim, r), skinFollow: r === 'skin' ? look.skinFollow || 0 : 0, post: postOf(r) } }, { draft }), mask: { data, w: MASK_W, h: mh }, k: 1 });
   const out = [layer('skin', masks['__ai-skin'])];
   if (regions.length > 1) { // hair and clothes share one layer (same adjustment): one LUT, one lookup per pixel
     const hm = masks['__ai-hair'], cm = masks['__ai-clothes'], m = new Float32Array(hm.length);

@@ -100,6 +100,20 @@ export async function probeVideo(file) {
     if (d.length >= 3) { info.fps = snapFps(1 / d[Math.floor(d.length / 2)]); info.fpsMeasured = true; }
   }
   else { await video.play().catch(() => {}); video.pause(); } // iOS decodes pictures only after a play
+  // the file's own frame rate where it can be read (MP4 / MOV index: the median frame duration): playback-based
+  // measurement drops frames on a heavy clip (4K, 50 / 60 fps) on a busy computer and then reads half the rate,
+  // which halved the frames of the export
+  try {
+    const { openMp4 } = await import('./mp4index.js');
+    const idx = await Promise.race([openMp4(file), new Promise((res) => setTimeout(() => res(null), 8000))]);
+    const tr = idx && idx.info.videoTracks && idx.info.videoTracks[0], ss = tr && idx.file.getTrackById(tr.id).samples;
+    if (ss && ss.length > 1) {
+      const d = ss.map((x) => x.duration).filter((x) => x > 0).sort((a, b) => a - b)[ss.length >> 1];
+      const f = d ? snapFps(ss[0].timescale / d) : 0;
+      if (f > 1 && f <= 240) { if (info.fpsMeasured && Math.abs(f - info.fps) > 0.05) info.fpsPlayback = info.fps; info.fps = f; info.fpsMeasured = true; info.fpsSource = 'container'; }
+    }
+  } catch { /* not MP4 / MOV: keep the measured rate */ }
+  if (!info.fpsSource) info.fpsSource = info.fpsMeasured ? 'playback' : 'default';
   info.frameCount = frameCountOf(info.duration, info.fps);
   return info;
 }
@@ -125,10 +139,10 @@ export function timescaleFor(fps) {
 /** Time of the centre of frame i (seeking there always lands on exactly that frame). */
 export const frameTime = (meta, i) => Math.min(meta.duration - 1e-3, (Math.min(meta.frameCount - 1, Math.max(0, i)) + 0.5) / meta.fps);
 
-const presented = (video, ms) => new Promise((res) => { // next presented frame, or give up after ms
-  const timer = setTimeout(res, ms);
-  if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback(() => { clearTimeout(timer); res(); });
-  else requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); res(); }));
+const presented = (video, ms) => new Promise((res) => { // next presented frame (its media time), or give up after ms
+  const timer = setTimeout(() => res(null), ms);
+  if ('requestVideoFrameCallback' in video) video.requestVideoFrameCallback((_, m) => { clearTimeout(timer); res(m ? m.mediaTime : null); });
+  else requestAnimationFrame(() => requestAnimationFrame(() => { clearTimeout(timer); res(null); }));
 });
 
 // 'seeked', or false after ms: iPad Safari sometimes never fires it, which used to leave processing at 正在處理 forever
@@ -142,7 +156,10 @@ export async function seek(video, t) {
   // duplicated frames in the export)
   for (const [attempt, ms] of [3000, 6000, 15000].entries()) { // (a slow 4K seek on a tablet gets time; a lost event is asked again)
     const p = seekedWithin(video, ms);
-    const shown = presented(video, 400);
+    // the frame must really be on screen before it is drawn: a heavy clip (4K camera file) can take far longer than a
+    // moment to present it, and drawing earlier grabbed the previous frame (duplicated frames = a choppy export).
+    // Up to 3 s (it returns as soon as the frame is presented, so a fast machine waits no longer than before).
+    const shown = presented(video, 3000);
     video.currentTime = attempt ? t + attempt * 1e-3 : t; // (a retry asks again, a hair later: same frame)
     const ok = await p;
     await shown;

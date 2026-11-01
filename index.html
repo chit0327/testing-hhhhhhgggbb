@@ -195,9 +195,10 @@
           <summary>人物、膚色與背景</summary>
           <div class="cat-body">
             <label class="slider"><span>膚色偏向參考圖</span><input type="range" id="adj-skinFollow" min="0" max="100" value="0"><output id="adj-skinFollow-v">0%</output></label>
+            <label class="slider"><span>膚色飽和度</span><input type="range" id="adj-skinSat" min="-100" max="100" value="0"><output id="adj-skinSat-v">0</output></label>
             <label class="slider"><span>人物亮度</span><input type="range" id="adj-personEv" min="-200" max="200" value="0"><output id="adj-personEv-v">0</output></label>
             <label class="slider"><span>背景亮度</span><input type="range" id="adj-bgEv" min="-200" max="200" value="0"><output id="adj-bgEv-v">0</output></label>
-            <p class="info" id="peopleInfo">膚色偏向參考圖：0% 時臉色保持自然膚色，越往右越接近調色給畫面的色調（例如參考圖偏青，臉也會跟着偏青）；100% 等於完全不保護膚色。效果大小取決於所選調色對膚色的改變：「風格」較溫和，「照搬」較明顯。人物亮度和背景亮度用 AI 偵測人物，分開調亮或調暗，人物移動時會跟着走。需要 AI 辨識完成；畫面中沒有人物時不會有效果。快速預覽時膚色效果會在停下滑桿後才出現。</p>
+            <p class="info" id="peopleInfo">膚色偏向參考圖：0% 時臉色保持自然膚色，越往右越接近調色給畫面的色調（例如參考圖偏青，臉也會跟着偏青）；100% 等於完全不保護膚色。效果大小取決於所選調色對膚色的改變：「風格」較溫和，「照搬」較明顯。膚色飽和度：只改變 AI 偵測到的皮膚，往右膚色更紅潤飽滿，往左更淡，背景和衣服不受影響（+100 約為彩度 ×1.5）。人物亮度和背景亮度用 AI 偵測人物，分開調亮或調暗，人物移動時會跟着走。需要 AI 辨識完成；畫面中沒有人物時不會有效果。快速預覽時膚色效果會在停下滑桿後才出現。</p>
           </div>
         </details>
 

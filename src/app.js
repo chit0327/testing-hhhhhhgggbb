@@ -513,11 +513,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   haze: ['haze', 100, (v) => `${v}`], hazeRadius: ['hazeRadius', 100, (v) => `${v}`],
   hazeSoft: ['hazeSoft', 100, (v) => `${v}`], hazeBloom: ['hazeBloom', 100, (v) => `${v}`], hazeVeil: ['hazeVeil', 100, (v) => `${v}`],
   personEv: ['personEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], bgEv: ['bgEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`],
-  skinFollow: ['skinFollow', 100, (v) => `${v}%`], gradMap: ['gradMap', 100, (v) => `${v}%`], follow: ['follow', 100, (v) => `${v}%`],
+  skinFollow: ['skinFollow', 100, (v) => `${v}%`], skinSat: ['skinSat', 100, (v) => `${v > 0 ? '+' : ''}${v}`], gradMap: ['gradMap', 100, (v) => `${v}%`], follow: ['follow', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -1321,7 +1321,7 @@ async function startProcessing() {
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const ap = S.look.applied.prim;
   const bl = S.look.applied.blur;
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv);
+  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv || S.look.applied.skinSat);
   if (needsSeg) await initSegmenter();
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   // while processing, only the hidden work video decodes the source: the upload preview and the comparison
@@ -1393,7 +1393,10 @@ async function drawWipe() {
   }
   const a = $('origVideo'), b = $('outVideo');
   const t = $('cmpTime').value / 1000 * Math.min(a.duration || S.video.meta.duration, b.duration || S.video.meta.duration);
-  await Promise.all([seek(a, Math.max(0, t - 1e-3)), seek(b, Math.max(0, t - 1e-3))]);
+  // the players were just (re)loaded after processing: wait until each has a picture before seeking it (seeking
+  // before that could wait forever); a comparison that cannot be drawn is skipped, never an error
+  const ready = (v) => (v.readyState >= 2 ? Promise.resolve() : new Promise((res) => { const done = () => { clearTimeout(tm); res(); }; const tm = setTimeout(done, 15000); v.addEventListener('loadeddata', done, { once: true }); }));
+  try { await Promise.all([a, b].map(async (v) => { await ready(v); await seek(v, Math.max(0, t - 1e-3)); })); } catch (err) { log('wipe-failed', { message: err.message }); return; }
   const c = $('wipeCanvas'), w = S.output.width, h = S.output.height, x = Math.round($('wipePos').value / 100 * w);
   c.width = w; c.height = h;
   const ctx = c.getContext('2d');
