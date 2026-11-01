@@ -1700,14 +1700,21 @@ function applyTheme(choice) {
   const eff = choice || (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
   for (const b of document.querySelectorAll('[data-theme-choice]')) b.setAttribute('aria-checked', String(b.dataset.themeChoice === eff));
 }
-// switching is animated, not an instant jump: colours, backgrounds, borders and the dark gradient layer fade over
-// 2 s with a gentle ease in and out (like Apple's appearance change). The same in every browser (view transitions
-// were not used: older Safari has none); nothing moves for viewers who ask for reduced motion.
+// switching is animated like iPadOS's own screen changes: the whole page as it was cross-dissolves into the whole page
+// as it will be (view transitions: two complete pictures, so nothing passes through muddy in-between colours), 2 s
+// with a gentle ease in and out. Browsers without view transitions (Safari before 18) fade the colours and the
+// gradient layer instead; nothing moves for viewers who ask for reduced motion.
 const THEME_MS = 2000;
 let themeTimer = 0;
 function switchTheme(choice) {
   const root = document.documentElement;
   if (matchMedia('(prefers-reduced-motion: reduce)').matches) { applyTheme(choice); return 'none'; }
+  if (document.startViewTransition) {
+    root.classList.add('theme-vt');
+    const t = document.startViewTransition(() => applyTheme(choice));
+    t.finished.finally(() => root.classList.remove('theme-vt'));
+    return 'dissolve';
+  }
   root.classList.add('theme-anim');
   applyTheme(choice);
   clearTimeout(themeTimer); themeTimer = setTimeout(() => root.classList.remove('theme-anim'), THEME_MS + 100);
