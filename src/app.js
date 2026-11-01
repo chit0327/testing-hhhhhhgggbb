@@ -25,7 +25,7 @@ const engine = new EngineClient();
 const PHASE_TEXT = {
   idle: '請先上傳要調色的影片或照片（參考圖片可選）', loading: '素材載入中…', analysing: '正在分析參考圖片與影片…',
   draft: '草稿設定：請在光暗設定視窗中確認', unset: '尚未確認光暗設定（按「重新設定光暗」開始）',
-  confirmed: '已確認設定，準備處理…', processing: '正在處理…', done: '已完成處理',
+  confirmed: '調色中（尚未處理）', processing: '正在處理…', done: '已完成處理',
   exporting: '匯出中…', exported: '匯出完成', error: '發生錯誤',
 };
 
@@ -464,7 +464,9 @@ $('confirmIntent').onclick = async () => {
   $('editIntent').disabled = false;
   showAdjustCard();
   if (withClaude) await runClaude();
-  startProcessing();
+  // no processing yet: the user grades on the preview first; 套用並處理 starts it (processing in the background
+  // while grading slowed the preview, used the tablet's memory, and was thrown away at the first adjustment)
+  updateAdjState();
 };
 $('openIntent').onclick = () => openDialog();
 $('editIntent').onclick = () => openDialog();
