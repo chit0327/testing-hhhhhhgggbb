@@ -303,7 +303,9 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   if (!blob) audio = { skipped: '照片沒有音軌' };
   else { try { audio = await extractAudio(blob, index); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; } }
   let stream = null;
-  if (useStream && blob && index) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await openFrameStream(blob, index, { lookahead: low ? 2 : 6 }); } catch { stream = null; } }
+  // WebKit (iPad / iPhone / Safari): its WebCodecs decoder failed on users' clips ("Decoder failure"), so the proven
+  // seeking path is used there; elsewhere a decoder error mid-clip falls back to seeking (below)
+  if (useStream && blob && index && !WEBKIT) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await openFrameStream(blob, index, { lookahead: low ? 2 : 6 }); } catch { stream = null; } }
   const workers = needsSeg && useSegWorker && segPrepare && !low ? await segWorkers() : null;
   timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0; timing.lowMemory = low;
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
@@ -342,7 +344,18 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
       if (encErr) throw encErr;
       const t = frameTime(meta, i);
       let tt = now();
-      const img = stream ? await stream.frameAt(t, w, h, canvas) : await grabFrame(meta.video, t, w, h, canvas);
+      let img = null;
+      if (stream) {
+        try {
+          if (window.__failDecodeAt === i) throw new Error('Decoder failure (test)');
+          img = await stream.frameAt(t, w, h, canvas);
+        } catch (e) { // the browser's decoder gave up (seen on iPad: "Decoder failure"): the rest by seeking, same frames
+          timing.decoderFallback = { at: i, message: String(e && e.message || e) };
+          try { stream.close(); } catch { /* already closed */ }
+          stream = null;
+        }
+      }
+      if (!img) img = await grabFrame(meta.video, t, w, h, canvas);
       timing.grab += now() - tt;
       let segP = Promise.resolve(null);
       if (needsSeg) {

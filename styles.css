@@ -133,15 +133,7 @@ body.is-work { height: 100vh; height: 100dvh; overflow: hidden; display: flex; f
 input[type=range].hue { -webkit-appearance: none; appearance: none; height: 12px; border-radius: 6px; background: var(--hue-gradient, linear-gradient(90deg, red, yellow, lime, cyan, blue, magenta, red)); }
 input[type=range].hue::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%; background: var(--bg); border: 2px solid var(--fg); }
 input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radius: 50%; background: var(--bg); border: 2px solid var(--fg); }
-.ai-steps { padding-left: 1.4em; margin: 8px 0 0; }
-.ai-steps li { margin-bottom: 12px; }
-.ai-steps p { margin: 4px 0 6px; font-size: 14px; }
-.ai-steps textarea { width: 100%; box-sizing: border-box; font: 13px/1.5 inherit; padding: 8px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); resize: vertical; }
 @media (max-width: 520px) { .tone-row { grid-template-columns: 3.5em minmax(0, 1fr) minmax(0, 1fr) 1.9em; } .tone-row output { display: none; } }
-.gemini { border-bottom: 1px solid var(--line); padding: 4px 0 10px; margin-bottom: 8px; }
-.gemini h3, .ai-manual { font-size: 14px; margin: 10px 0 4px; }
-.gemini input[type=password] { font: inherit; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); min-width: 0; }
-.gemini select { font: inherit; padding: 4px 6px; border-radius: 6px; border: 1px solid var(--line); background: var(--bg); color: var(--fg); max-width: 100%; }
 .cands { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; margin-top: 8px; }
 .cand { border: 1px solid var(--line); border-radius: 10px; padding: 6px; font-size: 13px; }
 .cand img { width: 100%; border-radius: 6px; display: block; background: #000; }

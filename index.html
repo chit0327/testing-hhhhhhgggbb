@@ -159,11 +159,6 @@
             <label class="slider"><span>漸層映射</span><input type="range" id="adj-gradMap" min="0" max="100" value="0"><output id="adj-gradMap-v">0%</output></label>
             <canvas id="gradStrip" width="320" height="14" aria-label="參考圖的漸層（暗 → 亮）"></canvas>
             <p class="info">像畫畫先定黑白關係再上色：保留畫面每個位置的明暗，把顏色往參考圖在同一亮度的顏色拉近（上面的色帶是參考圖由暗到亮的顏色）。能讓整個畫面的顏色更統一；太高時，同樣亮度的物件會變成同一種顏色。皮膚有膚色保護時不受影響。</p>
-            <h3>調色來源</h3>
-            <div class="seg-choice" role="radiogroup" aria-label="調色來源">
-              <label><input type="radio" name="source" value="reference" checked> 參考圖自動轉移</label>
-              <label><input type="radio" name="source" value="ai" id="sourceAi" disabled> AI 調色圖</label>
-            </div>
             <div class="row">
               <button type="button" id="adjSuggest">恢復自動匹配</button>
               <button type="button" id="claudeGrade" class="primary" hidden>Claude 看圖自動調色</button>
@@ -359,51 +354,6 @@
             </div>
             <p class="info" id="scopeInfo"></p>
             <p class="info">波形圖：橫向是畫面位置，縱向是亮度 0–100%；貼到 100% 的平線代表過曝，貼到 0% 代表死黑。RGB 分量圖：三者在亮部高低不同就是偏色。向量圖：離中心越遠越飽和；橙色線是膚色線。</p>
-          </div>
-        </details>
-
-        <details class="cat ai-panel" id="aiPanel">
-          <summary>AI 調色圖（進階）</summary>
-          <div class="cat-body">
-            <p class="info">讓 AI 圖像模型調好一格，網站再反推成調色設定。</p>
-            <section class="gemini" id="geminiBox">
-              <h3>自動生成（使用你自己的 API 金鑰）</h3>
-              <div class="row"><label>服務 <select id="genProvider"><option value="gemini">Google Gemini</option><option value="pollinations">Pollinations</option></select></label></div>
-              <p class="info" id="genProviderInfo"></p>
-              <div class="row">
-                <input type="password" id="geminiKey" placeholder="貼上 Gemini API 金鑰" autocomplete="off" spellcheck="false" class="grow">
-                <button type="button" id="geminiConnect">連線並列出模型</button>
-              </div>
-              <label class="check"><input type="checkbox" id="geminiRemember"> 在這部裝置記住金鑰</label>
-              <div class="row">
-                <label>模型 <select id="geminiModel"><option value="">（先連線）</option></select></label>
-                <label>候選數 <select id="geminiCount"><option>1</option><option selected>2</option><option>3</option></select></label>
-              </div>
-              <label class="check"><input type="checkbox" id="geminiConsent"> 我同意把代表影格和參考圖傳送給 <span id="genProviderName">Google Gemini</span> 處理</label>
-              <div class="row">
-                <button type="button" id="geminiRun" class="primary" disabled>生成調色候選</button>
-                <button type="button" id="geminiStop" hidden>停止</button>
-              </div>
-              <p class="info" id="geminiInfo"></p>
-              <div class="cands" id="geminiCands"></div>
-            </section>
-            <h3 class="ai-manual">或手動：用任何 AI 圖像工具</h3>
-            <ol class="ai-steps">
-              <li>
-                <p>下載代表影格，連同參考圖一起交給你使用的 AI 圖像工具。</p>
-                <button type="button" id="aiDownload">下載代表影格</button>
-              </li>
-              <li>
-                <p>使用這段提示詞（依參考圖的量化數據自動產生，可以自行修改）：</p>
-                <textarea id="aiPrompt" rows="6"></textarea>
-                <button type="button" id="aiCopy">複製提示詞</button>
-              </li>
-              <li>
-                <p>把 AI 調好的圖片上傳到這裏。網站會核對構圖是否相同，再在瀏覽器內反推出調色設定，不會上傳任何檔案。</p>
-                <label class="drop"><input type="file" id="aiInput" accept="image/*"><span>上傳 AI 調色後的影格</span></label>
-                <p class="info" id="aiResult"></p>
-              </li>
-            </ol>
           </div>
         </details>
 

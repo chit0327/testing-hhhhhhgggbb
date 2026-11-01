@@ -15,9 +15,7 @@ import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShare
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
-import { keyStore, listImageModels, geminiRegrade, nearestRatio } from './gemini.js';
-import { pollinationsKeyStore, listEditModels, pollinationsRegrade } from './pollinations.js';
-import { suggestLook, promptFor } from './engine/suggest.js';
+import { suggestLook } from './engine/suggest.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -181,7 +179,6 @@ function fitGrade(key) {
     S.grade.cands = (r.candidates || []).map((c) => (SKIN_KEEP ? { ...c, prim: { ...c.prim, skinLine: 0 } } : c));
     S.grade.refBands = bandColours(S.ref.imageData.data, S.ref.imageData.width, S.ref.imageData.height, { centre: 0.7, skipWhite: true });
     log('autofit', { ms: Math.round(r.autofitMs || 0), modes: S.grade.cands.map((c) => c.mode) });
-    $('aiPrompt').value = promptFor(r.ref, r.palette);
     if (S.look.auto) applyAutoLook();
     renderCands();
     log('grade-fitted', { ms: Math.round(r.ms) });
@@ -630,15 +627,6 @@ for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
 }
 $('adj-protect').addEventListener('change', (e) => { S.look.auto = false; S.look.draft.protect = e.target.checked; updateAdjState(); scheduleAdjPreview(); });
 $('adjReset').onclick = () => { S.look.auto = false; S.look.draft = moodOnly() ? moodBase() : { ...DEFAULT_LOOK }; $('moodInfo').textContent = MOOD_INFO; syncAdjustControls(); scheduleAdjPreview(); markMood(); };
-for (const el of document.querySelectorAll('input[name=source]')) {
-  el.addEventListener('change', () => {
-    if (el.value === 'ai' && !S.aiPair) return;
-    S.look.auto = false;
-    S.look.draft = el.value === 'ai' ? { ...S.look.draft, source: 'ai', pairId: S.aiPair.id, strength: 1 } : { ...S.look.draft, source: 'reference', pairId: undefined };
-    log('source-changed', { source: el.value });
-    syncAdjustControls(); scheduleAdjPreview();
-  });
-}
 // 膚色偏向參考圖 starts at the reference's automatic value until the user moves that slider
 const candLook = (c) => ({ ...DEFAULT_LOOK, strength: 0, match: 0, source: 'reference', prim: sanitizePrim(c.prim), ...kept(), ...(S.look.skinFollowSet ? {} : { skinFollow: S.grade.autoSkinFollow || 0 }) });
 function applyAutoLook(mode = 'look') { // 風格: the stable default (same look on any footage)
@@ -937,7 +925,7 @@ $('catPick').addEventListener('toggle', () => renderPicks());
 $('pickRestart').onclick = () => { PICK.step = 1; PICK.round = 1; $('pickRound').textContent = '第 1 輪'; renderPicks(); };
 function syncRefMode() { // reference-only controls are hidden without a reference; the moods open instead
   const none = moodOnly();
-  $('catMatch').hidden = none; $('aiPanel').hidden = none;
+  $('catMatch').hidden = none;
   $('catMood').open = none || $('catMood').open;
   $('moodLead').textContent = none ? '沒有參考圖片時，可以直接選一種氛圍；之後仍可用下面的滑桿微調。' : '不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。';
 }
@@ -1161,207 +1149,8 @@ async function saveBlob(blob, filename) {
 function clearAiPair() {
   S.aiPair = null; S.aiFrameT = null;
   engine.clearPair().catch(() => {});
-  $('sourceAi').disabled = true; $('aiResult').textContent = ''; $('geminiCands').innerHTML = '';
   if (S.look.draft.source === 'ai') S.look.draft = { ...S.look.draft, source: 'reference', pairId: undefined };
 }
-$('aiDownload').onclick = async () => {
-  if (!S.rep) { $('aiResult').textContent = '請先開啟光暗設定視窗，選好代表影格。'; return; }
-  const m = S.video.meta, { w, h } = fitSize(m.width, m.height, 1280);
-  const img = await grabFrame(m.video, S.rep.t, w, h);
-  const c = document.createElement('canvas'); c.width = w; c.height = h; c.getContext('2d').putImageData(img, 0, 0);
-  const blob = await new Promise((res) => c.toBlob(res, 'image/png'));
-  S.aiFrameT = S.rep.t;
-  try {
-    await saveBlob(blob, `${S.video.file.name.replace(/\.[^.]+$/, '')}_frame_${S.rep.t.toFixed(2)}s.png`);
-    log('ai-frame-downloaded', { t: S.rep.t });
-  } catch (err) { if (!(err && err.code === 'declined')) $('aiResult').textContent = `下載失敗：${err.message || err.code}`; }
-};
-$('aiCopy').onclick = async () => {
-  try { await navigator.clipboard.writeText($('aiPrompt').value); $('aiCopy').textContent = '已複製'; }
-  catch { $('aiPrompt').select(); $('aiCopy').textContent = '請按 Ctrl+C 複製'; }
-  setTimeout(() => { $('aiCopy').textContent = '複製提示詞'; }, 2000);
-};
-/**
- * Distil a LUT from an AI-graded version of the frame at time t. crop: centre-crop an image whose aspect
- * differs a little (generators may pick their own size) instead of refusing it.
- * Returns the worker's verdict plus the pair id; throws with a user-facing message.
- */
-async function fitAiImage(bmp, t, { crop = false } = {}) {
-  const m = S.video.meta, target = m.width / m.height, ar = bmp.width / bmp.height;
-  let sx = 0, sy = 0, sw = bmp.width, sh = bmp.height;
-  if (Math.abs(ar / target - 1) > 0.03) {
-    if (!crop || Math.abs(ar / target - 1) > 0.2) throw new Error(`圖片比例（${bmp.width}×${bmp.height}）和影片不同，AI 可能裁切或改變了構圖。請使用與影格相同比例的圖片。`);
-    if (ar > target) { sw = Math.round(bmp.height * target); sx = Math.round((bmp.width - sw) / 2); } else { sh = Math.round(bmp.width / target); sy = Math.round((bmp.height - sh) / 2); }
-  }
-  const { w, h } = fitSize(m.width, m.height, 320);
-  const src = await grabFrame(m.video, t, w, h);
-  const cv = canvas2d(w, h), cx = cv.getContext('2d', { willReadFrequently: true });
-  cx.imageSmoothingQuality = 'high'; cx.drawImage(bmp, sx, sy, sw, sh, 0, 0, w, h);
-  const id = `p${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
-  const r = await engine.fitPair(src, cx.getImageData(0, 0, w, h), id);
-  log('ai-pair-fitted', { id, t, score: r.shift.score, meanAbs: r.meanAbs, outlierShare: r.outlierShare, ms: Math.round(r.ms) });
-  if (!r.accepted) throw new Error(`這張圖和代表影格的構圖對不上（相似度 ${r.shift.score.toFixed(2)}）`);
-  return { id, t, score: r.shift.score, meanAbs: r.meanAbs, outlierShare: r.outlierShare };
-}
-function pairWarnings(p) {
-  const warn = [];
-  if (p.score < 0.8) warn.push('構圖有些差異');
-  if (p.meanAbs > 12 || p.outlierShare > 0.15) warn.push('AI 可能改了光線或內容，只能部分重現');
-  return warn;
-}
-function useAiPair(p) {
-  S.aiPair = p;
-  $('sourceAi').disabled = false;
-  S.look.auto = false;
-  S.look.draft = { ...DEFAULT_LOOK, source: 'ai', pairId: p.id, ...kept() }; // the AI image is the target: neutral sliders, the user's strength and effects kept
-  syncAdjustControls(); scheduleAdjPreview();
-}
-$('aiInput').addEventListener('change', async (e) => {
-  const file = e.target.files[0];
-  e.target.value = '';
-  if (!file) return;
-  const out = $('aiResult');
-  try {
-    if (!S.video.meta) throw new Error('請先上傳目標影片');
-    const t = S.aiFrameT ?? (S.rep ? S.rep.t : null);
-    if (t === null) throw new Error('請先開啟光暗設定視窗，再下載代表影格');
-    out.textContent = '分析 AI 調色圖中…';
-    const p = await fitAiImage(await loadImage(file), t);
-    const warn = pairWarnings(p);
-    useAiPair(p);
-    out.textContent = `已建立 AI 調色設定：構圖相似度 ${p.score.toFixed(2)}，重現誤差約 ${p.meanAbs.toFixed(1)}/255，`
-      + `${(p.outlierShare * 100).toFixed(1)}% 的像素無法以調色重現${warn.length ? `（注意：${warn.join('；')}）` : '（AI 調色可以準確重現）'}。`
-      + '調色來源已切換為「AI 調色圖」，滑桿已歸零，可以再微調。';
-  } catch (err) { out.textContent = `無法使用這張圖：${err.message.replace(/）$/, '）。請確認上傳的是步驟 1 下載的那一格調色後的版本')}`; }
-});
-
-// ---- Image AI with the user's own key (Gemini or Pollinations): generate candidates, check, distil, rank,
-// pick the closest. Element ids keep the gemini* prefix; the provider decides key storage, models and calls.
-const inClaudeViewer = !!(window.claude && window.claude.use); // claude.ai pages cannot reach other services
-const PROVIDERS = {
-  gemini: {
-    name: 'Google Gemini', store: keyStore, placeholder: '貼上 Gemini API 金鑰',
-    info: '金鑰只保存在這個瀏覽器，直接送到 Google。生成時會把代表影格和參考圖傳給 Google；圖像模型可能沒有免費額度，費用和資料使用方式依 Google 的條款。',
-    list: async (key) => (await listImageModels(key)).map((id) => ({ id, refs: 2 })),
-    run: (o) => geminiRegrade({ ...o, aspectRatio: nearestRatio(o.width, o.height) }),
-  },
-  pollinations: {
-    name: 'Pollinations', store: pollinationsKeyStore, placeholder: '貼上 Pollinations 的 sk_ 金鑰（enter.pollinations.ai）',
-    info: '金鑰只保存在這個瀏覽器，直接送到 Pollinations。每次生成會扣帳戶的 Pollen 點數（免費點數來自官方任務，不是無限免費），影格和參考圖會傳給 Pollinations 和它使用的模型供應商。',
-    list: listEditModels,
-    run: (o) => pollinationsRegrade(o),
-  },
-};
-const provider = () => PROVIDERS[$('genProvider').value] || PROVIDERS.gemini;
-let geminiCtl = null;
-function syncProvider() {
-  const p = provider();
-  $('geminiKey').value = p.store.load(); $('geminiKey').placeholder = p.placeholder;
-  $('geminiRemember').checked = !!$('geminiKey').value;
-  $('genProviderInfo').textContent = p.info; $('genProviderName').textContent = p.name;
-  $('geminiModel').innerHTML = '<option value="">（先連線）</option>';
-  if (!inClaudeViewer) $('geminiInfo').textContent = '';
-}
-syncProvider();
-$('genProvider').addEventListener('change', () => { syncProvider(); geminiState(); });
-function geminiState() {
-  const ok = $('geminiKey').value.trim() && $('geminiModel').value && $('geminiConsent').checked && !S.geminiBusy;
-  $('geminiRun').disabled = !ok;
-}
-if (inClaudeViewer) {
-  for (const id of ['genProvider', 'geminiKey', 'geminiConnect', 'geminiRemember', 'geminiModel', 'geminiCount', 'geminiConsent']) $(id).disabled = true;
-  $('geminiInfo').textContent = '目前在 claude.ai 網頁裏開啟，不能連線外部的圖像 AI。請在本機（npm start）或自己的網址開啟網站。';
-}
-$('geminiRemember').addEventListener('change', (e) => { if (e.target.checked) provider().store.save($('geminiKey').value.trim()); else provider().store.clear(); });
-$('geminiKey').addEventListener('input', () => { if ($('geminiRemember').checked) provider().store.save($('geminiKey').value.trim()); geminiState(); });
-for (const id of ['geminiModel', 'geminiConsent']) $(id).addEventListener('change', geminiState);
-$('geminiConnect').onclick = async () => {
-  const key = $('geminiKey').value.trim();
-  if (!key) { $('geminiInfo').textContent = '請先貼上 API 金鑰。'; return; }
-  $('geminiInfo').textContent = '連線中…';
-  try {
-    const models = await provider().list(key);
-    const sel = $('geminiModel');
-    sel.innerHTML = '';
-    for (const m of models) { const o = document.createElement('option'); o.value = o.textContent = m.id; o.dataset.refs = m.refs; sel.appendChild(o); }
-    if (!models.length) { const o = document.createElement('option'); o.value = ''; o.textContent = '（這個金鑰沒有可用的圖像模型）'; sel.appendChild(o); }
-    $('geminiInfo').textContent = models.length ? `已連線，可用的修圖模型 ${models.length} 個。` : '已連線，但這個金鑰沒有可以修圖的模型（可能要開通或付費）。';
-    log('gemini-models', { provider: $('genProvider').value, models: models.map((m) => m.id) });
-  } catch (err) { $('geminiInfo').textContent = `連線失敗：${err.message}`; }
-  geminiState();
-};
-function lookDistance(st, ref) { // the same look descriptors the suggestion uses
-  const q0 = (x) => x.Lq[0];
-  return Math.abs(q0(st) - q0(ref)) + Math.abs(st.Lsd - ref.Lsd) + Math.abs(st.chroma - ref.chroma)
-    + Math.hypot(st.hiA - ref.hiA, st.hiB - ref.hiB) + Math.hypot(st.loA - ref.loA, st.loB - ref.loB);
-}
-function renderCandidates(cands, chosenId) {
-  const box = $('geminiCands');
-  box.innerHTML = '';
-  for (const c of cands) {
-    const d = document.createElement('div');
-    d.className = `cand${c.id && c.id === chosenId ? ' chosen' : ''}${c.ok ? '' : ' bad'}`;
-    if (c.url) { const img = document.createElement('img'); img.src = c.url; img.alt = `AI 候選 ${c.n}`; d.appendChild(img); }
-    const p = document.createElement('p');
-    p.textContent = c.ok ? `候選 ${c.n}：構圖相似度 ${c.score.toFixed(2)}，重現誤差 ${c.meanAbs.toFixed(1)}/255，與參考圖差距 ${c.dist.toFixed(3)}${c.warn.length ? `（${c.warn.join('；')}）` : ''}`
-      : `候選 ${c.n}：不採用，${c.reason}`;
-    d.appendChild(p);
-    if (c.ok) {
-      const b = document.createElement('button'); b.type = 'button';
-      b.textContent = c.id === chosenId ? '使用中' : '改用這個'; b.disabled = c.id === chosenId;
-      b.onclick = () => { useAiPair(c.pair); renderCandidates(cands, c.id); log('gemini-chosen', { id: c.id, manual: true }); };
-      d.appendChild(b);
-    }
-    box.appendChild(d);
-  }
-}
-$('geminiStop').onclick = () => geminiCtl && geminiCtl.abort();
-$('geminiRun').onclick = async () => {
-  if (!S.rep || !S.video.meta) { $('geminiInfo').textContent = '請先開啟光暗設定視窗，選好代表影格。'; return; }
-  await S.grade.ready;
-  const key = $('geminiKey').value.trim(), model = $('geminiModel').value, count = +$('geminiCount').value;
-  const info = $('geminiInfo'), m = S.video.meta, t = S.rep.t;
-  S.geminiBusy = true; geminiState(); geminiCtl = new AbortController(); $('geminiStop').hidden = false;
-  const cands = [];
-  try {
-    const { w, h } = fitSize(m.width, m.height, 1024);
-    const frame = await toJpeg(await grabFrame(m.video, t, w, h), 1024), reference = await toJpeg(S.ref.bitmap, 1024);
-    const refs = +($('geminiModel').selectedOptions[0] && $('geminiModel').selectedOptions[0].dataset.refs) || 1, p = provider();
-    // a model that takes one image only gets the frame; the style then comes from the prompt's description alone
-    const prompt = refs >= 2 ? `第一張圖是要調色的影片影格，第二張圖是參考圖。請輸出第一張圖調色後的版本。\n${$('aiPrompt').value}`
-      : `請輸出這張影片影格調色後的版本。\n${$('aiPrompt').value.replace(/請參考我附上的參考圖的色調和氛圍。?\n?/, '')}`;
-    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
-    for (let n = 1; n <= count; n++) {
-      info.textContent = `${p.name} 生成候選 ${n}/${count} 中…`;
-      const c = { n, ok: false };
-      cands.push(c);
-      try {
-        const blob = await p.run({ key, model, refs, prompt, frame, reference, width: w, height: h, signal: geminiCtl.signal });
-        c.url = URL.createObjectURL(blob);
-        info.textContent = `檢查候選 ${n}/${count}…`;
-        c.pair = await fitAiImage(await loadImage(blob), t, { crop: true });
-        const r = await engine.render(S.rep.img, { intent, seg: S.rep.seg, grade: true, look: { ...DEFAULT_LOOK, source: 'ai', pairId: c.pair.id } });
-        const d = r.imageData.data;
-        let blown = 0; for (let i = 0; i < d.length; i += 4) if (Math.max(d[i], d[i + 1], d[i + 2]) >= 250) blown++;
-        c.blown = blown / (d.length / 4);
-        Object.assign(c, { id: c.pair.id, score: c.pair.score, meanAbs: c.pair.meanAbs, warn: pairWarnings(c.pair), dist: lookDistance(measure(d, r.imageData.width, r.imageData.height), S.grade.stats.ref) });
-        if (c.blown > 0.03) c.reason = `死白比例 ${(c.blown * 100).toFixed(1)}%，會過曝`; else c.ok = true;
-      } catch (err) {
-        c.reason = err.message;
-        if (['bad_key', 'quota', 'network', 'cancelled', 'forbidden'].includes(err.code)) break; // no point trying again
-      }
-      renderCandidates(cands, null);
-    }
-    const good = cands.filter((c) => c.ok).sort((a, b) => a.dist - b.dist);
-    log('gemini-candidates', { provider: $('genProvider').value, model, results: cands.map((c) => ({ n: c.n, ok: c.ok, reason: c.reason || null, dist: c.dist ?? null })) });
-    if (good.length) {
-      useAiPair(good[0].pair);
-      renderCandidates(cands, good[0].id);
-      info.textContent = `完成：${good.length}/${cands.length} 個候選可用，已自動選用最接近參考圖的候選 ${good[0].n}（調色來源已切換為「AI 調色圖」，滑桿已歸零）。按「套用並處理影片」產生影片。`;
-    } else info.textContent = `沒有可用的候選：${cands.map((c) => `候選 ${c.n} ${c.reason}`).join('；')}`;
-  } catch (err) { info.textContent = `${provider().name} 生成失敗：${err.message}`; }
-  finally { S.geminiBusy = false; $('geminiStop').hidden = true; geminiState(); }
-};
 $('adjApply').onclick = () => startProcessing();
 $('reprocess').onclick = () => startProcessing();
 $('adjWipe').addEventListener('input', () => drawAdj());
@@ -1535,6 +1324,11 @@ async function startProcessing() {
   const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv);
   if (needsSeg) await initSegmenter();
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
+  // while processing, only the hidden work video decodes the source: the upload preview and the comparison
+  // players are unloaded (on iPad every <video> holding a 4K clip takes a hardware decoder and a lot of memory, and
+  // four at once gave "Decoder failure" / "out of memory"). They are loaded again afterwards; nothing about the
+  // processing or its quality changes.
+  for (const id of ['videoPreview', 'origVideo', 'outVideo']) unloadVideo($(id));
   try {
     const res = await processVideo({
       engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH,
@@ -1565,6 +1359,7 @@ async function startProcessing() {
   } catch (err) {
     if (token !== S.job.token) return;
     log('processing-failed', { message: err.message });
+    if (S.output && S.output.url) { $('origVideo').src = S.video.meta.url; $('outVideo').src = S.output.url; } // the previous result stays comparable
     setPhase('error', err.message);
     $('progressWrap').hidden = true;
     for (const id of ['reprocess', 'editIntent']) $(id).disabled = false;
@@ -1636,8 +1431,10 @@ async function saveFile(name, blob) {
 
 // ------------------------------------------------------------------ pages, upload controls, workspace views
 S.page = 'upload';
+function unloadVideo(v) { v.pause(); if (v.getAttribute('src')) { v.removeAttribute('src'); v.load(); } }
 function showPage(p) {
   S.page = p;
+  if (p === 'upload' && S.video.meta && !isPhoto() && !$('videoPreview').getAttribute('src')) $('videoPreview').src = S.video.meta.url; // (unloaded while processing)
   $('pageUpload').hidden = p !== 'upload';
   $('pageWork').hidden = p !== 'work';
   $('backToUpload').hidden = p !== 'work';
