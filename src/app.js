@@ -1701,11 +1701,11 @@ function applyTheme(choice) {
   for (const b of document.querySelectorAll('[data-theme-choice]')) b.setAttribute('aria-checked', String(b.dataset.themeChoice === eff));
 }
 // switching is animated like iPadOS's own screen changes: the whole page as it was cross-dissolves into the whole page
-// as it will be (view transitions: two complete pictures, so nothing passes through muddy in-between colours), 2 s
+// as it will be (view transitions: two complete pictures, so nothing passes through muddy in-between colours), 1 s
 // with a gentle ease in and out. Browsers without view transitions (Safari before 18) fade the colours and the
 // gradient layer instead. A dissolve moves nothing, so it also runs with 減少動態效果 (Reduce Motion) on — iPadOS
 // itself uses dissolves then; skipping it there made the switch instant on the user's iPad.
-const THEME_MS = 2000;
+const THEME_MS = 1000;
 let themeTimer = 0;
 function switchTheme(choice) {
   const root = document.documentElement;

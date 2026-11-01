@@ -256,10 +256,10 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { .top, .panel, .panel-actions { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); } }
 .stage { background: var(--stage-bg, var(--stage)); }
 
-/* theme switch: the whole page cross-dissolves (view transitions), 2 s, ease in and out; colour fade as the fallback */
-html.theme-vt::view-transition-old(root), html.theme-vt::view-transition-new(root) { animation-duration: 2s; animation-timing-function: cubic-bezier(.45, 0, .25, 1); }
+/* theme switch: the whole page cross-dissolves (view transitions), 1 s, ease in and out; colour fade as the fallback */
+html.theme-vt::view-transition-old(root), html.theme-vt::view-transition-new(root) { animation-duration: 1s; animation-timing-function: cubic-bezier(.45, 0, .25, 1); }
 /* like Apple's appearance change: a slow, soft fade (2 s, gentle ease in and out) */
-html.theme-anim, html.theme-anim *, html.theme-anim *::before { transition: background-color 2s cubic-bezier(.45, 0, .25, 1), color 2s cubic-bezier(.45, 0, .25, 1), border-color 2s cubic-bezier(.45, 0, .25, 1), fill 2s cubic-bezier(.45, 0, .25, 1), stroke 2s cubic-bezier(.45, 0, .25, 1), opacity 2s cubic-bezier(.45, 0, .25, 1) !important; }
+html.theme-anim, html.theme-anim *, html.theme-anim *::before { transition: background-color 1s cubic-bezier(.45, 0, .25, 1), color 1s cubic-bezier(.45, 0, .25, 1), border-color 1s cubic-bezier(.45, 0, .25, 1), fill 1s cubic-bezier(.45, 0, .25, 1), stroke 1s cubic-bezier(.45, 0, .25, 1), opacity 1s cubic-bezier(.45, 0, .25, 1) !important; }
 
 /* the dark gradient lives on its own fixed layer and is shown by opacity, so it fades in and out with the theme
    (a gradient image itself cannot be animated) */
