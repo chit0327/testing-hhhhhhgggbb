@@ -256,9 +256,9 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 @supports (backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px)) { .top, .panel, .panel-actions { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); } }
 .stage { background: var(--stage-bg, var(--stage)); }
 
-/* theme switch: everything fades over 0.9 s */
-/* like Apple's appearance change: a slow, soft cross-fade (0.9 s, gentle ease in and out) */
-html.theme-anim, html.theme-anim *, html.theme-anim *::before { transition: background-color .9s cubic-bezier(.45, 0, .25, 1), color .9s cubic-bezier(.45, 0, .25, 1), border-color .9s cubic-bezier(.45, 0, .25, 1), fill .9s cubic-bezier(.45, 0, .25, 1), stroke .9s cubic-bezier(.45, 0, .25, 1), opacity .9s cubic-bezier(.45, 0, .25, 1) !important; }
+/* theme switch: everything fades over 2 s */
+/* like Apple's appearance change: a slow, soft fade (2 s, gentle ease in and out) */
+html.theme-anim, html.theme-anim *, html.theme-anim *::before { transition: background-color 2s cubic-bezier(.45, 0, .25, 1), color 2s cubic-bezier(.45, 0, .25, 1), border-color 2s cubic-bezier(.45, 0, .25, 1), fill 2s cubic-bezier(.45, 0, .25, 1), stroke 2s cubic-bezier(.45, 0, .25, 1), opacity 2s cubic-bezier(.45, 0, .25, 1) !important; }
 @media (prefers-reduced-motion: reduce) { html.theme-anim, html.theme-anim * { transition: none !important; } }
 
 /* the dark gradient lives on its own fixed layer and is shown by opacity, so it fades in and out with the theme

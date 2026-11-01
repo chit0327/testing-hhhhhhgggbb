@@ -1701,9 +1701,9 @@ function applyTheme(choice) {
   for (const b of document.querySelectorAll('[data-theme-choice]')) b.setAttribute('aria-checked', String(b.dataset.themeChoice === eff));
 }
 // switching is animated, not an instant jump: colours, backgrounds, borders and the dark gradient layer fade over
-// 0.9 s with a gentle ease in and out (like Apple's appearance change). The same in every browser (view transitions
+// 2 s with a gentle ease in and out (like Apple's appearance change). The same in every browser (view transitions
 // were not used: older Safari has none); nothing moves for viewers who ask for reduced motion.
-const THEME_MS = 900;
+const THEME_MS = 2000;
 let themeTimer = 0;
 function switchTheme(choice) {
   const root = document.documentElement;
