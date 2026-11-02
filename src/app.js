@@ -710,7 +710,9 @@ function syncBlurControls() {
   $('adjCanvas').classList.toggle('editing', blurEditing());
   syncRefPip();
 }
-const blurEditing = () => (BL.tool !== 'none' || BL.dir) && !$('catBlur').hidden && $('catBlur').open && !$('viewPreview').hidden;
+// (the 效果 tab must be the one shown: the tabs hide the other categories with CSS, so catBlur can be open and not hidden
+// while the user is on 簡易調色 — the canvas stayed in brush mode there and the reference picture stayed hidden)
+const blurEditing = () => (BL.tool !== 'none' || BL.dir) && !$('catBlur').hidden && $('catBlur').open && $('adjustCard').dataset.tab === $('catBlur').dataset.group && !$('viewPreview').hidden;
 $('blurOn').addEventListener('change', (e) => { if (e.target.checked) $('blurShow').checked = false; editBlur({ on: e.target.checked }); }); // turning blur on: show the result
 // 顯示遮罩 is separate from 開啟模糊: while the mask is shown, the preview is rendered WITHOUT the blur (sharp picture,
 // so the selection can be checked and erased precisely); the look itself (and the processed file) is unchanged
@@ -1485,6 +1487,7 @@ function showTab(tab) {
   card.dataset.tab = tab;
   for (const b of card.querySelectorAll('.panel-tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   log('panel-tab', { tab });
+  syncBlurControls(); if (S.preview) drawAdj(); // leaving / returning to 效果 ends / resumes painting a blur selection (and shows the reference picture again)
 }
 for (const b of document.querySelectorAll('#adjustCard .panel-tabs [data-tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));
 // (a MutationObserver rather than 'toggle': it runs right after the change, before the next event, so whatever opened
@@ -1568,6 +1571,7 @@ function showView(name) {
   if (name !== 'result') for (const id of ['origVideo', 'outVideo']) $(id).pause();
   if (name === 'wipe') drawWipe();
   if (name === 'preview') drawAdj();
+  syncRefPip();
   syncStaleNote();
 }
 for (const [k, [tab]] of Object.entries(VIEWS)) $(tab).onclick = () => showView(k);
