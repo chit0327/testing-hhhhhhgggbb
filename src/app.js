@@ -563,18 +563,21 @@ function syncAdjustControls() {
 function updateAdjState() {
   const dirty = !S.look.applied || JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
   $('adjState').textContent = !S.intent.confirmed ? '確認光暗設定後即可處理影片。'
-    : dirty ? `調整尚未套用：按「${isPhoto() ? '套用並處理照片' : '套用並處理影片'}」產生新的結果。` : `${isPhoto() ? '照片' : '影片'}已使用目前的調整。`;
+    : upToDate() ? `${isPhoto() ? '照片' : '影片'}已使用目前的調整：按「${$('exportBtn').textContent}」直接下載。`
+    : `按「${$('exportBtn').textContent}」會先匹配顏色和效果，完成後${needsTapToSave() ? '按「下載」儲存' : '自動下載'}。`;
   $('adjApply').disabled = !S.intent.confirmed || S.phase === 'processing';
+  $('exportBtn').disabled = $('adjApply').disabled;
+  $('tabResult').disabled = $('tabWipe').disabled = $('adjApply').disabled; // (no result yet: asks to match first)
   syncStaleNote();
 }
 // the result tabs show the last processed file: say so when the settings have changed since (e.g. blur turned on)
 function syncStaleNote() {
   const dirty = !!S.output && !!S.look.applied && JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
   $('staleNote').hidden = !(dirty && S.phase !== 'processing' && ($('viewPreview').hidden));
-  $('staleApply').textContent = isPhoto() ? '套用並處理照片' : '套用並處理影片';
+  $('staleApply').textContent = $('exportBtn').textContent;
   $('staleApply').disabled = $('adjApply').disabled;
 }
-$('staleApply').onclick = () => $('adjApply').click();
+$('staleApply').onclick = () => $('exportBtn').click();
 // 朦朧預設: haze / glow settings only (colour untouched), then the sliders fine-tune them
 const HAZE_PRESETS = {
   dreamy: { glow: 0, haze: 0.6, hazeRadius: 0.6, hazeSoft: 0.5, hazeBloom: 0.5, hazeVeil: 0.5, glowTint: 0 },
@@ -687,7 +690,7 @@ $('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.can
 // anchor: brush, eraser, lasso), kept in the anchor's coordinates. On other frames the layer is placed with the
 // camera motion from that frame to the anchor (the worker does the same for every exported frame).
 // angle: degrees counter-clockwise, 0 = →, 90 = ↑ (as people read a direction); feather: edge softness 0..1
-const BLUR_DEFAULT = { on: false, ai: true, invert: false, type: 'gauss', amount: 0.5, angle: 0, feather: 0.04, selId: null };
+const BLUR_DEFAULT = { on: false, ai: true, invert: false, type: 'gauss', amount: 0.5, angle: 0, feather: 0.04, bokehGlow: 0.5, bokehRange: 0.5, selId: null };
 const ARROWS = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'], arrowOf = (a) => ARROWS[Math.round((((a % 360) + 360) % 360) / 45) % 8];
 const BL = { tol: 12, labFor: null, lab: null, layer: null, w: 0, h: 0, anchorT: null, anchorLuma: null, anchorPyr: null, curSel: null, seq: 0, tool: 'none', size: 'm', dir: false, motion: new Map(), drag: null, hover: null };
 window.__app.BL = BL;
@@ -706,6 +709,9 @@ function syncBlurControls() {
   $('blurAngle').value = Math.round(b.angle) % 360; $('blurAngle-v').textContent = `${Math.round(b.angle) % 360}° ${arrowOf(b.angle)}`;
   $('blurFeather').value = Math.round(b.feather * 100); $('blurFeather-v').textContent = Math.round(b.feather * 100);
   $('blurDirRow').hidden = b.type !== 'motion';
+  $('blurBokehRow').hidden = b.type !== 'bokeh';
+  $('blurBokehGlow').value = Math.round(b.bokehGlow * 100); $('blurBokehGlow-v').textContent = Math.round(b.bokehGlow * 100);
+  $('blurBokehRange').value = Math.round(b.bokehRange * 100); $('blurBokehRange-v').textContent = Math.round(b.bokehRange * 100);
   $('blurDirBtn').setAttribute('aria-pressed', String(BL.dir));
   $('adjCanvas').classList.toggle('editing', blurEditing());
   syncRefPip();
@@ -725,6 +731,8 @@ for (const el of document.querySelectorAll('input[name=blurType]')) el.addEventL
 $('blurAmount').addEventListener('input', (e) => { $('blurAmount-v').textContent = e.target.value; editBlur({ amount: e.target.value / 100 }); });
 $('blurAngle').addEventListener('input', (e) => { editBlur({ angle: +e.target.value }); });
 $('blurFeather').addEventListener('input', (e) => { editBlur({ feather: e.target.value / 100 }); });
+$('blurBokehGlow').addEventListener('input', (e) => { editBlur({ bokehGlow: e.target.value / 100 }); });
+$('blurBokehRange').addEventListener('input', (e) => { editBlur({ bokehRange: e.target.value / 100 }); });
 // narrow screens: the panel is below the picture, so bring the picture into view to draw on it
 const showCanvasForEditing = () => { if (window.innerWidth <= 1024 && blurEditing()) $('adjCanvas').scrollIntoView({ block: 'center', behavior: 'instant' }); };
 for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; if (BL.tool !== 'none' && !$('blurShow').checked) { $('blurShow').checked = true; scheduleAdjPreview(); } /* selecting: show the mask */ $('blurTolRow').hidden = !BL.tool.startsWith('wand'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
@@ -1099,7 +1107,7 @@ buildPro();
   const def = new Map();
   for (const [id, [key, scale]] of Object.entries(ADJ)) def.set($(`adj-${id}`), () => Math.round(DEFAULT_LOOK[key] * scale));
   for (const c of PRO) def.set(c.el, /膚色保護/.test(c.label || '') ? () => (S.look.draft.source === 'reference' ? 100 : 0) : () => Math.round(c.get(neutralPrim()))); // skin protection is on by default for reference grading
-  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12]]) def.set($(id), () => v);
+  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12]]) def.set($(id), () => v);
   for (const row of $('adjustCard').querySelectorAll('label.slider, .tone-row, .wheel-row, .curve-row, .hue-row')) {
     const inputs = [...row.querySelectorAll('input[type=range]')].filter((el) => def.has(el));
     if (!inputs.length) continue;
@@ -1351,9 +1359,12 @@ async function startProcessing() {
   const intent = S.intent.confirmed;
   if (!intent) return;
   const token = ++S.job.token;
+  PROC.prevApplied = S.look.applied; PROC.prevPhase = S.phase;
+  openProc();
   await S.grade.ready;
   // the automatic look includes the local grade: wait for it (bounded) if it is still being fitted
   if (S.look.auto && S.ai.status === 'ready') await Promise.race([fitLocalGrade(), new Promise((r) => setTimeout(r, 20000))]);
+  if (token !== S.job.token) return; // left the progress window meanwhile
   S.look.applied = JSON.parse(JSON.stringify(S.look.draft)); // deep: pro controls edit look.prim in place
   setPhase('processing');
   updateAdjState();
@@ -1366,6 +1377,7 @@ async function startProcessing() {
   const bl = S.look.applied.blur;
   const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv || S.look.applied.skinSat || (S.look.applied.haze > 0 && S.look.applied.hazeDepth > 0));
   if (needsSeg) await initSegmenter();
+  if (token !== S.job.token) return;
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   // while processing, only the hidden work video decodes the source: the upload preview and the comparison
   // players are unloaded (on iPad every <video> holding a 4K clip takes a hardware decoder and a lot of memory, and
@@ -1402,9 +1414,11 @@ async function startProcessing() {
     $('tabResult').disabled = false; $('tabWipe').disabled = false;
     showView('result');
     drawWipe();
+    finishProc();
   } catch (err) {
     if (token !== S.job.token) return;
     log('processing-failed', { message: err.message });
+    closeProc();
     if (S.output && S.output.url) { $('origVideo').src = S.video.meta.url; $('outVideo').src = S.output.url; } // the previous result stays comparable
     setPhase('error', err.message);
     $('progressWrap').hidden = true;
@@ -1452,7 +1466,71 @@ async function drawWipe() {
 $('cmpTime').addEventListener('input', drawWipe);
 $('wipePos').addEventListener('input', drawWipe);
 
-$('exportBtn').onclick = async () => {
+// ---- 匯出: one button. The result is up to date → download it now; otherwise match the colours and effects first
+// (progress window), then download. (Two buttons — 套用並處理 and 匯出 — led to matching again by mistake.)
+const PROC = { exportAfter: false, viewAfter: null, prevApplied: null, prevPhase: null, doneWhileAsking: false };
+// iPad / iPhone: a download not started by a tap may be blocked, so the window offers a 下載 button when done
+function needsTapToSave() { return /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1); }
+function upToDate() { return !!S.output && !!S.look.applied && !!S.intent.confirmed && JSON.stringify(S.look.applied) === JSON.stringify(S.look.draft) && S.output.confirmedHash === hashIntent(S.intent.confirmed); }
+const procDlg = $('procDialog');
+function openProc() {
+  $('procMain').hidden = false; $('procConfirm').hidden = true; $('procDoneRow').hidden = true;
+  $('procTitle').textContent = '顏色匹配中'; $('procMsg').textContent = '顏色匹配中，請勿退出';
+  $('procBar').style.width = '0'; $('procText').textContent = '準備中…';
+  if (!procDlg.open) procDlg.showModal();
+  log('proc-window', { open: true, exportAfter: PROC.exportAfter });
+}
+function closeProc() { if (procDlg.open) procDlg.close(); PROC.exportAfter = false; PROC.viewAfter = null; PROC.doneWhileAsking = false; }
+async function finishProc() {
+  // finished while the leave question is open: wait for the answer (否 → download, 是 → back to grading, no download)
+  if (procDlg.open && !$('procConfirm').hidden) { PROC.doneWhileAsking = true; return; }
+  if (!PROC.exportAfter) { const v = PROC.viewAfter; closeProc(); if (v) showView(v); return; } // (matched to look at the result: no download)
+  PROC.exportAfter = false;
+  if (needsTapToSave()) { // done: a tap starts the download
+    $('procTitle').textContent = '顏色匹配完成'; $('procMsg').textContent = '按「下載」儲存結果。';
+    $('procBar').style.width = '100%'; $('procText').textContent = '完成';
+    $('procSave').textContent = $('exportBtn').textContent.replace('匯出', '下載');
+    $('procDoneRow').hidden = false;
+    return;
+  }
+  closeProc();
+  await exportOutput();
+}
+$('procSave').onclick = async () => { closeProc(); await exportOutput(); };
+// the window mirrors the page's progress bar and text
+new MutationObserver(() => { $('procText').textContent = $('progressText').textContent; }).observe($('progressText'), { childList: true, characterData: true, subtree: true });
+new MutationObserver(() => { $('procBar').style.width = $('progressBar').style.width; }).observe($('progressBar'), { attributes: true, attributeFilter: ['style'] });
+function askLeave() {
+  if (!$('procDoneRow').hidden) { closeProc(); return; } // finished: closing only skips the download
+  $('procMain').hidden = true; $('procConfirm').hidden = false;
+  log('proc-leave-asked');
+}
+$('procClose').onclick = askLeave;
+procDlg.addEventListener('cancel', (e) => { e.preventDefault(); if ($('procConfirm').hidden) askLeave(); else $('procNo').click(); }); // Esc
+$('procNo').onclick = () => {
+  $('procConfirm').hidden = true; $('procMain').hidden = false; log('proc-leave', { leave: false });
+  if (PROC.doneWhileAsking) { PROC.doneWhileAsking = false; finishProc(); }
+};
+$('procYes').onclick = () => { // stop matching; back to grading with the previous result (if any) as it was
+  if (PROC.doneWhileAsking) { log('proc-leave', { leave: true, finished: true }); closeProc(); showView('preview'); return; } // finished meanwhile: keep the new result, skip the download
+  S.job.token++;
+  S.look.applied = PROC.prevApplied;
+  log('proc-leave', { leave: true });
+  closeProc();
+  $('progressWrap').hidden = true;
+  if (S.output && S.output.kind !== 'image' && S.output.url) { $('origVideo').src = S.video.meta.url; $('outVideo').src = S.output.url; }
+  for (const id of ['exportBtn', 'reprocess', 'editIntent', 'syncPlay', 'cmpTime']) $(id).disabled = false;
+  setPhase(S.output ? 'done' : 'confirmed');
+  updateAdjState();
+  showView('preview');
+};
+$('exportBtn').onclick = () => {
+  if (S.phase === 'processing' || !S.intent.confirmed) return;
+  if (upToDate()) return exportOutput();
+  PROC.exportAfter = true;
+  startProcessing();
+};
+async function exportOutput() {
   if (!S.output) return;
   setPhase('exporting');
   const batch = S.output.kind === 'image' && S.output.items.length > 1;
@@ -1466,7 +1544,7 @@ $('exportBtn').onclick = async () => {
   } catch (err) {
     setPhase(err && err.code === 'declined' ? 'done' : 'error', err && err.code === 'declined' ? '已取消下載' : `匯出失敗：${err.message || err.code}`);
   }
-};
+}
 
 async function saveFile(name, blob) {
   // inside a claude.ai artifact plain download links are blocked; the platform's save dialog is used instead
@@ -1574,7 +1652,19 @@ function showView(name) {
   syncRefPip();
   syncStaleNote();
 }
-for (const [k, [tab]] of Object.entries(VIEWS)) $(tab).onclick = () => showView(k);
+for (const [k, [tab]] of Object.entries(VIEWS)) $(tab).onclick = () => (k === 'preview' ? showView(k) : askView(k));
+// 處理結果 / 結果分割比較 show the processed file: without one for the current settings, ask to match first
+// (好 → the progress window, then that view; no download)
+function askView(k) {
+  if (S.phase === 'processing' || !S.intent.confirmed) return;
+  if (upToDate()) { showView(k); return; }
+  PROC.viewAsk = k;
+  $('viewAskText').textContent = `如果想要預覽${isPhoto() ? '照片' : '影片'}效果，需要先進行顏色和效果匹配`;
+  $('viewAskDialog').showModal();
+  log('view-ask', { view: k });
+}
+$('viewAskBack').onclick = () => { $('viewAskDialog').close(); log('view-ask-answer', { ok: false }); };
+$('viewAskOk').onclick = () => { $('viewAskDialog').close(); log('view-ask-answer', { ok: true }); PROC.exportAfter = false; PROC.viewAfter = PROC.viewAsk; startProcessing(); };
 // changing a control while a processed result is shown: switch back to the live preview so the change is visible
 $('adjustCard').addEventListener('input', (e) => { if (e.target.matches('input[type=range], input[type=checkbox], input[type=radio]') && $('viewPreview').hidden) showView('preview'); });
 $('candBox').addEventListener('click', () => { if ($('viewPreview').hidden) showView('preview'); });
@@ -1642,9 +1732,11 @@ async function processPhotoJob(intent, token, needsSeg) {
     $('tabResult').disabled = false; $('tabWipe').disabled = false;
     showPhoto(0);
     showView('result');
+    finishProc();
   } catch (err) {
     if (token !== S.job.token) return;
     log('processing-failed', { message: err.message });
+    closeProc();
     setPhase('error', err.message);
     $('progressWrap').hidden = true;
     for (const id of ['reprocess', 'editIntent']) $(id).disabled = false;

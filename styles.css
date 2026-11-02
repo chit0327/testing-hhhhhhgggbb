@@ -90,7 +90,7 @@ body.is-work { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; /
 .panel-scroll { flex: 1; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 12px 14px; scrollbar-gutter: stable; }
 .panel-actions { flex: none; border-top: 1px solid var(--line); padding: 8px 14px max(10px, env(safe-area-inset-bottom, 0px)); background: var(--card); }
 .panel-actions .info { margin: 0 0 6px; min-height: 1.4em; }
-.action-row { display: grid; grid-template-columns: auto 1fr 1fr; gap: 8px; }
+.action-row { display: grid; grid-template-columns: auto 1fr; gap: 8px; } /* 全部歸零 | 匯出 (one button: match, then download) */
 .intent-box { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; }
 .intent-box h2 { font-size: 15px; margin: 0 0 4px; }
 .intent-box .row { margin: 6px 0 0; }
@@ -117,7 +117,7 @@ body.is-work { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; /
 @media (max-width: 520px) {
   .stage { height: min(78vw, 56vh); }
   .compare-videos { grid-template-columns: 1fr; grid-template-rows: 1fr 1fr; }
-  .action-row { grid-template-columns: 1fr 1fr; } .action-row #adjReset { grid-column: 1 / -1; }
+  .action-row { grid-template-columns: auto 1fr; }
   .top { gap: 6px 12px; } .status { margin-left: 0; width: 100%; font-size: 13px; }
 }
 
@@ -264,3 +264,15 @@ html.theme-anim, html.theme-anim *, html.theme-anim *::before { transition: back
 /* the dark gradient lives on its own fixed layer and is shown by opacity, so it fades in and out with the theme
    (a gradient image itself cannot be animated) */
 body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-events: none; background: var(--page-grad); opacity: var(--grad-o); }
+
+/* 匯出 progress window */
+.proc-dialog { width: min(440px, calc(100vw - 32px)); padding: 22px 20px 18px; position: fixed; }
+.proc-dialog h2 { margin: 0 36px 6px 0; font-size: 18px; }
+.proc-dialog p { margin: 0 0 14px; color: var(--mut); line-height: 1.55; }
+.proc-dialog #procAsk { color: var(--fg); margin: 4px 40px 16px 0; }
+.proc-dialog .progress { margin-bottom: 4px; }
+.proc-close { position: absolute; top: 12px; right: 12px; width: 32px; height: 32px; padding: 0; border-radius: 50%; font-size: 20px; line-height: 1; display: flex; align-items: center; justify-content: center; }
+.proc-answers { justify-content: flex-end; gap: 10px; }
+#viewAskText { color: var(--fg); margin: 0 0 16px; }
+.proc-answers button { min-width: 72px; }
+#procDoneRow { margin-top: 12px; justify-content: flex-end; }

@@ -307,6 +307,11 @@
               <p class="info">0° 向右、90° 向上、180° 向左、270° 向下，例如 45° 就是往右上斜。</p>
               <div class="row"><button type="button" id="blurDirBtn" aria-pressed="false">在畫面上拖動設定方向</button></div>
             </div>
+            <div id="blurBokehRow" hidden>
+              <label class="slider"><span>光斑亮度</span><input type="range" id="blurBokehGlow" min="0" max="100" value="50"><output id="blurBokehGlow-v">50</output></label>
+              <label class="slider"><span>光斑範圍</span><input type="range" id="blurBokehRange" min="0" max="100" value="50"><output id="blurBokehRange-v">50</output></label>
+              <p class="info">光斑亮度：亮點散開成光斑後有多亮（0 = 不加亮，光斑和其他地方一樣淡）。光斑範圍：多亮的地方才會變成光斑，數值越大，較暗的亮點也會變成光斑。</p>
+            </div>
             <p class="info" id="blurInfo"></p>
           </div>
         </details>
@@ -383,7 +388,7 @@
           <summary>匯出設定</summary>
           <div class="cat-body">
             <h3 id="exportKindTitle">影片</h3>
-            <p class="info" id="exportVideoInfo">MP4（H.264），長邊最多 1280 像素；原片的 AAC 音軌會原樣保留，不重新編碼。按下方「匯出影片」下載目前的處理結果。</p>
+            <p class="info" id="exportVideoInfo">MP4（H.264），長邊最多 1280 像素；原片的 AAC 音軌會原樣保留，不重新編碼。按下方「匯出影片」：調整有改動時會先匹配顏色和效果，完成後下載；已是最新結果則直接下載。</p>
             <p class="info" id="exportPhotoInfo" hidden>JPEG（品質 95%），長邊最多 4096 像素，比這更大的照片會等比例縮小。多張照片時，「匯出全部照片」會打包成一個 ZIP；也可以在結果檢視上方按「下載這張」單獨下載。所有照片使用同一組調色設定。</p>
             <div class="row"><button type="button" id="reprocess" disabled>以目前設定重新處理</button></div>
             <p class="info" id="resultInfo"></p>
@@ -399,12 +404,33 @@
       <p class="info" id="adjState"></p>
       <div class="action-row">
         <button type="button" id="adjReset">全部歸零</button>
-        <button type="button" id="adjApply" class="primary">套用並處理影片</button>
+        <button type="button" id="adjApply" class="primary" hidden>套用並處理影片</button>
         <button type="button" id="exportBtn" class="primary" disabled>匯出影片</button>
       </div>
     </div>
   </aside>
 </main>
+
+<!-- 匯出: matching the colours and effects (processing), then the download; × asks before leaving -->
+<dialog id="procDialog" class="proc-dialog" aria-labelledby="procTitle">
+  <button type="button" id="procClose" class="proc-close" aria-label="退出">×</button>
+  <div id="procMain">
+    <h2 id="procTitle">顏色匹配中</h2>
+    <p id="procMsg">顏色匹配中，請勿退出</p>
+    <div class="progress"><div id="procBar"></div><span id="procText">準備中…</span></div>
+    <div class="row" id="procDoneRow" hidden><button type="button" id="procSave" class="primary">下載影片</button></div>
+  </div>
+  <div id="procConfirm" hidden>
+    <p id="procAsk">顏色匹配中，如果現在選擇退出想要進行修改的話，需要重新匹配顏色和效果，你確定要返回調色介面嗎？</p>
+    <div class="row proc-answers"><button type="button" id="procNo">否</button><button type="button" id="procYes" class="primary">是</button></div>
+  </div>
+</dialog>
+
+<!-- 處理結果 / 結果分割比較 without an up-to-date result: match first? -->
+<dialog id="viewAskDialog" class="proc-dialog" aria-labelledby="viewAskText">
+  <p id="viewAskText">如果想要預覽影片效果，需要先進行顏色和效果匹配</p>
+  <div class="row proc-answers"><button type="button" id="viewAskBack">返回</button><button type="button" id="viewAskOk" class="primary">好</button></div>
+</dialog>
 
 <dialog id="intentDialog">
   <form method="dialog" class="dlg" id="intentForm">

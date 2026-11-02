@@ -338,7 +338,9 @@ export const blurRadius = (type, amount, side) => (type === 'motion' ? 0.12 : ty
 
 /**
  * Blur the selected part of an RGBA frame in place. mask: {data 0..1, w, h} (any grid, resampled bilinearly).
- * cfg: {type 'gauss'|'bokeh'|'motion', amount 0..1, angle (motion, degrees)}. Work happens in linear light on a
+ * cfg: {type 'gauss'|'bokeh'|'motion', amount 0..1, angle (motion, degrees), bokehGlow / bokehRange 0..1 (bokeh: how
+ * bright the light discs are, and how dim a highlight may be and still open into a disc; 0.5 / 0.5 = the original fixed
+ * values: boost ×(1 + 5·s), s = smoothstep from linear luminance 0.5 to 1)}. Work happens in linear light on a
  * grid of ≤ ~480 px (blurred content has no fine detail), composited back at full resolution.
  */
 export function applyBlur(img, w, h, mask, cfg) {
@@ -350,6 +352,10 @@ export function applyBlur(img, w, h, mask, cfg) {
   const coarse = Math.max(1, Math.round(Math.max(w, h) / 480));
   const f = type === 'bokeh' ? Math.max(1, Math.round(Math.max(w, h) / 1920), Math.min(coarse, Math.floor(blurRadius(type, amount, Math.max(w, h)) / 4))) : coarse;
   const sw = Math.ceil(w / f), sh = Math.ceil(h / f);
+  // bokeh lights: 光斑亮度 0..1 → highlight boost 0..10 (0.5 → 5); 光斑範圍 0..1 → the luminance where a highlight starts
+  // to count as a light, 0.8 (only the brightest) .. 0.2 (dimmer highlights too); 0.5 → 0.5
+  const num01 = (v, d) => (Number.isFinite(v) ? Math.min(1, Math.max(0, v)) : d);
+  const gain = 10 * num01(cfg.bokehGlow, 0.5), lo = 0.8 - 0.6 * num01(cfg.bokehRange, 0.5);
   const M = mask.data, mw = mask.w, mh = mask.h;
   const maskAt = (x, y) => bil(M, mw, mh, Math.min(mw - 1.001, Math.max(0, (x + 0.5) * mw / w - 0.5)), Math.min(mh - 1.001, Math.max(0, (y + 0.5) * mh / h - 0.5)));
   // working buffer: [r·m, g·m, b·m, m] in linear light (bokeh: highlights boosted so bright points open into discs)
@@ -359,7 +365,7 @@ export function applyBlur(img, w, h, mask, cfg) {
     const p = (y * w + x) * 4, q = (Math.floor(y / f) * sw + Math.floor(x / f)), m = maskAt(x, y);
     if (m > 0.002) any = true;
     let r = S2L[img[p]], g = S2L[img[p + 1]], b = S2L[img[p + 2]];
-    if (type === 'bokeh') { const k = 1 + 5 * smooth(0.5, 1, 0.2126 * r + 0.7152 * g + 0.0722 * b); r *= k; g *= k; b *= k; }
+    if (type === 'bokeh') { const k = 1 + gain * smooth(lo, 1, 0.2126 * r + 0.7152 * g + 0.0722 * b); r *= k; g *= k; b *= k; }
     buf[4 * q] += r * m; buf[4 * q + 1] += g * m; buf[4 * q + 2] += b * m; buf[4 * q + 3] += m; cnt[q]++;
   }
   if (!any) return img;
