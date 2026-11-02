@@ -16,6 +16,8 @@ import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANC
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { suggestLook } from './engine/suggest.js';
+import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
+import { findBars } from './engine/bars.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -78,11 +80,15 @@ $('refInput').addEventListener('change', async (e) => {
     if (!file.type.startsWith('image/')) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇圖片`);
     const bmp = await loadImage(file);
     if (id !== S.ref.id) return;
-    S.ref = { status: 'ready', id, file, bitmap: bmp, imageData: imageDataOf(bmp, 512) };
+    // bars around the picture (letterbox, or a video player's background in a screenshot) are cut off before any analysis
+    const probe = imageDataOf(bmp, 512), b = findBars(probe), k = bmp.width / probe.width;
+    const crop = b.w < probe.width || b.h < probe.height ? { x: Math.round(b.x * k), y: Math.round(b.y * k), w: Math.round(b.w * k), h: Math.round(b.h * k) } : null;
+    S.ref = { status: 'ready', id, file, bitmap: bmp, crop, imageData: crop ? refPixels(bmp, crop, 512) : probe };
     const img = $('refPreview');
     img.src = URL.createObjectURL(file); img.hidden = false;
     $('refPipImg').src = img.src; syncRefPip();
-    $('refInfo').textContent = `${file.name}　${bmp.width}×${bmp.height}`;
+    $('refInfo').textContent = `${file.name}　${bmp.width}×${bmp.height}${crop ? `　已去除邊框，分析範圍 ${crop.w}×${crop.h}` : ''}`;
+    if (crop) log('ref-bars-removed', { crop });
     log('ref-loaded', { name: file.name });
   } catch (err) {
     S.ref = { status: 'error', id };
@@ -91,6 +97,13 @@ $('refInput').addEventListener('change', async (e) => {
   assetsChanged('ref');
 });
 
+/** The reference's pixels inside `crop` (bars removed; whole picture when null), long side ≤ maxSide. */
+function refPixels(bmp, crop, maxSide) {
+  const c0 = crop || { x: 0, y: 0, w: bmp.width, h: bmp.height }, { w, h } = fitSize(c0.w, c0.h, maxSide);
+  const c = canvas2d(w, h), ctx = c.getContext('2d', { willReadFrequently: true });
+  ctx.drawImage(bmp, c0.x, c0.y, c0.w, c0.h, 0, 0, w, h);
+  return ctx.getImageData(0, 0, w, h);
+}
 const isImageFile = (f) => f.type.startsWith('image/') || /\.(jpe?g|png|webp|heic|avif)$/i.test(f.name);
 $('videoInput').addEventListener('change', async (e) => {
   const files = [...e.target.files], file = files[0];
@@ -517,9 +530,10 @@ const ADJ = { // control id -> [look key, slider scale, display]
   personEv: ['personEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], bgEv: ['bgEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`],
   skinFollow: ['skinFollow', 100, (v) => `${v}%`], skinSat: ['skinSat', 100, (v) => `${v > 0 ? '+' : ''}${v}`], gradMap: ['gradMap', 100, (v) => `${v}%`], follow: ['follow', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
+  filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -576,6 +590,19 @@ for (const b of document.querySelectorAll('[data-haze]')) b.onclick = () => {
   log('haze-preset', { preset: b.dataset.haze });
   syncAdjustControls(); scheduleAdjPreview();
 };
+// 膠片模板: grain / halation / softness set from the reference (how film-like its tone is), or a typical film setting
+$('filmAuto').onclick = () => {
+  const ref = S.ref.status === 'ready' && S.ref.bitmap ? refPixels(S.ref.bitmap, S.ref.crop, 1600) : null; // (full-ish resolution: grain; bars cut off)
+  const r = ref ? measureFilm(ref) : { ...FILM_DEFAULT };
+  S.look.auto = false;
+  for (const k of FILM_KEYS) S.look.draft[k] = r[k];
+  $('filmInfo').textContent = ref
+    ? `已依參考圖設定：膠片感 ${Math.round(r.measured.film * 100)}%（暗部亮度 ${r.measured.black}、明暗範圍 ${r.measured.range}）→ 顆粒 ${Math.round(r.filmGrain * 100)}、光暈 ${Math.round(r.halation * 100)}、柔化 ${Math.round(r.filmSoft * 100)}。可以再用滑桿微調。`
+    : `沒有參考圖：套用一般的膠片設定（顆粒 ${Math.round(r.filmGrain * 100)}、光暈 ${Math.round(r.halation * 100)}、柔化 ${Math.round(r.filmSoft * 100)}）。`;
+  log('film-template', { fromRef: !!ref, values: Object.fromEntries(FILM_KEYS.map((k) => [k, r[k]])), measured: r.measured || null });
+  syncAdjustControls(); scheduleAdjPreview();
+};
+$('filmOff').onclick = () => { S.look.auto = false; for (const k of FILM_KEYS) S.look.draft[k] = DEFAULT_LOOK[k]; log('film-template', { off: true }); syncAdjustControls(); scheduleAdjPreview(); };
 // 光芒顏色 wheel: OKLab hue plane (a →, b ↑), radius = tint 0..1
 function drawGlowWheel() {
   const c = $('glowWheel'), ctx = c.getContext('2d'), N = c.width, R = N / 2 - 6, id = ctx.createImageData(N, N);

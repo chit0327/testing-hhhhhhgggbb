@@ -92,9 +92,9 @@ function applyNormLab(lab, nm) { // the restoration in OKLab, to analyse the sou
  * Keep every luma-curve segment's slope in [0.45, 2] (no flattened, detail-losing or step-like, banding tone
  * ranges) and the curve inside 0..1; returns the repaired monotone knots.
  */
-function safeLuma(ys) {
+function safeLuma(ys, minSlope = 0.45) { // minSlope: the flattest a segment may get (texture); 跟隨參考圖 lowers it
   const y = ys.slice();
-  for (let i = 1; i < 5; i++) y[i] = clamp(y[i], y[i - 1] + 0.45 * 0.25, y[i - 1] + 2 * 0.25);
+  for (let i = 1; i < 5; i++) y[i] = clamp(y[i], y[i - 1] + minSlope * 0.25, y[i - 1] + 2 * 0.25);
   if (y[4] > 1) { const k = (1 - y[0]) / (y[4] - y[0]); for (let i = 1; i < 5; i++) y[i] = y[0] + (y[i] - y[0]) * k; }
   const f = curveFn(y);
   return CURVE_X.map((x) => f(x));
@@ -783,16 +783,127 @@ export function refCasts(refLab, absolute = false) {
   const blue = (i) => { const C = Math.hypot(refLab[3 * i + 1], refLab[3 * i + 2]), h = (Math.atan2(refLab[3 * i + 2], refLab[3 * i + 1]) * 180) / Math.PI; return C > 0.03 && Math.abs(((h - 245 + 540) % 360) - 180) < 50; };
   return [0, 1, 2].map((b) => { const part = idx.slice(Math.floor((b * n) / 3), Math.floor(((b + 1) * n) / 3)); let sa = 0, sb = 0, m = 0; for (const i of part) { if (blue(i)) continue; sa += refLab[3 * i + 1]; sb += refLab[3 * i + 2]; m++; } m = Math.max(1, m); return absolute ? [sa / m, sb / m] : [sa / m - LOOK_TYP.casts[b][0], sb / m - LOOK_TYP.casts[b][1]]; });
 }
-export function withFollow(srcLab, refLab, prim, s) {
+function matchedLuma(srcLab, refLab, prim) {
+  // the footage as the grade's earlier stages (restoration, wheels, RGB curves) leave it, i.e. what the luma curve receives:
+  // matching the raw footage ignored that the wheels had already brightened it (a 0.65 reference median came out 0.73)
+  const pre = compilePrim({ ...sanitizePrim(prim), luma: CURVE_X.slice(), sat: 0, hueHue: new Array(8).fill(0), hueSat: new Array(8).fill(0), hueLum: new Array(8).fill(0), tint: null, gmap: null, keep: 0, post: null, local: null });
+  const o = [0, 0, 0], g = [0, 0, 0], srcL = [];
+  for (let i = 0; i < srcLab.length; i += 3) {
+    if (!pre) { srcL.push(srcLab[i]); continue; }
+    const c = oklabToSrgb(srcLab[i], srcLab[i + 1], srcLab[i + 2]), r = pre(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), o);
+    srgbToOklab(clamp(r[0], 0, 1), clamp(r[1], 0, 1), clamp(r[2], 0, 1), g); srcL.push(g[0]);
+  }
+  const qs = (L) => { L.sort((a, b) => a - b); return QS33.map((q) => L[Math.min(L.length - 1, Math.round(q * (L.length - 1)))]); };
+  const refL = []; for (let i = 0; i < refLab.length; i += 3) refL.push(refLab[i]);
+  const qsrc = qs(srcL), qref = qs(refL);
+  for (let k = 1; k < qsrc.length; k++) if (qsrc[k] <= qsrc[k - 1]) qsrc[k] = qsrc[k - 1] + 1e-4; // strictly increasing for interp
+  // the 5 curve points that best carry the footage's quantiles onto the reference's (least squares over the 33 quantile
+  // pairs, piecewise-linear basis), not the mapping read at the points: footage bunched in a narrow range (mid-tones
+  // 0.47–0.55) has a steep mapping there, and reading it exactly at 0.5 over-lifted everything around it
+  // (median 0.47 → 0.75 for a reference median of 0.65). Ends: a small pull to the end slopes outside the footage's range.
+  const lo = Math.min((qref[1] - qref[0]) / Math.max(1e-4, qsrc[1] - qsrc[0]), qref[0] / Math.max(1e-4, qsrc[0]));
+  const hi = Math.min((qref[32] - qref[31]) / Math.max(1e-4, qsrc[32] - qsrc[31]), (1 - qref[32]) / Math.max(1e-4, 1 - qsrc[32]));
+  const ends = [[0, clamp(qref[0] - qsrc[0] * lo, 0, 1)], [1, clamp(qref[32] + (1 - qsrc[32]) * hi, 0, 1)]];
+  const hat = (x, k) => Math.max(0, 1 - Math.abs(x - CURVE_X[k]) / 0.25);
+  const A = Array.from({ length: 5 }, () => new Array(5).fill(0)), bv = new Array(5).fill(0);
+  const add = (x, y, w) => { for (let a = 0; a < 5; a++) { const ha = hat(x, a); if (!ha) continue; bv[a] += w * ha * y; for (let c = 0; c < 5; c++) A[a][c] += w * ha * hat(x, c); } };
+  for (let k = 0; k < 33; k++) add(qsrc[k], qref[k], 1);
+  for (const [x, y] of ends) add(x, y, 0.5);
+  for (let a = 0; a < 5; a++) { A[a][a] += 1e-3; bv[a] += 1e-3 * interp(CURVE_X[a], qsrc, qref); } // tiny ridge: points with no data
+  const y = solveLinear(A, bv);
+  return safeLuma(y.map((v) => clamp(v, 0, 1)), FOLLOW_MIN_SLOPE);
+}
+export function withFollow(srcLab, refLab, prim, s, refAll = refLab) { // refAll: samples of the whole reference (tone, light, saturation)
   const k = clamp(s, 0, 1);
   if (!k) return prim;
   const p = sanitizePrim(prim);
-  const full = fitInferred(srcLab, refLab, { tone: 1, toneCap: 0.3, deltas: [[0, 0], [0, 0], [0, 0]], norm: p.norm && p.norm.amt ? p.norm : { amt: 0 } }).prim.luma;
-  p.luma = safeLuma(p.luma.map((v, i) => v + (full[i] - v) * k));
+  // the tone at 100 %: the footage's own brightness distribution mapped onto the reference's (quantile to quantile, as
+  // restored by the candidate's LOG restoration) — "follow fully" means the reference's blacks, mid-tones and range
+  // whatever the footage started from. (Relative to a typical photo, as 風格 reads it, footage with deeper blacks than
+  // a typical photo kept them even at 100 %: a milky reference's blacks 0.40 were reached as 0.26.)
+  const full = matchedLuma(srcLab, refAll, p);
+  // the curve may flatten further as the user follows more (a soft-light reference keeps its bright parts low: sun patches
+  // must not be pushed to white by the texture guard, which kept every segment at slope ≥ 0.45)
+  p.luma = safeLuma(p.luma.map((v, i) => v + (full[i] - v) * k), 0.45 + (FOLLOW_MIN_SLOPE - 0.45) * k);
   // colours by 同類對應 (like with like) at the full strength k: walls towards the reference's walls, foliage towards its
-  // foliage, sky towards its sky — a class missing in either image is left alone, blues are spared by the tint
-  return withRegion(srcLab, refLab, p, k);
+  // foliage, sky towards its sky; then the highlights take on the colour of the reference's light
+  const reg = withRegion(srcLab, refLab, p, k);
+  return followChroma(srcLab, refAll, followLight(srcLab, refAll, reg, k), k);
 }
+const FOLLOW_MIN_SLOPE = 0.2;
+const smoothstep = (a, b, x) => { const t = clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); }; // (the tint's highlight-band weight)
+/**
+ * The colour of the light (跟隨參考圖): the footage's brightest parts take on the colour of the reference's brightest
+ * parts — all of them, pale blue ones included (morning air, overcast light), only strongly coloured ones (deep sky,
+ * objects: chroma > 0.09) left out. 同類對應 files a reference's pale blue walls and sky as "sky" and leaves them out of the
+ * surface colours, so warm sunlit highlights in the footage stayed yellow under a cool, misty reference. Through the
+ * highlight band of the tint, at strength k.
+ */
+/**
+ * Overall saturation (跟隨參考圖): the graded footage's colourfulness (apart from its cast) moves towards the reference's, at strength k, through
+ * the global saturation. The casts above add colour on top of the footage's own, which made a soft, grey-blue reference
+ * come out clearly more saturated than it is (0.068 vs 0.052). The cast (added after saturation) stays.
+ */
+function followChroma(srcLab, refLab, prim, k) {
+  if (!k) return prim;
+  // colourfulness apart from the overall cast: mean distance of a / b from their mean (a grey-blue reference is grey plus
+  // a blue cast; its cast is matched by the tint, its greyness here)
+  const meanC = (lab, f) => { const ab = []; const o = [0, 0, 0], g = [0, 0, 0];
+    for (let i = 0; i < lab.length; i += 3 * (f ? 4 : 1)) { let a = lab[i + 1], b = lab[i + 2];
+      if (f) { const c = oklabToSrgb(lab[i], a, b), r = f(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), o); srgbToOklab(clamp(r[0], 0, 1), clamp(r[1], 0, 1), clamp(r[2], 0, 1), g); a = g[1]; b = g[2]; }
+      ab.push(a, b); }
+    const n = ab.length / 2; if (!n) return 0; let ma = 0, mb = 0; for (let i = 0; i < ab.length; i += 2) { ma += ab[i]; mb += ab[i + 1]; } ma /= n; mb /= n;
+    let s = 0; for (let i = 0; i < ab.length; i += 2) s += Math.hypot(ab[i] - ma, ab[i + 1] - mb); return s / n; };
+  // per tonal band (weighted as the tint weights them) mean a / b of the graded footage: the cast a saturation change
+  // must not take away (a warm grade's wheel cast is colour too, and lowering saturation shrank it)
+  const bandsOf = (f) => {
+    const acc = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], o = [0, 0, 0], g = [0, 0, 0];
+    for (let i = 0; i < srcLab.length; i += 3 * 4) {
+      const c = oklabToSrgb(srcLab[i], srcLab[i + 1], srcLab[i + 2]), r = f ? f(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), o) : c;
+      srgbToOklab(clamp(r[0], 0, 1), clamp(r[1], 0, 1), clamp(r[2], 0, 1), g);
+      const wl = 1 - smoothstep(0.2, 0.5, g[0]), wh = smoothstep(0.45, 0.8, g[0]), wm = Math.max(0, 1 - wl - wh);
+      [wl, wm, wh].forEach((w, b) => { acc[b][0] += w * g[1]; acc[b][1] += w * g[2]; acc[b][2] += w; });
+    }
+    return acc.map(([a, b, w]) => (w > 1 ? [a / w, b / w] : [0, 0]));
+  };
+  const target = meanC(refLab, null), p = sanitizePrim(prim);
+  for (let pass = 0; pass < 3; pass++) {
+    const f0 = compilePrim(p), cur = meanC(srcLab, f0); if (cur < 1e-3 || target < 1e-3) break;
+    const step = k * Math.log2(target / cur);
+    if (Math.abs(step) < 0.01) break;
+    const before = bandsOf(f0);
+    p.sat = clamp((p.sat || 0) + step, -1, 0.5);
+    const after = bandsOf(compilePrim(p)), t = p.tint || { lo: [0, 0], mid: [0, 0], hi: [0, 0] };
+    const keep = (v, b) => [clamp(v[0] + before[b][0] - after[b][0], -0.1, 0.1), clamp(v[1] + before[b][1] - after[b][1], -0.1, 0.1)];
+    p.tint = { lo: keep(t.lo, 0), mid: keep(t.mid, 1), hi: keep(t.hi, 2) }; // the casts put back through the tint
+  }
+  return sanitizePrim(p);
+}
+function followLight(srcLab, refLab, prim, k) {
+  if (!k) return prim;
+  // mean a / b over the tint's highlight band (each sample weighted as the tint weights it: smooth 0.45 → 0.8 of its L,
+  // after the grade), strongly coloured samples (chroma > 0.09) left out
+  const band = (lab, f) => {
+    let sa = 0, sb = 0, sw = 0; const o = [0, 0, 0], g = [0, 0, 0];
+    for (let i = 0; i < lab.length; i += 3 * (f ? 4 : 1)) {
+      let L = lab[i], a = lab[i + 1], b = lab[i + 2];
+      if (f) { const c = oklabToSrgb(L, a, b), r = f(clamp(c[0], 0, 1), clamp(c[1], 0, 1), clamp(c[2], 0, 1), o); srgbToOklab(clamp(r[0], 0, 1), clamp(r[1], 0, 1), clamp(r[2], 0, 1), g); L = g[0]; a = g[1]; b = g[2]; }
+      if (Math.hypot(a, b) > 0.09) continue;
+      const w = smoothstep(0.45, 0.8, L); sa += w * a; sb += w * b; sw += w;
+    }
+    return sw > 1 ? { a: sa / sw, b: sb / sw } : null;
+  };
+  const target = band(refLab, null);
+  if (!target) return prim;
+  const p = sanitizePrim(prim);
+  for (let pass = 0; pass < 3; pass++) {
+    const cur = band(srcLab, compilePrim(p)); if (!cur) break;
+    const t = p.tint || { lo: [0, 0], mid: [0, 0], hi: [0, 0] };
+    p.tint = { lo: t.lo, mid: t.mid, hi: [clamp(t.hi[0] + k * (target.a - cur.a), -0.1, 0.1), clamp(t.hi[1] + k * (target.b - cur.b), -0.1, 0.1)] };
+  }
+  return sanitizePrim(p);
+}
+
 
 /**
  * 同類對應 (region matching): compare like with like. Every sample of both images is put in a class by its colour —

@@ -7,6 +7,7 @@ import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engin
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
 import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
+import { applyFilm } from './engine/film.js';
 import { featherCells, combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
 import { feather, guidedFilter, resize } from './engine/masks.js';
 import { fitPairLUT } from './engine/pairfit.js';
@@ -19,7 +20,7 @@ let refGrad = null, fitStore = null; // fitStore: the analysed source / referenc
 const followCache = new Map();
 function followed(prim, s) { // 跟隨參考圖程度: the candidate moved towards the reference's full tone and cast (cached)
   const key = JSON.stringify(prim) + '|' + s;
-  if (!followCache.has(key)) { if (followCache.size > 12) followCache.delete(followCache.keys().next().value); followCache.set(key, withFollow(fitStore.src, fitStore.ref, prim, s)); }
+  if (!followCache.has(key)) { if (followCache.size > 12) followCache.delete(followCache.keys().next().value); followCache.set(key, withFollow(fitStore.src, fitStore.ref, prim, s, fitStore.refAll)); }
   return followCache.get(key);
 } // 漸層映射: the reference's colour at each lightness (set when the grade is fitted)
 const pairs = new Map();       // pairId -> LUT distilled from an AI-graded frame (look.source === 'ai'); a few candidates
@@ -178,7 +179,7 @@ self.onmessage = (e) => {
       const srcLab = new Float64Array(parts.reduce((n, q) => n + q.length, 0));
       let off = 0; for (const q of parts) { srcLab.set(q, off); off += q.length; }
       const refLab = sampleOklab(m.reference.data, m.reference.width, m.reference.height, 8000, { centre: 0.7, seed: 7 });
-      refGrad = extractGradient(unscale(refLab)); fitStore = { src: unscale(srcLab), ref: unscale(refLab) }; followCache.clear();
+      refGrad = extractGradient(unscale(refLab)); fitStore = { src: unscale(srcLab), ref: unscale(refLab), refAll: unscale(sampleOklab(m.reference.data, m.reference.width, m.reference.height, 8000, { seed: 11 })) }; // refAll: the whole reference (跟隨參考圖's tone, light and saturation; the centre-weighted samples over-read a bright centre) followCache.clear();
       const t2 = performance.now();
       const f0 = m.frames[Math.floor(m.frames.length / 2)], k = Math.min(1, 320 / f0.width); // texture-guard thumbnail
       const tw = Math.max(16, Math.round(f0.width * k)), th = Math.max(16, Math.round(f0.height * k)), td = new Uint8ClampedArray(tw * th * 4);
@@ -253,6 +254,7 @@ self.onmessage = (e) => {
       const fx = m.grade ? fxOf(j.look) : null;
       lap('blur');
       if (fx) applyEffects(out, m.w, m.h, fx); // after the blur: haze and glow spread over the blurred background too
+      if (fx) applyFilm(out, m.w, m.h, fx, m.index || 0); // 膠片質感 last: softness, halation, then grain (its pattern follows the frame number)
       lap('effects');
       const prim = j.look && j.look.prim;
       self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo, timing: T,

@@ -343,6 +343,20 @@
           </div>
         </details>
 
+        <details class="cat" id="catFilm" data-group="fx">
+          <summary>膠片質感</summary>
+          <div class="cat-body">
+            <h3>膠片模板</h3>
+            <div class="row"><button type="button" id="filmAuto" class="primary">自動匹配參考圖</button><button type="button" id="filmOff">關閉</button></div>
+            <p class="info" id="filmInfo">按「自動匹配參考圖」：依參考圖有多「膠片」（暗部像蒙了一層霧、對比低）自動設定下面的顆粒、光暈和柔化；沒有參考圖時套用一般的膠片設定。之後可以用滑桿微調。</p>
+            <label class="slider"><span>膠片顆粒</span><input type="range" id="adj-filmGrain" min="0" max="100" value="0"><output id="adj-filmGrain-v">0</output></label>
+            <label class="slider"><span>顆粒大小</span><input type="range" id="adj-filmGrainSize" min="0" max="100" value="50"><output id="adj-filmGrainSize-v">50</output></label>
+            <label class="slider"><span>光暈</span><input type="range" id="adj-halation" min="0" max="100" value="0"><output id="adj-halation-v">0</output></label>
+            <label class="slider"><span>柔化</span><input type="range" id="adj-filmSoft" min="0" max="100" value="0"><output id="adj-filmSoft-v">0</output></label>
+            <p class="info">膠片顆粒每一格都不同（像真的膠片），中間調最明顯；光暈是亮部邊緣滲出的一圈橙紅色光（膠片的特徵）；柔化讓畫面不像數碼那麼銳利。這幾項不改變顏色，也不受「整體調色強度」影響。顏色部分（霧黑、偏冷）請用參考圖的自動調色和「跟隨參考圖」。</p>
+          </div>
+        </details>
+
         <details class="cat scopes" id="scopes" data-group="pro">
           <summary>示波器</summary>
           <div class="cat-body">
