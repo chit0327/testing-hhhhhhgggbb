@@ -34,16 +34,49 @@ async function loadModel() {
   return out;
 }
 
+// CPU or GPU: on first use both are timed on a few small frames and the faster is kept (the GPU only when clearly faster,
+// ≥ 1.3×; any GPU failure keeps the CPU). The GPU version can be several times faster on a real graphics card; on
+// software rendering (no graphics card) it is slower, so the choice is measured, never assumed. Masks from the two
+// differ only by floating-point rounding. Override: globalThis.__segDelegate = 'CPU' | 'GPU'.
+let info = { delegate: 'CPU', cpuMs: null, gpuMs: null };
+export function segmenterInfo() { return { ...info }; }
+// timed as used: segment and read every mask back (on the GPU the call only queues the work; reading pays for it)
+function runOnce(seg, img) { const r = seg.segment(img); try { for (const m of r.confidenceMasks) m.getAsFloat32Array(); } finally { r.close(); } }
+async function benchMs(seg, img) { runOnce(seg, img); const t = performance.now(); for (let i = 0; i < 3; i++) runOnce(seg, img); return (performance.now() - t) / 3; }
+function benchImage() { // a small frame with a face-like blob (what the model sees: 256 px wide)
+  const w = 256, h = 144, d = new Uint8ClampedArray(w * h * 4);
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) { const i = 4 * (y * w + x), f = Math.hypot(x - 128, y - 60) < 30; d[i] = f ? 200 : 60 + x / 4; d[i + 1] = f ? 150 : 70 + y / 3; d[i + 2] = f ? 110 : 90; d[i + 3] = 255; }
+  return new ImageData(d, w, h);
+}
+function glCanvas() { return typeof OffscreenCanvas !== 'undefined' ? new OffscreenCanvas(1, 1) : Object.assign(document.createElement('canvas'), { width: 1, height: 1 }); }
+
 export async function initSegmenter() {
   if (segmenter) return segmenter;
   if (!loading) {
     loading = (async () => {
       const { FilesetResolver, ImageSegmenter } = await import('../vendor/mediapipe/vision_bundle.mjs');
       const files = await FilesetResolver.forVisionTasks(new URL('../vendor/mediapipe/wasm', import.meta.url).href);
-      segmenter = await ImageSegmenter.createFromOptions(files, {
-        baseOptions: { modelAssetBuffer: await loadModel(), delegate: 'CPU' },
+      const model = await loadModel();
+      const make = (delegate) => ImageSegmenter.createFromOptions(files, {
+        baseOptions: { modelAssetBuffer: model, delegate }, ...(delegate === 'GPU' ? { canvas: glCanvas() } : {}),
         runningMode: 'IMAGE', outputConfidenceMasks: true, outputCategoryMask: false,
       });
+      const want = globalThis.__segDelegate;
+      if (want === 'CPU' || want === 'GPU') {
+        segmenter = await make(want).catch(() => (want === 'GPU' ? make('CPU') : Promise.reject(new Error('segmenter failed'))));
+        info = { delegate: want, cpuMs: null, gpuMs: null };
+        return segmenter;
+      }
+      const cpu = await make('CPU'), img = benchImage();
+      const cpuMs = await benchMs(cpu, img);
+      let gpu = null, gpuMs = null;
+      try {
+        gpu = await make('GPU'); runOnce(gpu, img); // (first run: shader compilation)
+        const t = performance.now(); runOnce(gpu, img); gpuMs = performance.now() - t;
+        if (gpuMs < cpuMs) gpuMs = await benchMs(gpu, img); // only a promising GPU gets the full timing (a slow one costs startup time)
+      } catch { gpu = null; }
+      if (gpu && gpuMs * 1.3 < cpuMs) { cpu.close(); segmenter = gpu; info = { delegate: 'GPU', cpuMs, gpuMs }; }
+      else { if (gpu) gpu.close(); segmenter = cpu; info = { delegate: 'CPU', cpuMs, gpuMs }; }
       return segmenter;
     })();
     loading.catch(() => { loading = null; });
@@ -87,7 +120,7 @@ export async function startSegWorker() {
   w.onmessage = (e) => { const m = e.data, p = pending.get(m.id); if (!p) return; pending.delete(m.id); m.type === 'error' ? p.reject(new Error(m.message)) : p.resolve(m); };
   w.onerror = (e) => { for (const p of pending.values()) p.reject(new Error(e.message || 'segmentation worker failed')); pending.clear(); };
   const call = (msg, transfer = []) => new Promise((resolve, reject) => { const id = ++seq; pending.set(id, { resolve, reject }); w.postMessage({ ...msg, id }, transfer); });
-  try { await Promise.race([call({ type: 'init' }), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000))]); }
+  try { await Promise.race([call({ type: 'init', delegate: segmenter ? info.delegate : null }), new Promise((_, rej) => setTimeout(() => rej(new Error('timeout')), 60000))]); } // the page's measured choice: workers do not time again
   catch { w.terminate(); return null; }
   return {
     segment(img, mw, mh) { const buf = img.data.slice().buffer; return call({ type: 'seg', data: buf, w: img.width, h: img.height, mw, mh }, [buf]).then((m) => m.r); },

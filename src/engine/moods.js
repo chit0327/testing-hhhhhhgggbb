@@ -8,9 +8,10 @@ import { neutralPrim, HUE_ANCHORS } from './primary.js';
 
 const ANCHOR = { red: 30, orange: 70, yellow: 100, green: 145, cyan: 195, blue: 255, purple: 300, magenta: 340 };
 /** hue curves: {green: [hue shift °, saturation log2, lightness]} → a pro-stage parameter set (or null) */
-function hues(spec) {
-  if (!spec) return null;
-  const p = neutralPrim();
+function hues(spec, extra) {
+  if (!spec && !extra) return null;
+  const p = { ...neutralPrim(), ...(extra || {}) }; // extra: pro-stage settings of a mood (a tonal-band tint, skin protection)
+  if (!spec) return p;
   for (const [name, [shift, sat, lum = 0]] of Object.entries(spec)) {
     const i = HUE_ANCHORS.indexOf(ANCHOR[name]);
     p.hueHue[i] = shift; p.hueSat[i] = sat; p.hueLum[i] = lum;
@@ -29,6 +30,16 @@ export const MOODS = [
   { id: 'clear', group: 0, name: '晴朗通透', desc: '天空更藍、綠色更鮮，對比清楚',
     look: { contrast: 0.2, highlights: -0.1, shadows: 0.1, saturation: 0.15, temperature: -0.05 },
     hue: { blue: [0, 0.3], cyan: [0, 0.2], green: [0, 0.2] } },
+  // 日劇淡藍: fitted directly to the user's own grade — two of their clips (C179 people on a campus, C059 trees against
+  // the sun) graded on this site after Japanese-drama references, with the originals: the sliders, the pale blue (a
+  // pro-stage tonal-band tint, the 跟隨參考圖 tint: saturated blues spared) and the haze minimise the per-pixel OKLab
+  // difference to their frames over 14 matched frames — ΔE×100 13.6 (original) → 2.7 (the first version of this mood:
+  // 4.5). Softness matched to theirs (fine-detail energy 7.7 vs 7.4), no grain (theirs has none). Skin protected by the
+  // AI skin mask (it keeps a natural skin tone)
+  { id: 'jdrama_blue', group: 0, name: '日劇淡藍', desc: '明亮、空氣感，灰色和陰影帶淡淡藍色，衣服顏色保留、膚色白淨；輕微霧感和柔化，無顆粒',
+    look: { exposure: 0.28, contrast: -0.36, highlights: -0.48, shadows: 0.47, saturation: -0.28, temperature: -0.01, tint: 0.07, black: 0.19, white: 0.971,
+      haze: 0.12, hazeRadius: 0.5, hazeAir: [0.808, 1.016, 1.409], filmSoft: 0.2 },
+    prim: { tint: { lo: [0.009, -0.053], mid: [-0.012, -0.044], hi: [-0.011, -0.036] }, skin: 0.7 } },
   { id: 'teal_orange', group: 1, name: '青橙電影', desc: '暗部和背景偏青、膚色偏橙',
     look: { contrast: 0.25, highlights: -0.1, temperature: -0.05, shadowHue: 205, shadowAmt: 0.9, midHue: 200, midAmt: 0.2, hiHue: 60, hiAmt: 0.45, vignette: 0.25 },
     hue: { green: [45, -0.3], yellow: [-10, -0.2], blue: [-20, 0], orange: [0, 0.25] } },
@@ -69,5 +80,5 @@ export const MOODS = [
 
 /** The full look for a mood (no reference: strength / match off, the mood's sliders and hue curves). */
 export function moodLook(mood, keep = {}) {
-  return { ...DEFAULT_LOOK, strength: 0, match: 0, source: 'mood', mood: mood.id, ...mood.look, prim: hues(mood.hue), ...keep };
+  return { ...DEFAULT_LOOK, strength: 0, match: 0, source: 'mood', mood: mood.id, ...mood.look, prim: hues(mood.hue, mood.prim), ...keep };
 }

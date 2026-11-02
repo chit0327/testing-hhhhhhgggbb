@@ -7,9 +7,10 @@ self.onmessage = async (e) => {
   const m = e.data;
   try {
     if (m.type === 'init') {
+      if (m.delegate === 'CPU' || m.delegate === 'GPU') self.__segDelegate = m.delegate; // decided (timed) once on the page
       mod = await import('./segment.js');
       await mod.initSegmenter();
-      self.postMessage({ type: 'ready', id: m.id });
+      self.postMessage({ type: 'ready', id: m.id, info: mod.segmenterInfo() });
     } else if (m.type === 'seg') {
       const r = mod.segment(new ImageData(new Uint8ClampedArray(m.data), m.w, m.h), m.mw, m.mh);
       self.postMessage({ type: 'seg', id: m.id, r }, Object.values(r).map((g) => g.buffer));

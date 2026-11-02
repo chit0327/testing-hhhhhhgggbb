@@ -1389,7 +1389,9 @@ async function startProcessing() {
       + `處理引擎回報的光暗設定雜湊 ${res.intentHash}${res.intentHash === S.output.confirmedHash ? '（與確認的設定一致）' : '（⚠ 不一致）'}，色彩設定雜湊 ${res.lookHash}`
     + `（${describeLook(S.look.applied)}）`
     + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
-    + (res.audio.kept ? `音訊：已保留原片音軌（${res.audio.codec}，未重新編碼）。` : `音訊：${res.audio.reason}。`);
+    + (res.audio.kept ? `音訊：已保留原片音軌（${res.audio.codec}，未重新編碼）。` : `音訊：${res.audio.reason}。`)
+    + (res.timing && res.timing.segInfo ? `AI 人物偵測：${res.timing.segInfo.delegate === 'GPU' ? '顯示卡（GPU）' : '處理器（CPU）'}${res.timing.segInfo.cpuMs ? `（實測每格 CPU ${Math.round(res.timing.segInfo.cpuMs)} ms${res.timing.segInfo.gpuMs ? `、GPU ${Math.round(res.timing.segInfo.gpuMs)} ms` : '、GPU 不可用'}）` : ''}。` : '')
+    + (res.timing && res.timing.total ? `處理時間 ${(res.timing.total / 1000).toFixed(1)} 秒。` : '');
     log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio, timing: res.timing });
     setPhase('done');
     updateAdjState();
