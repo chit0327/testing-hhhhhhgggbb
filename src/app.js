@@ -18,6 +18,7 @@ import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { suggestLook } from './engine/suggest.js';
 import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
 import { findBars } from './engine/bars.js';
+import { refAirRGB } from './engine/render.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -530,10 +531,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   personEv: ['personEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`], bgEv: ['bgEv', 100, (v) => `${v > 0 ? '+' : ''}${(v / 100).toFixed(2)} 檔`],
   skinFollow: ['skinFollow', 100, (v) => `${v}%`], skinSat: ['skinSat', 100, (v) => `${v > 0 ? '+' : ''}${v}`], gradMap: ['gradMap', 100, (v) => `${v}%`], follow: ['follow', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
+  hazeDepth: ['hazeDepth', 100, (v) => `${v}`],
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -542,6 +544,8 @@ const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEF
   for (const el of document.querySelectorAll('input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
 }
 function syncAdjustControls() {
+  $('hazeFromRef').checked = Array.isArray(S.look.draft.hazeAir);
+  $('hazeFromRef').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
   for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
     const v = Math.round(S.look.draft[key] * scale);
     $(`adj-${id}`).value = v; if (fmt) $(`adj-${id}-v`).textContent = fmt(v);
@@ -590,6 +594,14 @@ for (const b of document.querySelectorAll('[data-haze]')) b.onclick = () => {
   log('haze-preset', { preset: b.dataset.haze });
   syncAdjustControls(); scheduleAdjPreview();
 };
+// 霧色取自參考圖: the haze veil in the colour of the reference's air (read once per reference)
+$('hazeFromRef').addEventListener('change', (e) => {
+  const ref = S.ref.status === 'ready' && S.ref.imageData;
+  S.look.auto = false;
+  S.look.draft.hazeAir = e.target.checked && ref ? (S.ref.air ??= refAirRGB(ref)) : null;
+  log('haze-air', { on: !!S.look.draft.hazeAir, rgb: S.look.draft.hazeAir });
+  syncAdjustControls(); scheduleAdjPreview();
+});
 // 膠片模板: grain / halation / softness set from the reference (how film-like its tone is), or a typical film setting
 $('filmAuto').onclick = () => {
   const ref = S.ref.status === 'ready' && S.ref.bitmap ? refPixels(S.ref.bitmap, S.ref.crop, 1600) : null; // (full-ish resolution: grain; bars cut off)
@@ -1350,7 +1362,7 @@ async function startProcessing() {
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const ap = S.look.applied.prim;
   const bl = S.look.applied.blur;
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv || S.look.applied.skinSat);
+  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv || S.look.applied.skinSat || (S.look.applied.haze > 0 && S.look.applied.hazeDepth > 0));
   if (needsSeg) await initSegmenter();
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
   // while processing, only the hidden work video decodes the source: the upload preview and the comparison

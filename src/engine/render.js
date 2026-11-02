@@ -3,7 +3,7 @@
 // frames), then the Lighting Intent's local exposure in LINEAR light on the graded pixels. Applying the
 // local exposure last makes it exact and predictable: +0.6 EV in a region is +0.6 EV in the output
 // (earlier, applying it before the LUT let the reference's contrast curve flatten brightened people).
-import { S2L, l2sFast, oklabToSrgb } from './color.js';
+import { S2L, l2sFast, oklabToSrgb, srgbToOklab } from './color.js';
 
 const KNEE = 0.8; // linear luminance above which brightening is rolled off instead of clipped
 
@@ -123,7 +123,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
 // ---- spatial effects: they depend on position / neighbours, so they cannot live in the LUT ------------
 // Both work in linear light on the finished frame and are defined relative to the frame size, so the
 // 640 px preview and the 1280 px export look the same.
-export const FX_KEYS = ['glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft']; // (膠片質感: film.js)
+export const FX_KEYS = ['glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth']; // (膠片質感: film.js; hazeAir: 霧色取自參考圖, hazeDepth: 背景霧更濃)
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 function boxBlur(buf, w, h, r) { // in place, 3 channels, sliding window (clamped edges)
@@ -205,7 +205,8 @@ export function glowTintRGB(hue, tint) {
   const l = c.map((v) => S2L[Math.round(Math.min(1, Math.max(0, v)) * 255)]), Y = 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
   return l.map((v) => v / Math.max(Y, 1e-4));
 }
-export function applyEffects(img, w, h, fx) {
+/** hazeMap: optional {data, w, h} grid of the person (0..1, smoothed AI mask) for 背景霧更濃 (fx.hazeDepth 0..1). */
+export function applyEffects(img, w, h, fx, hazeMap = null) {
   const glow = Math.min(1, Math.max(0, fx.glow || 0)), vig = Math.min(1, Math.max(-1, fx.vignette || 0)), haze = Math.min(1, Math.max(0, fx.haze || 0));
   if (!glow && !vig && !haze) return img;
   const G = glow ? blurredGrid(img, w, h, (Y) => smooth(0.2, 0.85, Y), 0.008 + 0.05 * (fx.glowRadius ?? 0.5)) : null;
@@ -223,22 +224,41 @@ export function applyEffects(img, w, h, fx) {
     // down so lights still read as lights instead of the whole frame washing out
     const Y = 0.2126 * acc[0] + 0.7152 * acc[1] + 0.0722 * acc[2], lvl = 0.03 + 0.06 * Math.min(1, Y * 5);
     bk = Math.min(1, Math.sqrt(0.15 / Math.max(Y, 1e-4)));
-    for (let c = 0; c < 3; c++) veil[c] = Y > 1e-4 ? lvl * acc[c] / Y : lvl;
+    // 霧色取自參考圖: the veil takes the colour of the reference's air (luminance-normalised linear RGB), not the footage's
+    // own light — warm sunlit footage under a cool misty reference got a warm veil
+    const air = Array.isArray(fx.hazeAir) && fx.hazeAir.length === 3 ? fx.hazeAir : null;
+    for (let c = 0; c < 3; c++) veil[c] = air ? lvl * air[c] : Y > 1e-4 ? lvl * acc[c] / Y : lvl;
   }
   // 光芒顏色 (colour wheel): the added light (柔光, 朦朧's bloom and veil) tinted towards an OKLab hue; the tint keeps
   // the light's brightness (channel factors normalised to luminance 1), tint 0 = the light's own colour
   const tm = glowTintRGB(fx.glowHue ?? 60, fx.glowTint || 0);
   const vg = vig ? vignetteGain(w, h, vig, fx.vignetteSize ?? 0.5) : null;
+  // 背景霧更濃: haze thins on the person and thickens on the background (distant things hazier, like air between them and
+  // the camera); the person mask is the AI one, smoothed over time like the other AI regions
+  const depth = haze && hazeMap ? Math.min(1, Math.max(0, fx.hazeDepth || 0)) : 0;
+  // per-column / per-row grid indices and weights, computed once per frame (a per-pixel lookup cost +40 % effects time)
+  let pxi0, pxi1, ptx, pyi0, pyi1, pty;
+  if (depth) {
+    const M = hazeMap; pxi0 = new Int32Array(w); pxi1 = new Int32Array(w); ptx = new Float32Array(w); pyi0 = new Int32Array(h); pyi1 = new Int32Array(h); pty = new Float32Array(h);
+    for (let x = 0; x < w; x++) { const g = Math.min(M.w - 1, Math.max(0, (x + 0.5) / w * M.w - 0.5)), g0 = Math.floor(g); pxi0[x] = g0; pxi1[x] = Math.min(M.w - 1, g0 + 1); ptx[x] = g - g0; }
+    for (let y = 0; y < h; y++) { const g = Math.min(M.h - 1, Math.max(0, (y + 0.5) / h * M.h - 0.5)), g0 = Math.floor(g); pyi0[y] = g0 * M.w; pyi1[y] = Math.min(M.h - 1, g0 + 1) * M.w; pty[y] = g - g0; }
+  }
   const lin = [0, 0, 0], bl = [0, 0, 0];
   for (let y = 0; y < h; y++) {
     for (let x = 0; x < w; x++) {
       const p = (y * w + x) * 4;
       lin[0] = S2L[img[p]]; lin[1] = S2L[img[p + 1]]; lin[2] = S2L[img[p + 2]];
+      let hz = haze;
+      if (depth) {
+        const md = hazeMap.data, r0 = pyi0[y], r1 = pyi1[y], a0 = pxi0[x], a1 = pxi1[x], tx = ptx[x], ty = pty[y];
+        const pr = (md[r0 + a0] * (1 - tx) + md[r0 + a1] * tx) * (1 - ty) + (md[r1 + a0] * (1 - tx) + md[r1 + a1] * tx) * ty;
+        hz = Math.min(1, haze * (1 - 0.85 * depth * pr) * (1 + 0.5 * depth * (1 - pr)));
+      }
       if (H) { // dreamy light: soften detail a little, let the lights bloom (screen), then the light-coloured veil
         sampleGrid(H, x, y, bl);
-        for (let c = 0; c < 3; c++) lin[c] += Math.min(1, haze * kSoft) * (bl[c] - lin[c]);
+        for (let c = 0; c < 3; c++) lin[c] += Math.min(1, hz * kSoft) * (bl[c] - lin[c]);
         sampleGrid(Bm, x, y, bl);
-        for (let c = 0; c < 3; c++) { const add = Math.min(1, haze * tm[c] * (kBloom * bk * Math.max(0, bl[c] - 0.6 * lin[c]) + kVeil * veil[c])); /* light spills into darker surroundings */ lin[c] = 1 - (1 - lin[c]) * (1 - add); }
+        for (let c = 0; c < 3; c++) { const add = Math.min(1, hz * tm[c] * (kBloom * bk * Math.max(0, bl[c] - 0.6 * lin[c]) + kVeil * veil[c])); /* light spills into darker surroundings */ lin[c] = 1 - (1 - lin[c]) * (1 - add); }
       }
       if (G) { sampleGrid(G, x, y, bl); for (let c = 0; c < 3; c++) lin[c] += glow * 1.2 * tm[c] * bl[c]; }
       if (vg) { const g = vg[y * w + x]; lin[0] *= g; lin[1] *= g; lin[2] *= g; }
@@ -250,4 +270,21 @@ export function applyEffects(img, w, h, fx) {
     }
   }
   return img;
+}
+
+/**
+ * 霧色取自參考圖: the colour of a reference's air — the mean colour of its brighter part (above its 60th percentile of
+ * lightness), strongly coloured pixels (chroma > 0.09: objects, deep sky) left out — as luminance-normalised linear RGB
+ * factors for the haze veil. img: ImageData-like (bars already removed). null when there is nothing to read.
+ */
+export function refAirRGB(img) {
+  const d = img.data, Ls = [], ab = [], o = [0, 0, 0];
+  for (let i = 0; i < d.length; i += 4 * 3) { srgbToOklab(d[i] / 255, d[i + 1] / 255, d[i + 2] / 255, o); Ls.push(o[0]); ab.push(o[1], o[2]); }
+  if (!Ls.length) return null;
+  const sorted = Ls.slice().sort((a, b) => a - b), cut = sorted[Math.floor(sorted.length * 0.6)];
+  let sa = 0, sb = 0, n = 0;
+  for (let k = 0; k < Ls.length; k++) { if (Ls[k] < cut) continue; const a = ab[2 * k], b = ab[2 * k + 1]; if (Math.hypot(a, b) > 0.09) continue; sa += a; sb += b; n++; }
+  if (!n) return null;
+  const c = oklabToSrgb(0.8, sa / n, sb / n), l = c.map((v) => S2L[Math.round(Math.min(1, Math.max(0, v)) * 255)]), Y = 0.2126 * l[0] + 0.7152 * l[1] + 0.0722 * l[2];
+  return Y > 1e-4 ? l.map((v) => +(v / Y).toFixed(4)) : null;
 }

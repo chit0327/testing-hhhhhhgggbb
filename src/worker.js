@@ -73,6 +73,20 @@ const aiRegion = (kind, mh) => ({ id: `__${kind}`, kind, enabled: true, status: 
  * field (same grid). Follows people from frame to frame like the other AI regions. Returns ev unchanged when
  * both are 0 or the frame has no segmentation.
  */
+/**
+ * 背景霧更濃: the person's mask when the haze is to thin on the person; else null. The AI mask as it is, smoothed over
+ * frames and lightly blurred — haze is soft, so the edge-snapped region mask (≈ 38 ms a frame: lightness grid + guided
+ * filter) is not needed here (≈ 1 ms).
+ */
+function hazePerson(look, seg, temporal) {
+  if (!look || !(look.haze > 0) || !(look.hazeDepth > 0) || !seg || !seg.person) return null;
+  const mh = seg.person.length / MASK_W;
+  if (!Number.isInteger(mh)) return null;
+  let m = Float32Array.from(seg.person);
+  if (temporal) { const prev = temporal.prev && temporal.prev['__haze-person']; if (prev && prev.length === m.length) for (let i = 0; i < m.length; i++) m[i] = 0.5 * prev[i] + 0.5 * m[i]; if (temporal.prev) temporal.prev['__haze-person'] = m; }
+  m = feather(m, MASK_W, mh, 0.006 * MASK_W);
+  return { data: m, w: MASK_W, h: mh };
+}
 function subjectEv(ev, look, src, w, h, seg, temporal) {
   const pe = (look && look.personEv) || 0, be = (look && look.bgEv) || 0;
   if ((!pe && !be) || !seg || !seg.person || !seg.background) return ev;
@@ -253,7 +267,7 @@ self.onmessage = (e) => {
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
       const fx = m.grade ? fxOf(j.look) : null;
       lap('blur');
-      if (fx) applyEffects(out, m.w, m.h, fx); // after the blur: haze and glow spread over the blurred background too
+      if (fx) applyEffects(out, m.w, m.h, fx, hazePerson(j.look, m.seg, j.temporal)); // after the blur: haze and glow spread over the blurred background too
       if (fx) applyFilm(out, m.w, m.h, fx, m.index || 0); // 膠片質感 last: softness, halation, then grain (its pattern follows the frame number)
       lap('effects');
       const prim = j.look && j.look.prim;

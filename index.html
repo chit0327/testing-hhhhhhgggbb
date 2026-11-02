@@ -328,6 +328,8 @@
             <label class="slider sub"><span>　柔化</span><input type="range" id="adj-hazeSoft" min="0" max="100" value="50"><output id="adj-hazeSoft-v">50</output></label>
             <label class="slider sub"><span>　發光</span><input type="range" id="adj-hazeBloom" min="0" max="100" value="50"><output id="adj-hazeBloom-v">50</output></label>
             <label class="slider sub"><span>　光幕</span><input type="range" id="adj-hazeVeil" min="0" max="100" value="50"><output id="adj-hazeVeil-v">50</output></label>
+            <label class="check" id="hazeFromRefRow"><input type="checkbox" id="hazeFromRef"> 霧的顏色取自參考圖（空氣的顏色，例如清晨的淡藍）</label>
+            <label class="slider sub"><span>　背景霧更濃</span><input type="range" id="adj-hazeDepth" min="0" max="100" value="0"><output id="adj-hazeDepth-v">0</output></label>
             <h3>光芒顏色</h3>
             <div class="glow-wheel">
               <canvas id="glowWheel" width="132" height="132" role="slider" tabindex="0" aria-label="光芒顏色色輪：方向是顏色，離中心越遠越濃"></canvas>
@@ -339,7 +341,7 @@
             </div>
             <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
             <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
-            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
+            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。「霧的顏色取自參考圖」令光幕用參考圖空氣的顏色（例如清晨淡藍），而不是原片本身的光色（陽光下會是暖黃）。「背景霧更濃」用 AI 偵測人物：人物的霧變淡、背景的霧變濃，像遠處隔了更多空氣（只分人物和背景兩層，不是按真正的距離）。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
           </div>
         </details>
 
