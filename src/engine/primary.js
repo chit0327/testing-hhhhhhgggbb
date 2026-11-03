@@ -67,7 +67,7 @@ export function normTone(n, L) {
   return L + n.amt * (g - L);
 }
 const isNeutralNorm = (n) => !n || !n.amt;
-const isNeutralPost = (q) => !q || (!q.L && !q.a && !q.b && !q.sat);
+const isNeutralPost = (q) => !q || (!q.L && !q.a && !q.b && !q.sat && !q.warm && !q.hue);
 export const LOCAL_REGIONS = ['skin', 'hair', 'clothes', 'background'];
 export const LOCAL_NAMES = { skin: '皮膚', hair: '頭髮', clothes: '衣服', background: '背景' };
 
@@ -195,6 +195,12 @@ export function compilePrim(p, opts = {}) {
       if (prot && p.skinFollow) { // 膚色偏向參考圖色調: skin moves towards the colour the grade gives it unprotected
         const f = p.skinFollow;
         A += (gA * satK + (q.a || 0) * wk - A) * f; B += (gB * satK + (q.b || 0) * wk - B) * f;
+      }
+      if (q.hue || q.warm) { // 膚色色調 / 膚色冷暖 (skin layer): the user's own skin colour, last — after the protection, so
+        // the protection never cancels it. hue: −1..1 → −15°..+15° (pinker ↔ yellower); warm: −1..1 → OKLab b ∓0.03, a ∓0.008
+        const C = Math.hypot(A, B), h = Math.atan2(B, A) + (q.hue || 0) * (15 * Math.PI / 180);
+        if (C > 1e-4) { A = C * Math.cos(h); B = C * Math.sin(h); }
+        A += 0.008 * (q.warm || 0) * wk; B += 0.03 * (q.warm || 0) * wk;
       }
       return oklabToSrgb(Math.min(1, Math.max(0, lb[0] + (q.L || 0))), A, B, out);
     };
