@@ -72,7 +72,7 @@ body.is-work { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; /
 .view-tabs button[aria-selected="true"] { background: var(--fg); color: var(--bg); border-color: var(--fg); }
 .stage { flex: 1; min-height: 0; display: flex; flex-direction: column; background: var(--stage); border-radius: 12px; overflow: hidden; }
 .view { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.stage-media { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 10px; position: relative; }
+.stage-media { flex: 1; min-height: 0; display: flex; align-items: center; justify-content: center; padding: 10px; position: relative; overflow: hidden; /* (a zoomed picture stays inside) */ }
 .stage-media canvas { display: block; width: 100%; height: 100%; object-fit: contain; } /* scales the frame up or down, keeps its aspect */
 .stage-empty { color: #c9c9cf; text-align: center; padding: 20px; max-width: 420px; }
 .stage-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; padding: 8px 14px 12px; color: #e6e6ea; font-size: 13px; }
@@ -276,3 +276,47 @@ body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-even
 #viewAskText { color: var(--fg); margin: 0 0 16px; }
 .proc-answers button { min-width: 72px; }
 #procDoneRow { margin-top: 12px; justify-content: flex-end; }
+
+/* phone / tablet held upright: the preview stays on screen while the grading panel scrolls under it (before, the whole
+   page scrolled and the picture left the screen as soon as the user scrolled down to a slider). The page itself does not
+   scroll: one-line header, the preview (fixed height; ⤢ enlarges it), the view tabs, the panel (scrolls), the buttons. */
+.pv-zoom, .pv-more { display: none; }
+.wipe-row { display: flex; align-items: center; gap: 8px; }
+@media (max-width: 1024px) and (orientation: portrait) {
+  body.is-work { height: 100vh; height: 100dvh; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+  body.is-work .top { flex-wrap: nowrap; min-height: 0; gap: 8px; padding-top: 6px; padding-bottom: 6px; }
+  body.is-work .brand { gap: 6px; min-width: 0; flex: none; }
+  body.is-work .brand h1 { font-size: 17px; margin: 0; }
+  body.is-work .status { margin-left: auto; width: auto; min-width: 0; flex: 0 1 auto; padding: 3px 8px; font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  body.is-work .theme-switch { flex: none; } body.is-work .theme-switch button { padding: 3px 8px; font-size: 12px; }
+  .work { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+  .stage-col { flex: none; gap: 6px; padding: 8px 10px 6px; }
+  .stage-col .stage { order: 1; flex: none; height: auto; min-height: 0; }
+  .stage-col .view { flex: none; }
+  .stage-col .stage-media { flex: none; height: min(56.25vw, 36vh); } /* the picture keeps its height; the bar (and ⋯ options) add below */
+  .stage-col .view-tabs { order: 2; flex-wrap: nowrap; overflow-x: auto; }
+  .stage-col .view-tabs button { padding: 4px 11px; font-size: 13px; white-space: nowrap; }
+  .stage-col .progress, .stage-col .photo-nav, .stage-col .stale-note { order: 3; }
+  body.pv-big .stage-col #viewPreview .stage-media { height: 58vh; }
+  .stage-col[data-view="wipe"] .stage-media { height: 52vh; } /* (the processed result: little to grade there) */
+  .stage-col[data-view="result"] .compare-videos { height: 56vh; }
+  .stage-media { padding: 6px; }
+  .stage-bar { padding: 4px 10px 6px; }
+  .pv-zoom { display: flex; position: absolute; left: 10px; top: 10px; z-index: 2; width: 30px; height: 30px; padding: 0; align-items: center; justify-content: center; border-radius: 8px; border: 0; background: rgba(0, 0, 0, .5); color: #fff; font-size: 16px; }
+  .pv-more { display: flex; flex: none; width: 34px; height: 28px; padding: 0; align-items: center; justify-content: center; font-size: 17px; letter-spacing: 1px; }
+  .pv-row { display: none; } .pv-row.open { display: flex; padding-top: 4px; }
+  .panel { flex: 1; min-height: 0; display: flex; flex-direction: column; border-top: 1px solid var(--line); }
+  .panel-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 10px 10px; }
+  .panel-scroll > .intent-box { margin-top: 10px; }
+  .panel-tabs { position: sticky; top: 0; z-index: 3; margin: 0 -2px 8px; box-shadow: 0 6px 10px -6px rgba(0, 0, 0, .25); }
+  #adjustCard { padding-top: 8px; }
+  .panel-actions { position: static; box-shadow: none; }
+}
+@media (max-width: 520px) and (orientation: portrait) { body.is-work .brand .long { display: none; } } /* 「← 返回」 */
+
+/* magnifier while painting a selection with a finger: the area under the finger, 2.5× */
+.stage-media canvas.loupe { position: absolute; top: 10px; left: 10px; width: 132px; height: 132px; border-radius: 50%; border: 3px solid #fff; box-shadow: 0 4px 16px rgba(0, 0, 0, .5); z-index: 4; pointer-events: none; background: #111; }
+.stage-media canvas.loupe.right { left: auto; right: 10px; }
+@media (min-width: 1025px) { .stage-media canvas.loupe { width: 170px; height: 170px; } }
+
+.pv-reset-zoom { position: absolute; right: 10px; bottom: 10px; z-index: 3; padding: 5px 10px; font-size: 13px; border-radius: 8px; border: 0; background: rgba(0, 0, 0, .6); color: #fff; }

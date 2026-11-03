@@ -10,7 +10,7 @@ import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, l
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure, toCube, gradeColour } from './engine/grade.js';
 import { MOODS, MOOD_GROUPS, moodLook } from './engine/moods.js';
-import { featherCells, paintStroke, fillPolygon, combineSelection, labGrid, magicWand, stampSelection, lumaSmall, pyramid, estimateMotion, warpLayer, warpPoint, toN, fromN, IDENTITY, BRUSH_SIZES } from './engine/blur.js';
+import { featherCells, paintStroke, fillPolygon, combineSelection, labGrid, magicWand, stampSelection, lumaSmall, pyramid, estimateMotion, warpLayer, warpPoint, toN, fromN, IDENTITY, brushRadius } from './engine/blur.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
 import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from './engine/metrics.js';
@@ -692,7 +692,7 @@ $('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.can
 // angle: degrees counter-clockwise, 0 = →, 90 = ↑ (as people read a direction); feather: edge softness 0..1
 const BLUR_DEFAULT = { on: false, ai: true, invert: false, type: 'gauss', amount: 0.5, angle: 0, feather: 0.04, bokehGlow: 0.5, bokehRange: 0.5, selId: null };
 const ARROWS = ['→', '↗', '↑', '↖', '←', '↙', '↓', '↘'], arrowOf = (a) => ARROWS[Math.round((((a % 360) + 360) % 360) / 45) % 8];
-const BL = { tol: 12, labFor: null, lab: null, layer: null, w: 0, h: 0, anchorT: null, anchorLuma: null, anchorPyr: null, curSel: null, seq: 0, tool: 'none', size: 'm', dir: false, motion: new Map(), drag: null, hover: null };
+const BL = { tol: 12, labFor: null, lab: null, layer: null, w: 0, h: 0, anchorT: null, anchorLuma: null, anchorPyr: null, curSel: null, seq: 0, tool: 'none', brush: 76, soft: 0, dir: false, motion: new Map(), drag: null, hover: null };
 window.__app.BL = BL;
 const blurOf = () => ({ ...BLUR_DEFAULT, ...(S.look.draft.blur || {}) });
 function editBlur(changes) {
@@ -714,6 +714,7 @@ function syncBlurControls() {
   $('blurBokehRange').value = Math.round(b.bokehRange * 100); $('blurBokehRange-v').textContent = Math.round(b.bokehRange * 100);
   $('blurDirBtn').setAttribute('aria-pressed', String(BL.dir));
   $('adjCanvas').classList.toggle('editing', blurEditing());
+  if (!blurEditing() && VIEW.s !== 1) setView(1, 0, 0); // (zoom is for painting only)
   syncRefPip();
 }
 // (the 效果 tab must be the one shown: the tabs hide the other categories with CSS, so catBlur can be open and not hidden
@@ -735,9 +736,11 @@ $('blurBokehGlow').addEventListener('input', (e) => { editBlur({ bokehGlow: e.ta
 $('blurBokehRange').addEventListener('input', (e) => { editBlur({ bokehRange: e.target.value / 100 }); });
 // narrow screens: the panel is below the picture, so bring the picture into view to draw on it
 const showCanvasForEditing = () => { if (window.innerWidth <= 1024 && blurEditing()) $('adjCanvas').scrollIntoView({ block: 'center', behavior: 'instant' }); };
-for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; if (BL.tool !== 'none' && !$('blurShow').checked) { $('blurShow').checked = true; scheduleAdjPreview(); } /* selecting: show the mask */ $('blurTolRow').hidden = !BL.tool.startsWith('wand'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
+for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; if (BL.tool !== 'none' && !$('blurShow').checked) { $('blurShow').checked = true; scheduleAdjPreview(); } /* selecting: show the mask */ $('blurTolRow').hidden = !BL.tool.startsWith('wand'); $('blurSizeRow').hidden = !(BL.tool === 'brush' || BL.tool === 'erase'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
 $('blurTol').addEventListener('input', (e) => { BL.tol = +e.target.value; $('blurTol-v').textContent = e.target.value; });
-for (const el of document.querySelectorAll('input[name=blurSize]')) el.addEventListener('change', () => { BL.size = el.value; drawAdj(); showCanvasForEditing(); });
+$('blurBrush').addEventListener('input', (e) => { BL.brush = +e.target.value; $('blurBrush-v').textContent = BL.brush; drawAdj(); });
+$('blurBrushSoft').addEventListener('input', (e) => { BL.soft = e.target.value / 100; $('blurBrushSoft-v').textContent = e.target.value; drawAdj(); });
+const brushR = () => brushRadius(BL.brush) / VIEW.s; // share of the frame width (zoomed in: finer, same size on screen)
 $('blurDirBtn').onclick = () => { BL.dir = !BL.dir; syncBlurControls(); drawAdj(); showCanvasForEditing(); };
 $('catBlur').addEventListener('toggle', () => { syncBlurControls(); drawAdj(); if (blurOf().on) scheduleAdjPreview(); }); // (mask shown only while the panel is open)
 $('blurClear').onclick = () => { BL.layer = null; BL.curSel = null; BL.motion.clear(); editBlur({ selId: null }); log('blur-cleared'); };
@@ -769,6 +772,14 @@ function canvasPoint(e) {
   const c = $('adjCanvas'), r = c.getBoundingClientRect(), k = Math.min(r.width / c.width, r.height / c.height);
   return [(e.clientX - r.left - (r.width - c.width * k) / 2) / (c.width * k), (e.clientY - r.top - (r.height - c.height * k) / 2) / (c.height * k)];
 }
+function applyWand(pt) { // one tap: the connected area of similar colour on THIS frame
+  const key = `${S.video.id}|${S.rep.t}|${S.rep.img.width}`;
+  if (BL.labFor !== key) { BL.lab = labGrid(S.rep.img.data, S.rep.img.width, S.rep.img.height, BL.w, BL.h); BL.labFor = key; }
+  const sel = magicWand(BL.lab, BL.w, BL.h, pt[0] * BL.w, pt[1] * BL.h, BL.tol);
+  stampSelection(BL.layer, BL.w, BL.h, sel, motionToAnchor(), BL.tool === 'wand' ? 1 : -1);
+  log('blur-wand', { tol: BL.tol, cells: sel.reduce((n, v) => n + v, 0) });
+  commitSelection(); drawAdj();
+}
 async function commitSelection() {
   const selId = `blur${++BL.seq}`;
   await engine.setBlurSelection(selId, { data: BL.layer, w: BL.w, h: BL.h }, BL.anchorLuma);
@@ -779,42 +790,70 @@ async function commitSelection() {
 }
 {
   const cv = $('adjCanvas');
-  cv.addEventListener('pointerdown', (e) => {
-    if (!blurEditing() || !S.rep) return;
-    e.preventDefault(); cv.setPointerCapture(e.pointerId);
-    const pt = canvasPoint(e);
+  // fingers on the picture while painting a selection. A second finger is never paint: whatever the first one started is
+  // undone (the layer as it was before the stroke) and the two fingers zoom (pinch) and move (drag) the picture instead;
+  // nothing paints again until all fingers are lifted. The magic wand applies when a finger lifts (a tap), so a finger
+  // that turns into a pinch does not select.
+  const touches = new Map();
+  const startStroke = (pt, e) => {
     if (BL.dir) { BL.drag = { kind: 'dir', from: pt, to: pt }; return; }
     ensureLayer();
-    if (BL.tool === 'wand' || BL.tool === 'wandErase') { // one click: the connected area of similar colour on THIS frame
-      const key = `${S.video.id}|${S.rep.t}|${S.rep.img.width}`;
-      if (BL.labFor !== key) { BL.lab = labGrid(S.rep.img.data, S.rep.img.width, S.rep.img.height, BL.w, BL.h); BL.labFor = key; }
-      const sel = magicWand(BL.lab, BL.w, BL.h, pt[0] * BL.w, pt[1] * BL.h, BL.tol);
-      stampSelection(BL.layer, BL.w, BL.h, sel, motionToAnchor(), BL.tool === 'wand' ? 1 : -1);
-      log('blur-wand', { tol: BL.tol, cells: sel.reduce((n, v) => n + v, 0) });
-      commitSelection(); drawAdj(); return;
+    if (BL.tool === 'wand' || BL.tool === 'wandErase') {
+      if (e.pointerType !== 'mouse') { BL.drag = { kind: 'wand', pt }; return; } // (applied on lift)
+      applyWand(pt); return;
     }
     if (BL.tool === 'brush' || BL.tool === 'erase') {
-      const a = toAnchorGrid(...pt), rad = BRUSH_SIZES[BL.size] * BL.w;
-      paintStroke(BL.layer, BL.w, BL.h, a[0], a[1], a[0], a[1], rad, BL.tool === 'brush' ? 1 : -1);
-      BL.drag = { kind: 'brush', last: a };
+      const a = toAnchorGrid(...pt);
+      BL.drag = { kind: 'brush', last: a, before: BL.layer.slice() };
+      paintStroke(BL.layer, BL.w, BL.h, a[0], a[1], a[0], a[1], brushR() * BL.w, BL.tool === 'brush' ? 1 : -1, BL.soft);
     } else BL.drag = { kind: 'lasso', pts: [pt] };
     drawAdj();
+    if (e.pointerType !== 'mouse') drawLoupe(pt);
+  };
+  const cancelStroke = () => { // a second finger: the stroke never happened
+    const d = BL.drag; BL.drag = null; $('loupe').hidden = true;
+    if (d && d.kind === 'brush' && d.before) BL.layer.set(d.before);
+    if (d) log('blur-stroke-cancelled', { kind: d.kind });
+    drawAdj();
+  };
+  cv.addEventListener('pointerdown', (e) => {
+    if (!blurEditing() || !S.rep) return;
+    e.preventDefault(); try { cv.setPointerCapture(e.pointerId); } catch { /* (no capture: painting still works while the pointer stays on the picture) */ }
+    if (e.pointerType !== 'mouse') touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (touches.size >= 2) { // pinch / pan
+      cancelStroke();
+      BL.noPaint = true;
+      startPinch();
+      return;
+    }
+    if (BL.noPaint) return;
+    startStroke(canvasPoint(e), e);
   });
   cv.addEventListener('pointermove', (e) => {
     if (!blurEditing()) return;
+    if (touches.has(e.pointerId)) touches.set(e.pointerId, [e.clientX, e.clientY]);
+    if (BL.pinch) { if (touches.size >= 2) movePinch(); return; }
+    if (BL.noPaint) return;
     const pt = canvasPoint(e); BL.hover = pt;
     const d = BL.drag;
     if (d && d.kind === 'brush') {
       const a = toAnchorGrid(...pt);
-      paintStroke(BL.layer, BL.w, BL.h, d.last[0], d.last[1], a[0], a[1], BRUSH_SIZES[BL.size] * BL.w, BL.tool === 'brush' ? 1 : -1);
+      paintStroke(BL.layer, BL.w, BL.h, d.last[0], d.last[1], a[0], a[1], brushR() * BL.w, BL.tool === 'brush' ? 1 : -1, BL.soft);
       d.last = a;
     } else if (d && d.kind === 'lasso') d.pts.push(pt);
     else if (d && d.kind === 'dir') d.to = pt;
+    else if (d && d.kind === 'wand') d.pt = pt;
     drawAdj();
+    if (d && (d.kind === 'brush' || d.kind === 'lasso') && e.pointerType !== 'mouse') drawLoupe(pt);
   });
   const end = (e) => {
+    touches.delete(e.pointerId);
+    if (BL.pinch) { if (touches.size < 2) { BL.pinch = null; log('blur-zoom', { scale: +VIEW.s.toFixed(2) }); } }
+    if (BL.noPaint) { if (touches.size === 0) BL.noPaint = false; return; }
+    $('loupe').hidden = true;
     const d = BL.drag; BL.drag = null;
     if (!d) return;
+    if (d.kind === 'wand') { applyWand(d.pt); return; }
     if (d.kind === 'dir') {
       const c = $('adjCanvas'), dx = (d.to[0] - d.from[0]) * c.width, dy = (d.to[1] - d.from[1]) * c.height;
       if (Math.hypot(dx / c.width, dy / c.width) > 0.01) { const ang = ((Math.atan2(-dy, dx) * 180 / Math.PI) % 360 + 360) % 360; /* screen y points down; angles count counter-clockwise */ editBlur({ angle: Math.round(ang), type: 'motion', on: true }); log('blur-direction', { angle: Math.round(ang) }); }
@@ -825,6 +864,48 @@ async function commitSelection() {
   };
   cv.addEventListener('pointerup', end); cv.addEventListener('pointercancel', end);
   cv.addEventListener('pointerleave', () => { BL.hover = null; if (blurEditing()) drawAdj(); });
+  // ---- pinch zoom / two-finger pan of the picture (CSS transform of the canvas; canvasPoint reads the transformed box,
+  // so painting lands where the finger is). 1–6×, the picture always fills its box.
+  const base = () => { const r = cv.getBoundingClientRect(); return { x: r.left - VIEW.tx, y: r.top - VIEW.ty, w: cv.offsetWidth, h: cv.offsetHeight }; };
+  const two = () => { const [a, b] = [...touches.values()]; return { d: Math.hypot(a[0] - b[0], a[1] - b[1]) || 1, mx: (a[0] + b[0]) / 2, my: (a[1] + b[1]) / 2 }; };
+  function startPinch() { const t = two(), b = base(); BL.pinch = { d0: t.d, s0: VIEW.s, ux: (t.mx - b.x - VIEW.tx) / VIEW.s, uy: (t.my - b.y - VIEW.ty) / VIEW.s }; }
+  function movePinch() {
+    const P = BL.pinch, t = two(), b = base();
+    const s = Math.min(6, Math.max(1, P.s0 * t.d / P.d0));
+    setView(s, t.mx - b.x - s * P.ux, t.my - b.y - s * P.uy);
+  }
+}
+// zoom / pan of the preview while painting a selection (two fingers); the brush keeps its size on the screen, so zoomed
+// in it paints finer
+const VIEW = { s: 1, tx: 0, ty: 0 };
+function setView(s, tx, ty) {
+  const cv = $('adjCanvas'), w = cv.offsetWidth, h = cv.offsetHeight;
+  VIEW.s = s; VIEW.tx = Math.min(0, Math.max(w * (1 - s), tx)); VIEW.ty = Math.min(0, Math.max(h * (1 - s), ty));
+  cv.style.transformOrigin = '0 0';
+  cv.style.transform = s === 1 ? '' : `translate(${VIEW.tx}px, ${VIEW.ty}px) scale(${s})`;
+  $('pvResetZoom').hidden = s === 1;
+}
+$('pvResetZoom').onclick = () => { setView(1, 0, 0); drawAdj(); };
+// 放大鏡 while painting with a finger (the finger hides what it paints): the preview around the touch point at 2.5×, as
+// drawn (the red stripes of the selection included), with a crosshair and the brush outline. Top-left of the picture;
+// top-right while the finger is in the top-left part.
+const LOUPE_ZOOM = 2.5;
+function drawLoupe(pt) {
+  const c = $('adjCanvas'), lp = $('loupe'), r = c.getBoundingClientRect(), k = Math.min(r.width / c.width, r.height / c.height);
+  lp.hidden = false;
+  lp.classList.toggle('right', pt[0] < 0.45 && pt[1] < 0.55);
+  const css = lp.clientWidth || 132, dpr = window.devicePixelRatio || 1, n = Math.round(css * dpr);
+  if (lp.width !== n) { lp.width = n; lp.height = n; }
+  const g = lp.getContext('2d'), src = css / LOUPE_ZOOM / k; // source square in canvas pixels
+  const cx = pt[0] * c.width, cy = pt[1] * c.height;
+  g.save(); g.clearRect(0, 0, n, n); g.beginPath(); g.arc(n / 2, n / 2, n / 2, 0, 2 * Math.PI); g.clip();
+  g.fillStyle = '#111'; g.fillRect(0, 0, n, n);
+  g.imageSmoothingEnabled = true;
+  g.drawImage(c, cx - src / 2, cy - src / 2, src, src, 0, 0, n, n);
+  const s = n / src; // canvas pixel → loupe pixel
+  if (BL.tool === 'brush' || BL.tool === 'erase') { g.strokeStyle = BL.tool === 'brush' ? '#fff' : '#ff8080'; g.lineWidth = 1.5 * dpr; g.setLineDash([4 * dpr, 3 * dpr]); g.beginPath(); g.arc(n / 2, n / 2, brushR() * c.width * s, 0, 2 * Math.PI); g.stroke(); g.setLineDash([]); }
+  g.strokeStyle = 'rgba(255,255,255,.9)'; g.lineWidth = 1.5 * dpr; g.beginPath(); g.moveTo(n / 2 - 7 * dpr, n / 2); g.lineTo(n / 2 + 7 * dpr, n / 2); g.moveTo(n / 2, n / 2 - 7 * dpr); g.lineTo(n / 2, n / 2 + 7 * dpr); g.stroke();
+  g.restore();
 }
 function drawBlurOverlay(ctx, w, h) {
   const b = blurOf(), panel = !$('catBlur').hidden && $('catBlur').open;
@@ -862,7 +943,7 @@ function drawBlurOverlay(ctx, w, h) {
     }
   }
   if (BL.hover && (BL.tool === 'brush' || BL.tool === 'erase') && !BL.dir && blurEditing()) { // brush outline
-    const rr = BRUSH_SIZES[BL.size] * w;
+    const rr = brushR() * w;
     ctx.strokeStyle = BL.tool === 'brush' ? '#fff' : '#ff8080'; ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
     ctx.beginPath(); ctx.arc(BL.hover[0] * w, BL.hover[1] * h, rr, 0, 2 * Math.PI); ctx.stroke(); ctx.setLineDash([]);
   }
@@ -1646,12 +1727,16 @@ function resetResultViews() {
 const VIEWS = { preview: ['tabPreview', 'viewPreview'], result: ['tabResult', 'resultCard'], wipe: ['tabWipe', 'wipe'] };
 function showView(name) {
   for (const [k, [tab, view]] of Object.entries(VIEWS)) { $(view).hidden = k !== name; $(tab).setAttribute('aria-selected', String(k === name)); }
+  document.querySelector('.stage-col').dataset.view = name; // (upright phone: the result views get a taller picture)
   if (name !== 'result') for (const id of ['origVideo', 'outVideo']) $(id).pause();
   if (name === 'wipe') drawWipe();
   if (name === 'preview') drawAdj();
   syncRefPip();
   syncStaleNote();
 }
+// upright phone: ⤢ enlarges the preview, ⋯ shows the preview options (quality, fast preview, b/w check, reference)
+$('pvZoom').onclick = () => { const on = document.body.classList.toggle('pv-big'); $('pvZoom').setAttribute('aria-pressed', String(on)); $('pvZoom').setAttribute('aria-label', on ? '縮小預覽' : '放大預覽'); requestAnimationFrame(() => drawAdj()); };
+$('pvMore').onclick = () => { const on = $('pvRow').classList.toggle('open'); $('pvMore').setAttribute('aria-expanded', String(on)); };
 for (const [k, [tab]] of Object.entries(VIEWS)) $(tab).onclick = () => (k === 'preview' ? showView(k) : askView(k));
 // 處理結果 / 結果分割比較 show the processed file: without one for the current settings, ask to match first
 // (好 → the progress window, then that view; no download)

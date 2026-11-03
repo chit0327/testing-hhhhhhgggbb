@@ -12,19 +12,27 @@ import { rollOff } from './render.js';
 export const BLUR_TYPES = ['gauss', 'bokeh', 'motion'];
 /** edge softness 0..1 → feather radius in mask-grid cells (384 wide): 0 ≈ a crisp edge, 1 ≈ 6 % of the frame width */
 export const featherCells = (f = 0.04) => 0.5 + 24 * Math.min(1, Math.max(0, f ?? 0.04)); // default 0.04 ≈ 1.5 cells
-export const BRUSH_SIZES = { s: 0.02, m: 0.05, l: 0.1 }; // brush radius as a share of the frame width
+export const BRUSH_SIZES = { s: 0.02, m: 0.05, l: 0.1 }; // brush radius as a share of the frame width (the old 小／中／大)
+/** 筆刷大小 slider 1..100 → brush radius as a share of the frame width: 0.003 .. 0.12, evenly in ratio (51 / 76 / 95 ≈ the
+ * old 小 / 中 / 大); the smallest is ~2 cells of the 384-wide mask grid, as fine as the selection can be */
+export const brushRadius = (v) => 0.003 * Math.pow(40, Math.min(100, Math.max(1, v)) / 100);
 export const TRACK_W = 160; // tracking luma width
 
 // ---------------------------------------------------------------- painted layer (w × h grid, values -1..1)
 // +1 = added to the selection, −1 = erased from it (also erases the AI background there), 0 = untouched
 /** a round brush stroke from (x0,y0) to (x1,y1) in grid pixels, radius r, value v (+1 brush, −1 eraser) */
-export function paintStroke(layer, w, h, x0, y0, x1, y1, r, v) {
+/** soft: 0 = hard edge (1 px anti-aliased), up to 1 = 噴漆: the stroke fades out smoothly from (1 − soft)·r to r. Painting
+ * keeps the stronger value (no build-up), erasing the stronger removal, so going over a place again does not change it. */
+export function paintStroke(layer, w, h, x0, y0, x1, y1, r, v, soft = 0) {
+  const inner = r * (1 - Math.min(1, Math.max(0, soft)));
   const len = Math.hypot(x1 - x0, y1 - y0), steps = Math.max(1, Math.ceil(len / Math.max(0.5, r / 3)));
   for (let s = 0; s <= steps; s++) {
     const cx = x0 + (x1 - x0) * s / steps, cy = y0 + (y1 - y0) * s / steps;
     for (let y = Math.max(0, Math.floor(cy - r - 1)); y <= Math.min(h - 1, Math.ceil(cy + r + 1)); y++) {
       for (let x = Math.max(0, Math.floor(cx - r - 1)); x <= Math.min(w - 1, Math.ceil(cx + r + 1)); x++) {
-        const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy), a = Math.min(1, Math.max(0, r + 0.5 - d)); // 1-px anti-aliased edge
+        const d = Math.hypot(x + 0.5 - cx, y + 0.5 - cy);
+        let a = Math.min(1, Math.max(0, r + 0.5 - d)); // 1-px anti-aliased edge
+        if (r - inner > 1 && d > inner) { const t = Math.min(1, (d - inner) / (r - inner)); a = Math.min(a, 1 - t * t * (3 - 2 * t)); } // soft fall-off
         if (a > 0) { const i = y * w + x; layer[i] = v > 0 ? Math.max(layer[i], a * v) : Math.min(layer[i], a * v); }
       }
     }

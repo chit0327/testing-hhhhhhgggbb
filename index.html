@@ -10,7 +10,7 @@
 <header class="top">
   <div class="brand">
     <h1>照樣調色</h1>
-    <button type="button" id="backToUpload" class="link-btn" hidden>← 返回上傳</button>
+    <button type="button" id="backToUpload" class="link-btn" hidden>← 返回<span class="long">上傳</span></button>
   </div>
   <div class="status" id="status" data-state="idle" role="status" aria-live="polite">請先上傳參考圖片和目標影片</div>
   <div class="theme-switch" role="radiogroup" aria-label="介面顏色">
@@ -78,6 +78,9 @@
       <div class="view" id="viewPreview" role="tabpanel" aria-labelledby="tabPreview">
         <div class="stage-media">
           <canvas id="adjCanvas" aria-label="調色預覽：左邊原始、右邊調色結果"></canvas>
+          <canvas class="loupe" id="loupe" hidden aria-hidden="true"></canvas>
+          <button type="button" class="pv-reset-zoom" id="pvResetZoom" hidden>重設縮放</button>
+          <button type="button" class="pv-zoom" id="pvZoom" aria-pressed="false" aria-label="放大預覽" title="放大／縮小預覽">⤢</button>
           <figure class="ref-pip" id="refPip" hidden title="參考圖：按一下放大／縮小，拖動可以移開">
             <img id="refPipImg" alt="參考圖" draggable="false">
             <figcaption>參考圖</figcaption>
@@ -88,8 +91,11 @@
           </div>
         </div>
         <div class="stage-bar stack">
-          <label class="grow"><span class="bar-lbl">原始</span><input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="原始與調色結果的分隔線"><span class="bar-lbl">調色</span></label>
-          <div class="pv-row">
+          <div class="wipe-row">
+            <label class="grow"><span class="bar-lbl">原始</span><input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="原始與調色結果的分隔線"><span class="bar-lbl">調色</span></label>
+            <button type="button" class="pv-more" id="pvMore" aria-expanded="false" aria-controls="pvRow" aria-label="更多預覽選項" title="預覽畫質、快速預覽、黑白檢查、參考圖">⋯</button>
+          </div>
+          <div class="pv-row" id="pvRow">
             <span class="bar-lbl">預覽畫質</span>
             <div class="pv-seg" role="radiogroup" aria-label="預覽畫質">
               <button type="button" role="radio" data-pvq="full" aria-checked="true" title="和匯出的影片同一解析度（長邊 1280）">完整</button>
@@ -283,11 +289,10 @@
               <label class="slider"><span>魔術棒容許度</span><input type="range" id="blurTol" min="2" max="60" value="12"><output id="blurTol-v">12</output></label>
               <p class="info">在畫面上點一下，會選取和那一點顏色相近、而且相連的整片範圍（例如天空、牆身）。容許度越大，選到的顏色範圍越闊。</p>
             </div>
-            <div class="seg-choice" role="radiogroup" aria-label="筆刷大小" id="blurSizeRow">
-              <span class="bar-lbl">筆刷大小</span>
-              <label><input type="radio" name="blurSize" value="s"> 小</label>
-              <label><input type="radio" name="blurSize" value="m" checked> 中</label>
-              <label><input type="radio" name="blurSize" value="l"> 大</label>
+            <div id="blurSizeRow" hidden>
+              <label class="slider"><span>筆刷大小</span><input type="range" id="blurBrush" min="1" max="100" value="76"><output id="blurBrush-v">76</output></label>
+              <label class="slider"><span>筆刷柔和度</span><input type="range" id="blurBrushSoft" min="0" max="100" value="0"><output id="blurBrushSoft-v">0</output></label>
+              <p class="info">筆刷柔和度：0 是清楚的邊；數值越大，筆刷外圍越模糊，像噴漆一樣慢慢淡出（橡皮擦也一樣）。用手指塗抹時，角落會出現放大鏡，顯示手指下面的位置。</p>
             </div>
             <label class="check"><input type="checkbox" id="blurInvert"> 反轉遮罩（模糊選取範圍以外的部分）</label>
             <label class="check"><input type="checkbox" id="blurShow" checked> 顯示遮罩（紅色斜線）：顯示時畫面暫時不模糊，方便檢查和擦除</label>
