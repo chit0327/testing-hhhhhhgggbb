@@ -24,16 +24,24 @@
   <p class="sub">上傳參考圖片和要調色的影片，網站會分析參考圖的色彩風格，套用到影片上；沒有參考圖也可以，直接在工作區選一種氛圍色調。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
   <section class="uploads">
     <article class="card upcard" id="refCard">
-      <h2>參考圖片 <span class="optional">（可選）</span></h2>
+      <h2>參考圖片或影片 <span class="optional">（可選）</span></h2>
       <label class="dropzone" id="refDrop" for="refInput">
-        <input type="file" id="refInput" accept="image/*" class="sr-only">
-        <span class="dz-title">點擊選擇或把圖片拖放到這裏</span>
-        <span class="dz-hint">JPG、PNG、WebP</span>
+        <input type="file" id="refInput" accept="image/*,video/*" class="sr-only">
+        <span class="dz-title">點擊選擇或把圖片／影片拖放到這裏</span>
+        <span class="dz-hint">圖片：JPG、PNG、WebP　影片：MP4、MOV（例如劇集片段、螢幕錄影）</span>
       </label>
       <div class="preview"><img id="refPreview" alt="參考圖片預覽" hidden></div>
       <p class="info" id="refInfo"></p>
+      <div class="ref-video" id="refVideoBox" hidden>
+        <div class="seg-choice" role="radiogroup" aria-label="參考影片的用法">
+          <label><input type="radio" name="refMode" value="all" checked> 整段（自動取多格）</label>
+          <label><input type="radio" name="refMode" value="one"> 選一格</label>
+        </div>
+        <label class="slider" id="refTimeRow" hidden><span>選擇畫面</span><input type="range" id="refTime" min="0" max="1000" value="500"><output id="refTime-v"></output></label>
+        <p class="info">整段：平均取 12 格（略過黑畫面），每格先去除黑邊，合起來分析，不會因為某一格偏暖或偏暗而帶偏；片段有幾種不同場景時，可以改用「選一格」。</p>
+      </div>
       <div class="row file-actions" id="refActions" hidden>
-        <button type="button" id="refReplace">更換圖片</button>
+        <button type="button" id="refReplace">更換</button>
         <button type="button" id="refRemove">移除</button>
       </div>
     </article>

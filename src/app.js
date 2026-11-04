@@ -77,8 +77,10 @@ $('refInput').addEventListener('change', async (e) => {
   const id = ++S.ref.id;
   S.ref = { status: 'loading', id };
   $('refInfo').textContent = '載入中…';
+  if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo = null; } $('refVideoBox').hidden = true;
+  if (file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/i.test(file.name)) { await loadRefVideo(file, id); assetsChanged('ref'); return; }
   try {
-    if (!file.type.startsWith('image/')) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇圖片`);
+    if (!file.type.startsWith('image/')) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇圖片或影片`);
     const bmp = await loadImage(file);
     if (id !== S.ref.id) return;
     // bars around the picture (letterbox, or a video player's background in a screenshot) are cut off before any analysis
@@ -97,6 +99,99 @@ $('refInput').addEventListener('change', async (e) => {
   }
   assetsChanged('ref');
 });
+
+// ---- a reference VIDEO (a drama clip, a screen recording): 整段 = 12 frames spread over it (black / blank ones
+// skipped), each with its own bars cut off, tiled into one picture that the analysis reads like a reference image (so
+// one warm or dark shot does not decide the look); 選一格 = one frame, chosen with a slider. The 參考圖 picture shows
+// one frame (the middle one for 整段).
+const REF_FRAMES = 12;
+async function loadRefVideo(file, id) {
+  $('refInfo').textContent = '讀取參考影片中…';
+  const url = URL.createObjectURL(file), v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+  try {
+    await new Promise((res, rej) => {
+      const tm = setTimeout(() => rej(new Error('讀取參考影片逾時')), 30000);
+      v.addEventListener('loadeddata', () => { clearTimeout(tm); res(); }, { once: true });
+      v.addEventListener('error', () => { clearTimeout(tm); rej(new Error('這個瀏覽器無法讀取這個影片的格式（例如 iPhone／iPad 錄影常用的 HEVC，部分電腦的 Chrome 不支援）。請改用 Safari，或先把影片轉成 MP4（H.264）。')); }, { once: true });
+    });
+    if (id !== S.ref.id) return;
+    const dur = v.duration, W = v.videoWidth, H = v.videoHeight;
+    if (!W || !Number.isFinite(dur) || dur <= 0) throw new Error('讀不到影片的長度或畫面大小');
+    const { w, h } = fitSize(W, H, 960), frames = [];
+    let skipped = 0;
+    for (let i = 0; i < REF_FRAMES; i++) {
+      const t = dur * (0.04 + 0.92 * i / (REF_FRAMES - 1));
+      $('refInfo').textContent = `讀取參考影片中…（${i + 1} / ${REF_FRAMES} 格）`;
+      const img = await grabFrame(v, t, w, h);
+      if (id !== S.ref.id) return;
+      const f = refFrame(img, t);
+      if (f) frames.push(f); else skipped++;
+    }
+    if (!frames.length) throw new Error('影片裏找不到可用的畫面（全是黑畫面？）');
+    S.refVideo = { url, video: v, file, dur, W, H, w, h, frames, skipped, mode: 'all', t: frames[frames.length >> 1].t };
+    $('refVideoBox').hidden = false;
+    for (const el of document.querySelectorAll('input[name=refMode]')) el.checked = el.value === 'all';
+    $('refTimeRow').hidden = true;
+    await applyRefVideo(id);
+  } catch (err) {
+    URL.revokeObjectURL(url);
+    if (id !== S.ref.id) return;
+    S.ref = { status: 'error', id }; S.refVideo = null; $('refVideoBox').hidden = true;
+    $('refInfo').textContent = `無法載入參考影片：${err.message}`;
+  }
+}
+/** one grabbed frame → {t, canvas (bars cut off)}; null for a black / blank frame (fades, cuts) */
+function refFrame(img, t) {
+  const b = findBars(img), d = img.data;
+  let s = 0, s2 = 0, n = 0;
+  for (let y = b.y; y < b.y + b.h; y += 4) for (let x = b.x; x < b.x + b.w; x += 4) { const i = 4 * (y * img.width + x), l = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; s += l; s2 += l * l; n++; }
+  const mean = s / n, sd = Math.sqrt(Math.max(0, s2 / n - mean * mean));
+  if (mean < 14 || sd < 5) return null;
+  const c = canvas2d(b.w, b.h); c.getContext('2d').putImageData(img, -b.x, -b.y);
+  return { t, c, bars: b.w < img.width || b.h < img.height };
+}
+async function applyRefVideo(id) { // S.refVideo → S.ref (and the pictures)
+  const R = S.refVideo;
+  let pic, show, note;
+  if (R.mode === 'one') {
+    const img = await grabFrame(R.video, R.t, R.w, R.h);
+    if (id !== S.ref.id) return;
+    const f = refFrame(img, R.t) || { c: (() => { const c = canvas2d(R.w, R.h); c.getContext('2d').putImageData(img, 0, 0); return c; })(), bars: false };
+    pic = f.c; show = f.c; note = `選了 ${R.t.toFixed(1)} 秒的畫面${f.bars ? '，已去除黑邊' : ''}`;
+  } else { // tile the frames (a full grid: the first frames fill any empty places)
+    const fr = R.frames, n = fr.length, cols = Math.ceil(Math.sqrt(n)), rows = Math.ceil(n / cols), TW = 480;
+    const ar = fr.map((f) => f.c.height / f.c.width).sort((a, b) => a - b)[n >> 1], TH = Math.round(TW * ar);
+    pic = canvas2d(cols * TW, rows * TH);
+    const g = pic.getContext('2d');
+    for (let k = 0; k < cols * rows; k++) g.drawImage(fr[k % n].c, (k % cols) * TW, Math.floor(k / cols) * TH, TW, TH);
+    show = fr[n >> 1].c;
+    note = `整段：取了 ${n} 格${R.skipped ? `（略過 ${R.skipped} 格黑畫面）` : ''}，每格已去除黑邊`;
+  }
+  const bmp = await createImageBitmap(pic);
+  if (id !== S.ref.id) return;
+  S.ref = { status: 'ready', id, file: R.file, bitmap: bmp, crop: null, imageData: refPixels(bmp, null, R.mode === 'one' ? 512 : 1024), video: true };
+  const jpeg = (c) => (c.convertToBlob ? c.convertToBlob({ type: 'image/jpeg', quality: 0.9 }) : new Promise((res) => c.toBlob(res, 'image/jpeg', 0.9))); // (OffscreenCanvas or <canvas>)
+  const blob = await jpeg(R.mode === 'one' ? show : pic), pip = await jpeg(show);
+  if (id !== S.ref.id) return;
+  for (const u of [R.previewUrl, R.pipUrl]) if (u) URL.revokeObjectURL(u);
+  R.previewUrl = URL.createObjectURL(blob); R.pipUrl = URL.createObjectURL(pip);
+  $('refPreview').src = R.previewUrl; $('refPreview').hidden = false;
+  $('refPipImg').src = R.pipUrl; syncRefPip();
+  $('refTime').value = Math.round(R.t / R.dur * 1000); $('refTime-v').textContent = `${R.t.toFixed(1)} 秒`;
+  $('refInfo').textContent = `${R.file.name}　影片 ${R.W}×${R.H}，${R.dur.toFixed(1)} 秒　${note}`;
+  log('ref-loaded', { name: R.file.name, video: true, mode: R.mode, frames: R.mode === 'one' ? 1 : R.frames.length, skipped: R.skipped, t: R.mode === 'one' ? +R.t.toFixed(2) : null });
+}
+async function refVideoChanged() { // 整段 ↔ 選一格, or another frame: a new reference (the look is fitted again)
+  if (!S.refVideo) return;
+  const id = ++S.ref.id;
+  S.ref = { status: 'loading', id };
+  await applyRefVideo(id);
+  assetsChanged('ref');
+}
+for (const el of document.querySelectorAll('input[name=refMode]')) el.addEventListener('change', () => { if (!S.refVideo || !el.checked) return; S.refVideo.mode = el.value; $('refTimeRow').hidden = el.value !== 'one'; refVideoChanged(); });
+$('refTime').addEventListener('input', (e) => { if (S.refVideo) $('refTime-v').textContent = `${(e.target.value / 1000 * S.refVideo.dur).toFixed(1)} 秒`; });
+$('refTime').addEventListener('change', (e) => { if (!S.refVideo) return; S.refVideo.t = Math.min(S.refVideo.dur - 0.05, e.target.value / 1000 * S.refVideo.dur); refVideoChanged(); });
 
 /** The reference's pixels inside `crop` (bars removed; whole picture when null), long side ≤ maxSide. */
 function refPixels(bmp, crop, maxSide) {
@@ -723,7 +818,7 @@ const blurEditing = () => (BL.tool !== 'none' || BL.dir) && !$('catBlur').hidden
 $('blurOn').addEventListener('change', (e) => { if (e.target.checked) $('blurShow').checked = false; editBlur({ on: e.target.checked }); }); // turning blur on: show the result
 // 顯示遮罩 is separate from 開啟模糊: while the mask is shown, the preview is rendered WITHOUT the blur (sharp picture,
 // so the selection can be checked and erased precisely); the look itself (and the processed file) is unchanged
-const maskShown = () => $('blurShow').checked && !$('catBlur').hidden && $('catBlur').open && !$('viewPreview').hidden;
+const maskShown = () => $('blurShow').checked && !$('catBlur').hidden && $('catBlur').open && $('adjustCard').dataset.tab === $('catBlur').dataset.group && !$('viewPreview').hidden; // (the 效果 tab shown: the tabs hide the other categories with CSS)
 function previewLook() { const d = S.look.draft; return maskShown() && d.blur && d.blur.on ? { ...d, blur: { ...d.blur, on: false } } : d; }
 $('blurAi').addEventListener('change', (e) => { editBlur({ ai: e.target.checked }); if (e.target.checked && !(S.rep && S.rep.seg)) $('blurInfo').textContent = 'AI 背景偵測還沒有結果（請先完成光暗設定的 AI 辨識），可以先用筆刷或套索。'; });
 $('blurInvert').addEventListener('change', (e) => editBlur({ invert: e.target.checked }));
@@ -908,7 +1003,7 @@ function drawLoupe(pt) {
   g.restore();
 }
 function drawBlurOverlay(ctx, w, h) {
-  const b = blurOf(), panel = !$('catBlur').hidden && $('catBlur').open;
+  const b = blurOf(), panel = !$('catBlur').hidden && $('catBlur').open && $('adjustCard').dataset.tab === $('catBlur').dataset.group; // (the 效果 tab shown)
   if (!panel) return;
   if ($('blurShow').checked) { // the selection as thick red diagonal stripes (shown whether or not the blur is on)
     const p = motionToAnchor(), bg = b.ai && S.rep.seg ? S.rep.seg.background : null;
@@ -1285,7 +1380,17 @@ function clearAiPair() {
 }
 $('adjApply').onclick = () => startProcessing();
 $('reprocess').onclick = () => startProcessing();
-$('adjWipe').addEventListener('input', () => drawAdj());
+// the 原始／調色 split is not drawn while painting a blur selection (the whole result is shown to paint on): moving the
+// split slider means comparing, so painting ends there (the split was "gone" after an export with a tool still picked)
+function stopBlurPainting() {
+  if (BL.tool === 'none' && !BL.dir) return false;
+  const none = document.querySelector('input[name=blurTool][value=none]');
+  if (none) { none.checked = true; none.dispatchEvent(new Event('change', { bubbles: true })); }
+  if ($('blurShow').checked) { $('blurShow').checked = false; scheduleAdjPreview(); } // (the stripes came on with the tool; comparing needs the picture)
+  BL.dir = false; syncBlurControls(); drawAdj(); log('blur-painting-ended');
+  return true;
+}
+$('adjWipe').addEventListener('input', () => { if (blurEditing()) stopBlurPainting(); drawAdj(); });
 
 // ---- live preview, After Effects style: a chosen preview resolution (完整 = the export size, 1/2, 1/4) and
 // 快速預覽 — while a control moves, renders use a 17³ LUT at half that resolution (the 41³ + shaper bake is
@@ -1441,6 +1546,7 @@ async function startProcessing() {
   if (!intent) return;
   const token = ++S.job.token;
   PROC.prevApplied = S.look.applied; PROC.prevPhase = S.phase;
+  stopBlurPainting(); // (matching / exporting: done painting; back on 調色預覽 the 原始／調色 split shows again)
   openProc();
   await S.grade.ready;
   // the automatic look includes the local grade: wait for it (bounded) if it is still being fitted
@@ -1646,7 +1752,7 @@ function showTab(tab) {
   card.dataset.tab = tab;
   for (const b of card.querySelectorAll('.panel-tabs [data-tab]')) b.setAttribute('aria-selected', String(b.dataset.tab === tab));
   log('panel-tab', { tab });
-  syncBlurControls(); if (S.preview) drawAdj(); // leaving / returning to 效果 ends / resumes painting a blur selection (and shows the reference picture again)
+  syncBlurControls(); if (S.preview) { drawAdj(); if ($('blurShow').checked) scheduleAdjPreview(); } // leaving / returning to 效果 ends / resumes painting a blur selection (and shows the reference picture again); the mask stripes follow
 }
 for (const b of document.querySelectorAll('#adjustCard .panel-tabs [data-tab]')) b.addEventListener('click', () => showTab(b.dataset.tab));
 // (a MutationObserver rather than 'toggle': it runs right after the change, before the next event, so whatever opened
@@ -1697,6 +1803,7 @@ for (const ev of ['dragover', 'drop']) window.addEventListener(ev, (e) => e.prev
 $('videoPreview').addEventListener('loadedmetadata', (e) => { if (e.target.currentTime === 0) e.target.currentTime = Math.min(0.1, e.target.duration / 2); }); // show a frame, not black
 $('refRemove').onclick = () => {
   S.ref = { status: 'empty', id: S.ref.id + 1 };
+  if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo = null; } $('refVideoBox').hidden = true;
   $('refInput').value = ''; $('refPreview').hidden = true; $('refPreview').removeAttribute('src'); $('refInfo').textContent = '';
   $('refPipImg').removeAttribute('src'); syncRefPip();
   log('ref-removed');
