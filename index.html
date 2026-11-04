@@ -462,6 +462,8 @@
           <figure><figcaption>代表影格（遮罩疊色）<span id="maskLabel"></span></figcaption><canvas id="maskCanvas"></canvas></figure>
           <figure><figcaption>處理預覽（以目前已確認的選區實際運算）</figcaption><canvas id="previewCanvas"></canvas></figure>
         </div>
+        <p class="info rep-msg" id="repMsg" role="status" hidden></p>
+        <div class="row" id="repRetryRow" hidden><button type="button" id="repRetry" class="primary">重試讀取畫面</button></div>
         <label class="row" id="frameTimeRow"><span id="frameTimeLbl">代表影格時間</span> <input type="range" id="frameTime" min="0" max="1000" value="500" class="grow"></label>
         <div class="brush row" id="brushBar">
           <span>修正選區：</span>

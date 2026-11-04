@@ -105,6 +105,12 @@ $('refInput').addEventListener('change', async (e) => {
 // one warm or dark shot does not decide the look); 選一格 = one frame, chosen with a slider. The 參考圖 picture shows
 // one frame (the middle one for 整段).
 const REF_FRAMES = 12;
+function releaseVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }
+function reloadVideo(v, url) {
+  if (v.getAttribute('src')) return Promise.resolve();
+  v.src = url;
+  return new Promise((res, rej) => { const tm = setTimeout(() => rej(new Error('重新讀取參考影片逾時')), 30000); v.addEventListener('loadeddata', () => { clearTimeout(tm); res(); }, { once: true }); v.addEventListener('error', () => { clearTimeout(tm); rej(new Error('無法重新讀取參考影片')); }, { once: true }); });
+}
 async function loadRefVideo(file, id) {
   $('refInfo').textContent = '讀取參考影片中…';
   const url = URL.createObjectURL(file), v = document.createElement('video');
@@ -129,6 +135,7 @@ async function loadRefVideo(file, id) {
       if (f) frames.push(f); else skipped++;
     }
     if (!frames.length) throw new Error('影片裏找不到可用的畫面（全是黑畫面？）');
+    releaseVideo(v); // (the frames are read: an iPad decodes few videos at once, and a loaded reference stalled the target video)
     S.refVideo = { url, video: v, file, dur, W, H, w, h, frames, skipped, mode: 'all', t: frames[frames.length >> 1].t };
     $('refVideoBox').hidden = false;
     for (const el of document.querySelectorAll('input[name=refMode]')) el.checked = el.value === 'all';
@@ -155,7 +162,8 @@ async function applyRefVideo(id) { // S.refVideo → S.ref (and the pictures)
   const R = S.refVideo;
   let pic, show, note;
   if (R.mode === 'one') {
-    const img = await grabFrame(R.video, R.t, R.w, R.h);
+    await reloadVideo(R.video, R.url);
+    let img; try { img = await grabFrame(R.video, R.t, R.w, R.h); } finally { releaseVideo(R.video); }
     if (id !== S.ref.id) return;
     const f = refFrame(img, R.t) || { c: (() => { const c = canvas2d(R.w, R.h); c.getContext('2d').putImageData(img, 0, 0); return c; })(), bars: false };
     pic = f.c; show = f.c; note = `選了 ${R.t.toFixed(1)} 秒的畫面${f.bars ? '，已去除黑邊' : ''}`;
@@ -306,6 +314,7 @@ function defaultRegions(mh) {
   return ['ai-person', 'ai-skin', 'ai-background', 'luma-highlights', 'luma-shadows'].map((k) => newRegion(k, mh));
 }
 
+$('repRetry').onclick = () => loadRepFrame(S.rep ? S.rep.t : frameTime(S.video.meta, Math.floor(S.video.meta.frameCount / 2)));
 async function openDialog() {
   const mh = maskH();
   if (S.intent.confirmed) S.intent.draft = cloneIntent(S.intent.confirmed);
@@ -319,7 +328,18 @@ async function openDialog() {
 
 async function loadRepFrame(t) {
   const m = S.video.meta, { w, h } = fitSize(m.width, m.height, 640);
-  const img = await grabFrame(m.video, t, w, h);
+  // reading the frame can fail (a tablet's video decoder busy or stuck): say so and offer a retry, instead of leaving
+  // the window black with 確認 greyed out (an iPad stayed like that)
+  $('repRetryRow').hidden = true;
+  const slow = setTimeout(() => { $('repMsg').hidden = false; $('repMsg').textContent = '正在讀取代表影格…（較慢的裝置或大型影片需要多幾秒）'; }, 2500);
+  let img;
+  try { img = await grabFrame(m.video, t, w, h); } catch (err) {
+    clearTimeout(slow);
+    $('repMsg').hidden = false; $('repMsg').textContent = `讀不到影片畫面：${err.message}`; $('repRetryRow').hidden = false;
+    log('rep-frame-failed', { message: err.message });
+    return;
+  }
+  clearTimeout(slow); $('repMsg').hidden = true;
   S.rep = { t, img, seg: null, L: lightnessGrid(img.data, w, h, MASK_W, maskH()) };
   for (const c of [$('maskCanvas'), $('previewCanvas')]) { c.width = w; c.height = h; }
   $('frameTime').value = Math.round(t / m.duration * 1000);
@@ -1776,6 +1796,7 @@ function unloadVideo(v) { v.pause(); if (v.getAttribute('src')) { v.removeAttrib
 function showPage(p) {
   S.page = p;
   if (p === 'upload' && S.video.meta && !isPhoto() && !$('videoPreview').getAttribute('src')) $('videoPreview').src = S.video.meta.url; // (unloaded while processing)
+  if (p === 'work') unloadVideo($('videoPreview')); // (hidden on the grading page: an iPad decodes few videos at once — only the work video needs one; reloaded on the upload page)
   $('pageUpload').hidden = p !== 'upload';
   $('pageWork').hidden = p !== 'work';
   $('backToUpload').hidden = p !== 'work';
