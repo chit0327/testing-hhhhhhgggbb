@@ -7,6 +7,7 @@ import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engin
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
 import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
+import { gpuRenderer } from './engine/gpu.js';
 import { applyFilm } from './engine/film.js';
 import { featherCells, combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
 import { feather, guidedFilter, resize } from './engine/masks.js';
@@ -214,6 +215,30 @@ self.onmessage = (e) => {
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look, { forExport: true });
       const data = lut.data.slice();
       self.postMessage({ type: 'baked', id: m.id, size: lut.size, data: data.buffer }, [data.buffer]);
+    } else if (m.type === 'gpu-bench') { // 顯示卡測試: the current grade on this frame, processor vs graphics card, 720p and 4K
+      const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
+      let g = null, why = '';
+      try { g = gpuRenderer(); if (!g) why = '這個瀏覽器不支援 WebGL2（或在背景執行緒中不可用）'; } catch (err) { why = err.message; }
+      const src = new Uint8ClampedArray(m.data), res = { renderer: g ? g.info.renderer : '', why, sizes: [] };
+      const time = (fn, n) => { fn(); const t = performance.now(); for (let i = 0; i < n; i++) fn(); return (performance.now() - t) / n; };
+      const at = (W, H) => { // the frame at W×H (scaled with the browser's canvas)
+        if (W === m.w && H === m.h) return src;
+        const a = new OffscreenCanvas(m.w, m.h); a.getContext('2d').putImageData(new ImageData(new Uint8ClampedArray(src), m.w, m.h), 0, 0);
+        const c = new OffscreenCanvas(W, H), x = c.getContext('2d'); x.drawImage(a, 0, 0, W, H); return x.getImageData(0, 0, W, H).data;
+      };
+      for (const [W, H] of [[m.w, m.h], [3840, Math.round(3840 * m.h / m.w)]]) {
+        const s = at(W, H), r = { w: W, h: H, cpu: time(() => renderFrame(s, W, H, lut, null), W > 2000 ? 1 : 3) };
+        if (g) {
+          try {
+            r.gpu = time(() => g.render(s, W, H, lut, null), W > 2000 ? 2 : 5);
+            const a = renderFrame(s, W, H, lut, null), b2 = g.render(s, W, H, lut, null); let mx = 0, sum = 0;
+            for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b2[i]); if (d > mx) mx = d; sum += d; }
+            r.maxDiff = mx; r.meanDiff = sum / (a.length * 0.75);
+          } catch (err) { r.error = err.message; }
+        }
+        res.sizes.push(r);
+      }
+      self.postMessage({ type: 'gpu-benched', id: m.id, res });
     } else if (m.type === 'fit-local') { // per-region adjustments for each candidate (rep frame vs reference)
       const t = performance.now();
       const src = { rgba: new Uint8ClampedArray(m.src.data), w: m.src.w, h: m.src.h, seg: m.src.seg };

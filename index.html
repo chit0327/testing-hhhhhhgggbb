@@ -407,6 +407,9 @@
             <p class="info" id="exportPhotoInfo" hidden>JPEG（品質 95%），長邊最多 4096 像素，比這更大的照片會等比例縮小。多張照片時，「匯出全部照片」會打包成一個 ZIP；也可以在結果檢視上方按「下載這張」單獨下載。所有照片使用同一組調色設定。</p>
             <div class="row"><button type="button" id="reprocess" disabled>以目前設定重新處理</button></div>
             <p class="info" id="resultInfo"></p>
+            <h3>顯示卡測試</h3>
+            <div class="row"><button type="button" id="gpuBench">測試這部裝置的顯示卡</button></div>
+            <p class="info" id="gpuInfo">用目前的調色，在代表影格上比較處理器和顯示卡（GPU）的速度，以及兩者結果的差異（720p 和 4K）。只是測試，不會改變處理方式。</p>
             <h3>LUT</h3>
             <div class="row"><button type="button" id="exportCube">匯出 .cube LUT</button></div>
             <p class="info" id="cubeInfo">匯出的 LUT 包含全畫面調色（可在 DaVinci Resolve、剪映等軟體套用）；局部調色、膚色保護、柔光與暗角取決於畫面位置，不在 LUT 內。</p>

@@ -31,6 +31,7 @@ export class EngineClient {
     return this.call({ type: 'fit-local', src: { data: a, w: src.width, h: src.height, seg: srcSeg }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg }, cands }, [a, b]);
   }
   clearPair() { return this.call({ type: 'clear-pair' }); }
+  gpuBench(img, look, intentJson) { const d = img.data.slice(); return this.call({ type: 'gpu-bench', data: d.buffer, w: img.width, h: img.height, look, intent: intentJson }, [d.buffer]).then((m) => m.res); }
   bake(look, intentJson) { return this.call({ type: 'bake', look, intent: intentJson }).then((m) => ({ size: m.size, data: new Float32Array(m.data) })); }
   startJob(jobId, intentJson, look, { noTrack = false } = {}) { // noTrack: photos (separate pictures, no camera motion to follow)
     return new Promise((resolve, reject) => { this.pending.set(`job:${jobId}`, { resolve, reject }); this.worker.postMessage({ type: 'start-job', jobId, intent: intentJson, look, noTrack }); });

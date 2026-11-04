@@ -1302,6 +1302,19 @@ function syncPro() {
   for (const c of PRO) c.el.value = Math.round(c.get(p));
   drawCurve();
 }
+$('gpuBench').onclick = async () => {
+  if (!S.rep || !S.rep.img) { $('gpuInfo').textContent = '請先完成光暗設定，讓預覽出現後再測試。'; return; }
+  $('gpuBench').disabled = true; $('gpuInfo').textContent = '測試中…（4K 用處理器計算一格要幾秒）';
+  try {
+    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
+    const r = await engine.gpuBench(S.rep.img, S.look.draft, intent);
+    const ms = (v) => (v == null ? '—' : `${Math.round(v)} ms`);
+    $('gpuInfo').textContent = !r.renderer ? `這部裝置不能用顯示卡調色：${r.why}。處理器每格：${r.sizes.map((s) => `${s.w}×${s.h} ${ms(s.cpu)}`).join('，')}。`
+      : `顯示卡：${r.renderer}。` + r.sizes.map((s) => `${s.w}×${s.h}：處理器 ${ms(s.cpu)}／顯示卡 ${ms(s.gpu)}${s.gpu ? (s.cpu >= s.gpu ? `（顯示卡快 ${(s.cpu / s.gpu).toFixed(1)} 倍）` : `（顯示卡慢 ${(s.gpu / s.cpu).toFixed(1)} 倍）`) : ''}${s.maxDiff != null ? `，結果差異最多 ${s.maxDiff}／255（平均 ${s.meanDiff.toFixed(2)}）` : ''}${s.error ? `，錯誤：${s.error}` : ''}`).join('；') + '。（只計調色一步；霧、柔化等效果仍用處理器。）';
+    log('gpu-bench', r);
+  } catch (err) { $('gpuInfo').textContent = `測試失敗：${err.message}`; }
+  $('gpuBench').disabled = false;
+};
 $('exportCube').onclick = async () => {
   try {
     await S.grade.ready;
