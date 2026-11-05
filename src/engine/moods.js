@@ -57,12 +57,13 @@ export const MOODS = [
     look: { contrast: 0.25, saturation: -1, vignette: 0.15 } },
   { id: 'golden', group: 3, name: '黃金時刻', desc: '日落前的金橙色光線，暖、溫柔',
     look: { contrast: 0.05, highlights: -0.35, saturation: 0.1, temperature: 0.5, tint: 0.06, white: 0.96, hiHue: 65, hiAmt: 0.5, shadowHue: 40, shadowAmt: 0.2, glow: 0.12 } },
-  // 藍調時刻: everything in one saturated azure / royal blue, shadows included (lifted, blue blacks), soft contrast,
-  // lamps pale rather than orange (tuned on a blue-hour city photo: chroma 0.09 shadows, 0.12–0.14 mids, 0.11
-  // brights, hue 250–260°, median lightness 0.59, no warm colour left)
-  { id: 'blue_hour', group: 3, name: '藍調時刻', desc: '整體沉浸在飽和的藍色裏，暗部也是藍，燈光偏白不偏橙',
-    look: { exposure: -0.3, contrast: -0.1, highlights: -0.3, shadows: 0.15, saturation: 0.1, temperature: -0.9, black: 0.07, white: 0.95, shadowHue: 262, shadowAmt: 1, midHue: 252, midAmt: 1, hiHue: 236, hiAmt: 0.8 },
-    hue: { blue: [0, 1], cyan: [30, 1], purple: [-30, 0.6], green: [45, 0, -0.04], yellow: [0, -0.6, 0.05], orange: [0, -0.5, 0.03], red: [0, -0.3] } },
+  // 藍調時刻 — fitted to the user's two blue-hour references (rainy road with sodium lamps, bedroom at dusk): blue cast
+  // across all tones, strongest in the bright parts (sky, walls: Oklab b −0.09 to −0.11), darker, no bright whites; a cold periwinkle blue
+  // (bedroom reference, hue ~260°) rather than teal; the few warm things (lamps, a yellow mirror) stay warm. A prim tint, not full-strength wheels: those turned everything one flat blue.
+  { id: 'blue_hour', group: 3, name: '藍調時刻', desc: '日落後的藍色天光：整體偏暗偏藍，亮部最藍，燈光和黃色物件保留暖色',
+    look: { exposure: -0.75, contrast: -0.1, highlights: -0.45, shadows: 0.1, saturation: -0.15, temperature: -0.4, black: 0.04, white: 0.86 },
+    prim: { tint: { lo: [-0.008, -0.08], mid: [-0.01, -0.105], hi: [-0.012, -0.125] }, skin: 0.4 },
+    hue: { orange: [0, 1, 0.03], yellow: [-8, 1, 0.03], green: [15, -0.45, -0.05], cyan: [25, -0.2], blue: [8, 0], red: [0, -0.1] } },
   { id: 'overcast', group: 3, name: '陰天柔和', desc: '低對比、偏冷灰，安靜帶點憂鬱',
     look: { exposure: -0.15, contrast: -0.4, highlights: -0.4, saturation: -0.45, temperature: -0.25, black: 0.06, white: 0.94, shadowHue: 210, shadowAmt: 0.25, midHue: 220, midAmt: 0.1 } },
   { id: 'memory', group: 4, name: '溫暖回憶', desc: '暖色、柔光、輕微暗角，像回憶片段',
