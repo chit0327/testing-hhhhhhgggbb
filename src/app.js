@@ -77,7 +77,7 @@ $('refInput').addEventListener('change', async (e) => {
   const id = ++S.ref.id;
   S.ref = { status: 'loading', id };
   $('refInfo').textContent = '載入中…';
-  if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo = null; } $('refVideoBox').hidden = true;
+  if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo.video.remove(); S.refVideo = null; } $('refVideoBox').hidden = true;
   if (file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/i.test(file.name)) { await loadRefVideo(file, id); assetsChanged('ref'); return; }
   try {
     if (!file.type.startsWith('image/')) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇圖片或影片`);
@@ -105,16 +105,27 @@ $('refInput').addEventListener('change', async (e) => {
 // one warm or dark shot does not decide the look); 選一格 = one frame, chosen with a slider. The 參考圖 picture shows
 // one frame (the middle one for 整段).
 const REF_FRAMES = 12;
+// a <video> that iPad Safari will decode for drawing: in the page (hidden, tiny), playsinline / muted attributes, and
+// played once before frames are read — as the work video (pipeline.js probeVideo); a detached video drew black frames
+function iosReadyVideo() {
+  const v = document.createElement('video');
+  v.muted = true; v.playsInline = true; v.preload = 'auto';
+  v.setAttribute('playsinline', ''); v.setAttribute('webkit-playsinline', ''); v.setAttribute('muted', ''); v.setAttribute('aria-hidden', 'true');
+  v.style.cssText = 'position:fixed;left:0;top:0;width:4px;height:4px;opacity:0.01;pointer-events:none;z-index:-1';
+  document.body.appendChild(v);
+  return v;
+}
 function releaseVideo(v) { v.pause(); v.removeAttribute('src'); v.load(); }
-function reloadVideo(v, url) {
-  if (v.getAttribute('src')) return Promise.resolve();
+async function reloadVideo(v, url) {
+  if (v.getAttribute('src')) return;
   v.src = url;
-  return new Promise((res, rej) => { const tm = setTimeout(() => rej(new Error('重新讀取參考影片逾時')), 30000); v.addEventListener('loadeddata', () => { clearTimeout(tm); res(); }, { once: true }); v.addEventListener('error', () => { clearTimeout(tm); rej(new Error('無法重新讀取參考影片')); }, { once: true }); });
+  await new Promise((res, rej) => { const tm = setTimeout(() => rej(new Error('重新讀取參考影片逾時')), 30000); v.addEventListener('loadeddata', () => { clearTimeout(tm); res(); }, { once: true }); v.addEventListener('error', () => { clearTimeout(tm); rej(new Error('無法重新讀取參考影片')); }, { once: true }); });
+  await v.play().catch(() => {}); v.pause(); // (iOS: decode after a play)
 }
 async function loadRefVideo(file, id) {
   $('refInfo').textContent = '讀取參考影片中…';
-  const url = URL.createObjectURL(file), v = document.createElement('video');
-  v.muted = true; v.playsInline = true; v.preload = 'auto'; v.src = url;
+  const url = URL.createObjectURL(file), v = iosReadyVideo();
+  v.src = url;
   try {
     await new Promise((res, rej) => {
       const tm = setTimeout(() => rej(new Error('讀取參考影片逾時')), 30000);
@@ -122,6 +133,7 @@ async function loadRefVideo(file, id) {
       v.addEventListener('error', () => { clearTimeout(tm); rej(new Error('這個瀏覽器無法讀取這個影片的格式（例如 iPhone／iPad 錄影常用的 HEVC，部分電腦的 Chrome 不支援）。請改用 Safari，或先把影片轉成 MP4（H.264）。')); }, { once: true });
     });
     if (id !== S.ref.id) return;
+    await v.play().catch(() => {}); v.pause(); // iOS decodes pictures only after a play (without it every frame read black on an iPad)
     const dur = v.duration, W = v.videoWidth, H = v.videoHeight;
     if (!W || !Number.isFinite(dur) || dur <= 0) throw new Error('讀不到影片的長度或畫面大小');
     const { w, h } = fitSize(W, H, 960), frames = [];
@@ -134,7 +146,7 @@ async function loadRefVideo(file, id) {
       const f = refFrame(img, t);
       if (f) frames.push(f); else skipped++;
     }
-    if (!frames.length) throw new Error('影片裏找不到可用的畫面（全是黑畫面？）');
+    if (!frames.length) throw new Error('讀到的畫面全是黑色：這部裝置的瀏覽器未能解出這段影片的畫面（例如格式或解碼器不支援）。可以改為上傳影片的截圖作參考圖，或先把影片轉成 MP4（H.264）再試');
     releaseVideo(v); // (the frames are read: an iPad decodes few videos at once, and a loaded reference stalled the target video)
     S.refVideo = { url, video: v, file, dur, W, H, w, h, frames, skipped, mode: 'all', t: frames[frames.length >> 1].t };
     $('refVideoBox').hidden = false;
@@ -142,7 +154,7 @@ async function loadRefVideo(file, id) {
     $('refTimeRow').hidden = true;
     await applyRefVideo(id);
   } catch (err) {
-    URL.revokeObjectURL(url);
+    URL.revokeObjectURL(url); v.remove();
     if (id !== S.ref.id) return;
     S.ref = { status: 'error', id }; S.refVideo = null; $('refVideoBox').hidden = true;
     $('refInfo').textContent = `無法載入參考影片：${err.message}`;
@@ -1837,7 +1849,7 @@ for (const ev of ['dragover', 'drop']) window.addEventListener(ev, (e) => e.prev
 $('videoPreview').addEventListener('loadedmetadata', (e) => { if (e.target.currentTime === 0) e.target.currentTime = Math.min(0.1, e.target.duration / 2); }); // show a frame, not black
 $('refRemove').onclick = () => {
   S.ref = { status: 'empty', id: S.ref.id + 1 };
-  if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo = null; } $('refVideoBox').hidden = true;
+  if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo.video.remove(); S.refVideo = null; } $('refVideoBox').hidden = true;
   $('refInput').value = ''; $('refPreview').hidden = true; $('refPreview').removeAttribute('src'); $('refInfo').textContent = '';
   $('refPipImg').removeAttribute('src'); syncRefPip();
   log('ref-removed');
