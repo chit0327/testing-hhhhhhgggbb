@@ -150,6 +150,12 @@ const presented = (video, ms) => new Promise((res) => { // next presented frame 
 const seekedWithin = (video, ms) => Promise.race([once(video, 'seeked').then(() => true), new Promise((res) => setTimeout(() => res(false), ms))]);
 export const seekStats = { timeouts: 0 };
 
+/** A moment of play (muted) and pause: iOS gives the video a decoder again / decodes pictures only after a play. */
+export async function primeVideo(video) {
+  if (!video || !video.getAttribute || !video.getAttribute('src')) return;
+  try { await Promise.race([video.play(), new Promise((r) => setTimeout(r, 1500))]); } catch { /* (not allowed: carry on) */ }
+  video.pause();
+}
 export async function seek(video, t) {
   if (Math.abs(video.currentTime - t) < 1e-4 && video.readyState >= 2) return;
   // wait for the new frame to be presented, in every browser: 'seeked' can fire before it is decoded (WebKit
@@ -160,6 +166,9 @@ export async function seek(video, t) {
     // the frame must really be on screen before it is drawn: a heavy clip (4K camera file) can take far longer than a
     // moment to present it, and drawing earlier grabbed the previous frame (duplicated frames = a choppy export).
     // Up to 3 s (it returns as soon as the frame is presented, so a fast machine waits no longer than before).
+    // a retry first wakes the decoder with a moment of play: on an iPad, playing another <video> (a reference clip is played
+    // once so that it can be read) takes the decoder from this one, and its seeks then never answer
+    if (attempt) { await primeVideo(video); }
     const shown = presented(video, 3000);
     video.currentTime = attempt ? t + attempt * 1e-3 : t; // (a retry asks again, a hair later: same frame)
     const ok = await p;

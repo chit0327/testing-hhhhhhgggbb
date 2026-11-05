@@ -6,7 +6,7 @@ import {
 } from './engine/intent.js';
 import { rawMask } from './engine/regionmasks.js';
 import { applyEdits, feather, lightnessGrid } from './engine/masks.js';
-import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, loadImage, imageDataOf, processVideo, processPhoto, seek, frameTime, canvas2d } from './pipeline.js';
+import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, loadImage, imageDataOf, processVideo, processPhoto, seek, frameTime, canvas2d, primeVideo } from './pipeline.js';
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure, toCube, gradeColour } from './engine/grade.js';
 import { MOODS, MOOD_GROUPS, moodLook } from './engine/moods.js';
@@ -148,6 +148,7 @@ async function loadRefVideo(file, id) {
     }
     if (!frames.length) throw new Error('讀到的畫面全是黑色：這部裝置的瀏覽器未能解出這段影片的畫面（例如格式或解碼器不支援）。可以改為上傳影片的截圖作參考圖，或先把影片轉成 MP4（H.264）再試');
     releaseVideo(v); // (the frames are read: an iPad decodes few videos at once, and a loaded reference stalled the target video)
+    if (S.video.meta && S.video.meta.video && !isPhoto()) await primeVideo(S.video.meta.video); // (playing the reference took the decoder from the video to grade: give it back)
     S.refVideo = { url, video: v, file, dur, W, H, w, h, frames, skipped, mode: 'all', t: frames[frames.length >> 1].t };
     $('refVideoBox').hidden = false;
     for (const el of document.querySelectorAll('input[name=refMode]')) el.checked = el.value === 'all';
@@ -345,7 +346,7 @@ async function loadRepFrame(t) {
   $('repRetryRow').hidden = true;
   const slow = setTimeout(() => { $('repMsg').hidden = false; $('repMsg').textContent = '正在讀取代表影格…（較慢的裝置或大型影片需要多幾秒）'; }, 2500);
   let img;
-  try { img = await grabFrame(m.video, t, w, h); } catch (err) {
+  try { if (!isPhoto()) await primeVideo(m.video); img = await grabFrame(m.video, t, w, h); } catch (err) {
     clearTimeout(slow);
     $('repMsg').hidden = false; $('repMsg').textContent = `讀不到影片畫面：${err.message}`; $('repRetryRow').hidden = false;
     log('rep-frame-failed', { message: err.message });
@@ -1616,6 +1617,7 @@ async function startProcessing() {
   // four at once gave "Decoder failure" / "out of memory"). They are loaded again afterwards; nothing about the
   // processing or its quality changes.
   for (const id of ['videoPreview', 'origVideo', 'outVideo']) unloadVideo($(id));
+  await primeVideo(S.video.meta.video); // (iPad: the decoder back to the work video, should another video have taken it)
   try {
     const res = await processVideo({
       engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH,
