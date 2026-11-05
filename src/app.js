@@ -1637,6 +1637,7 @@ async function startProcessing() {
     + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
     + (res.audio.kept ? `音訊：已保留原片音軌（${res.audio.codec}，未重新編碼）。` : `音訊：${res.audio.reason}。`)
     + (res.timing && res.timing.segInfo ? `AI 人物偵測：${res.timing.segInfo.delegate === 'GPU' ? '顯示卡（GPU）' : '處理器（CPU）'}${res.timing.segInfo.cpuMs ? `（實測每格 CPU ${Math.round(res.timing.segInfo.cpuMs)} ms${res.timing.segInfo.gpuMs ? `、GPU ${Math.round(res.timing.segInfo.gpuMs)} ms` : '、GPU 不可用'}）` : ''}。` : '')
+    + gradeText(res.timing && res.timing.gradeInfo)
     + (res.timing && res.timing.total ? `處理時間 ${(res.timing.total / 1000).toFixed(1)} 秒。` : '');
     log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio, timing: res.timing });
     setPhase('done');
@@ -1938,6 +1939,11 @@ function syncKindLabels() { // wording and controls that only make sense for one
   $('exportVideoInfo').hidden = photo; $('exportPhotoInfo').hidden = !photo;
   $('reprocess').textContent = '以目前設定重新處理';
 }
+/** 調色計算：顯示卡／處理器 (the worker's measured choice), for the result info */
+function gradeText(g) {
+  if (!g || !g.mode) return '';
+  return `調色計算：${g.mode === 'gpu' ? `顯示卡（${g.renderer || 'GPU'}）` : `處理器${g.why ? `（${g.why}）` : ''}`}${g.cpuMs != null ? `，實測每格處理器 ${Math.round(g.cpuMs)} ms／顯示卡 ${Math.round(g.gpuMs)} ms` : ''}。`;
+}
 async function processPhotoJob(intent, token, needsSeg) {
   const m = S.video.meta, n = m.count, items = [], names = new Set();
   let first = null;
@@ -1961,7 +1967,8 @@ async function processPhotoJob(intent, token, needsSeg) {
     const mb = items.reduce((t, it) => t + it.blob.size, 0) / 1e6;
     $('resultInfo').textContent = `${n > 1 ? `${n} 張照片，同一組調色設定` : `照片 ${items[0].width}×${items[0].height}`}，JPEG，共 ${mb.toFixed(1)} MB。`
       + `處理引擎回報的光暗設定雜湊 ${first.intentHash}（與確認的設定一致），色彩設定雜湊 ${first.lookHash}（${describeLook(S.look.applied)}）`
-      + `；局部調整區域：${first.jobRegions.length ? first.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`;
+      + `；局部調整區域：${first.jobRegions.length ? first.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
+      + gradeText(await engine.call({ type: 'gpu-info' }).then((r) => r.info).catch(() => null));
     log('processing-done', { frames: n, photo: true, count: n, hash: first.intentHash, size: Math.round(mb * 1e6) });
     setPhase('done');
     updateAdjState();

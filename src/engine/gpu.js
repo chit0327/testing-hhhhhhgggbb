@@ -131,7 +131,9 @@ export function gpuRenderer() {
       upLut(2, T.lut, lut);
       const sh = lut.index ? (lut.index instanceof Float32Array ? lut.index : Float32Array.from(lut.index)) : (lutRGBA.ident || (lutRGBA.ident = new Map())).get(lut.size) || (() => { const a = new Float32Array(256); for (let v = 0; v < 256; v++) a[v] = v / 255 * (lut.size - 1); lutRGBA.ident.set(lut.size, a); return a; })();
       up2D(1, T.shaper, sh, 256, 1);
-      const LY = (layers ? (Array.isArray(layers) ? layers : [layers]) : []).filter((l) => l && l.lut && l.lut.size === lut.size).slice(0, MAX_LAYERS);
+      const sameIndex = (a, b2) => (!a && !b2) || (a && b2 && a.length === b2.length && a.every((v, i) => v === b2[i]));
+      const LY = (layers ? (Array.isArray(layers) ? layers : [layers]) : []).filter((l) => l && l.lut && l.lut.size === lut.size && sameIndex(l.lut.index, lut.index));
+      if (LY.length > MAX_LAYERS) throw new Error(`more than ${MAX_LAYERS} region layers`);
       gl.uniform1i(U('nLayers'), LY.length);
       const ks = [0, 0, 0];
       LY.forEach((ly, i) => { upLut(3 + i, T.lutL[i], ly.lut); up2D(6 + i, T.maskL[i], ly.mask.data, ly.mask.w, ly.mask.h); ks[i] = ly.k; });

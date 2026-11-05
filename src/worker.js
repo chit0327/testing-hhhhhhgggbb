@@ -8,6 +8,41 @@ import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
 import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
 import { gpuRenderer } from './engine/gpu.js';
+
+// ---- the per-pixel grade on the graphics card (engine/gpu.js) where it is measured to be faster AND to give the same
+// picture: decided once, on the first frame graded (both are run on it), like the segmentation's CPU / GPU choice. Any
+// GPU failure (the browser taking the context back, too many layers) grades that frame on the processor and keeps the
+// processor from then on. Effects (haze, softness, grain, blur) still run on the processor after the grade.
+let gpu = null, gpuForce = null; // gpuForce: 'on' | 'off' (tests), else measured
+const gradeInfo = { mode: null, renderer: '', cpuMs: null, gpuMs: null, maxDiff: null, why: '' };
+function gradeFrame(src, w, h, lut, ev, layers) {
+  const cpu = () => renderFrame(src, w, h, lut, ev, undefined, null, layers);
+  if (gpuForce === 'off') { gradeInfo.mode = 'cpu'; gradeInfo.why = '已設定使用處理器'; return cpu(); }
+  if (gradeInfo.mode === 'cpu' && gpuForce !== 'on') return cpu();
+  if (!gpu) {
+    try { gpu = gpuRenderer(); } catch (err) { gradeInfo.why = err.message; }
+    if (!gpu) { gradeInfo.mode = 'cpu'; gradeInfo.why = gradeInfo.why || '不支援 WebGL2'; return cpu(); }
+    gradeInfo.renderer = gpu.info.renderer;
+  }
+  try {
+    if (gradeInfo.mode === null && gpuForce !== 'on') { // decide: the same picture, and faster (both warmed up once)
+      cpu(); gpu.render(src, w, h, lut, ev, layers);
+      let t = performance.now(); const a = cpu(); gradeInfo.cpuMs = performance.now() - t;
+      t = performance.now(); const b = gpu.render(src, w, h, lut, ev, layers); gradeInfo.gpuMs = performance.now() - t;
+      let mx = 0; for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b[i]); if (d > mx) mx = d; }
+      gradeInfo.maxDiff = mx;
+      gradeInfo.mode = mx <= 2 && gradeInfo.gpuMs * 1.2 < gradeInfo.cpuMs ? 'gpu' : 'cpu';
+      if (gradeInfo.mode === 'cpu') gradeInfo.why = mx > 2 ? `顯示卡結果不同（差異 ${mx}）` : '顯示卡沒有比處理器快';
+      return a;
+    }
+    const out = gpu.render(src, w, h, lut, ev, layers);
+    if (gradeInfo.mode !== 'gpu') gradeInfo.mode = 'gpu';
+    return out;
+  } catch (err) { // context lost / unsupported case: this frame and the next ones on the processor
+    gradeInfo.mode = 'cpu'; gradeInfo.why = err.message;
+    return cpu();
+  }
+}
 import { applyFilm } from './engine/film.js';
 import { featherCells, combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
 import { feather, guidedFilter, resize } from './engine/masks.js';
@@ -215,6 +250,12 @@ self.onmessage = (e) => {
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look, { forExport: true });
       const data = lut.data.slice();
       self.postMessage({ type: 'baked', id: m.id, size: lut.size, data: data.buffer }, [data.buffer]);
+    } else if (m.type === 'gpu-mode') { // tests: force the grade onto the graphics card ('on') or the processor ('off'); null = measure
+      if (m.mode === 'lose') { if (gpu) gpu.lost = true; gpuForce = null; gradeInfo.mode = 'gpu'; } // (tests: the browser took the GPU context back)
+      else { gpuForce = m.mode || null; if (!gpuForce) gradeInfo.mode = null; }
+      self.postMessage({ type: 'gpu-mode-set', id: m.id });
+    } else if (m.type === 'gpu-info') {
+      self.postMessage({ type: 'gpu-info', id: m.id, info: { ...gradeInfo } });
     } else if (m.type === 'gpu-bench') { // 顯示卡測試: the current grade on this frame, processor vs graphics card, 720p and 4K
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
       let g = null, why = '';
@@ -289,7 +330,7 @@ self.onmessage = (e) => {
       lap('layers');
       const lut = m.grade ? lutFor(j.intent, j.look, { draft }) : null;
       lap('lut');
-      const out = renderFrame(src, m.w, m.h, lut, ev, undefined, null, layers);
+      const out = gradeFrame(src, m.w, m.h, lut, ev, layers);
       lap('grade');
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
       const fx = m.grade ? fxOf(j.look) : null;

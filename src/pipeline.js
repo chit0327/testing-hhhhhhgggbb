@@ -344,6 +344,7 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   const seekT0 = seekStats.timeouts;
   timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0; timing.lowMemory = low;
   if (needsSeg) { try { const { segmenterInfo } = await import('./segment.js'); timing.segInfo = segmenterInfo(); } catch { /* not loaded */ } } // CPU or GPU, as measured on this device
+  try { timing.gradeInfo = (await engine.call({ type: 'gpu-info' })).info; } catch { /* (older worker) */ } // the grade: graphics card or processor
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
     ...(audio.track ? { audio: { codec: 'aac', numberOfChannels: audio.track.numberOfChannels, sampleRate: audio.track.sampleRate } } : {}) });
   let encErr = null;
