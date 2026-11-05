@@ -14,7 +14,7 @@ export const FILM_DEFAULT = { filmGrain: 0.25, filmGrainSize: 0.5, halation: 0.3
 const clamp01 = (v) => Math.min(1, Math.max(0, +v || 0));
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-function blurChannels(buf, w, h, ch, r) { // in place, separable box blur, `ch` interleaved channels, clamped edges
+export function blurChannels(buf, w, h, ch, r) { // in place, separable box blur, `ch` interleaved channels, clamped edges
   if (r < 1) return;
   const tmp = new Float32Array(buf.length), n = 2 * r + 1;
   for (let y = 0; y < h; y++) for (let c = 0; c < ch; c++) {
@@ -36,11 +36,23 @@ function blurChannels(buf, w, h, ch, r) { // in place, separable box blur, `ch` 
 }
 
 // integer hash → [0, 1)
-function hash3(x, y, z) {
+export function hash3(x, y, z) {
   let h = (x * 374761393 + y * 668265263 + z * 2147483647) | 0;
   h = Math.imul(h ^ (h >>> 13), 1274126177);
   h ^= h >>> 16;
   return (h >>> 0) / 4294967296;
+}
+
+/** the grain cells: a smooth noise grid (luminance L ≈ Gaussian sd 1, colour C: 2 per cell), seeded by the frame number */
+export function grainGrid(w, h, size, frame) {
+  const s = w / 1280, cell = Math.max(0.6, (0.7 + 1.8 * size) * s), gw = Math.ceil(w / cell) + 2, gh = Math.ceil(h / cell) + 2;
+  const L = new Float32Array(gw * gh), C = new Float32Array(gw * gh * 2), z = (frame | 0) + 1;
+  for (let q = 0; q < gw * gh; q++) {
+    const gx = q % gw, gy = (q / gw) | 0;
+    L[q] = (hash3(gx, gy, z) + hash3(gx + 7919, gy, z) + hash3(gx, gy + 104729, z) - 1.5) * 2; // ≈ Gaussian, sd ≈ 1
+    C[2 * q] = hash3(gx + 31, gy + 17, z * 3) - 0.5; C[2 * q + 1] = hash3(gx + 57, gy + 91, z * 5) - 0.5;
+  }
+  return { cell, gw, gh, L, C };
 }
 
 export const hasFilm = (fx) => !!fx && (clamp01(fx.filmGrain) > 0 || clamp01(fx.halation) > 0 || clamp01(fx.filmSoft) > 0);
@@ -90,13 +102,7 @@ export function applyFilm(img, w, h, fx, frame = 0) {
   }
   // 膠片顆粒: smooth noise on a grid of grain cells, seeded by the frame number; mid-tones get the most
   if (grain > 0) {
-    const cell = Math.max(0.6, (0.7 + 1.8 * size) * s), gw = Math.ceil(w / cell) + 2, gh = Math.ceil(h / cell) + 2;
-    const L = new Float32Array(gw * gh), C = new Float32Array(gw * gh * 2), z = (frame | 0) + 1;
-    for (let q = 0; q < gw * gh; q++) {
-      const gx = q % gw, gy = (q / gw) | 0;
-      L[q] = (hash3(gx, gy, z) + hash3(gx + 7919, gy, z) + hash3(gx, gy + 104729, z) - 1.5) * 2; // ≈ Gaussian, sd ≈ 1
-      C[2 * q] = hash3(gx + 31, gy + 17, z * 3) - 0.5; C[2 * q + 1] = hash3(gx + 57, gy + 91, z * 5) - 0.5;
-    }
+    const { cell, gw, L, C } = grainGrid(w, h, size, frame);
     const amp = 20 * grain; // in 8-bit steps at mid-grey
     for (let y = 0; y < h; y++) {
       const gy = y / cell, y0 = Math.floor(gy), ty = gy - y0;

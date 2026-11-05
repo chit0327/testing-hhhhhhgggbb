@@ -6,13 +6,14 @@ import { fitCandidates, autoSkinFollow, withFollow } from './engine/autofit.js';
 import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engine/intent.js';
 import { regionMasks } from './engine/regionmasks.js';
 import { evField, lightnessGrid } from './engine/masks.js';
-import { renderFrame, applyEffects, FX_KEYS } from './engine/render.js';
+import { renderFrame, applyEffects, effectsPlan, FX_KEYS } from './engine/render.js';
 import { gpuRenderer } from './engine/gpu.js';
+import { gpuEffects } from './engine/gpufx.js';
 
 // ---- the per-pixel grade on the graphics card (engine/gpu.js) where it is measured to be faster AND to give the same
 // picture: decided once, on the first frame graded (both are run on it), like the segmentation's CPU / GPU choice. Any
 // GPU failure (the browser taking the context back, too many layers) grades that frame on the processor and keeps the
-// processor from then on. Effects (haze, softness, grain, blur) still run on the processor after the grade.
+// processor from then on. The effects after it: effectsFrame below (the background blur stays on the processor).
 let gpu = null, gpuForce = null; // gpuForce: 'on' | 'off' (tests), else measured
 const gradeInfo = { mode: null, renderer: '', cpuMs: null, gpuMs: null, maxDiff: null, why: '' };
 function gradeFrame(src, w, h, lut, ev, layers) {
@@ -43,7 +44,42 @@ function gradeFrame(src, w, h, lut, ev, layers) {
     return cpu();
   }
 }
-import { applyFilm } from './engine/film.js';
+import { applyFilm, hasFilm } from './engine/film.js';
+// ---- the effects after the grade (朦朧 / 柔光 / 暗角, 膠片 柔化 / 光暈 / 顆粒) on the graphics card (engine/gpufx.js),
+// decided as the grade is: measured once on the first frame with effects (both run, the same picture within rounding
+// and faster), else the processor; any GPU failure moves this frame and the next ones to the processor.
+let gfx = null;
+const fxInfo = { mode: null, renderer: '', cpuMs: null, gpuMs: null, maxDiff: null, why: '' };
+function effectsFrame(out, w, h, fx, hazeMap, frame) {
+  const cpu = (img) => { applyEffects(img, w, h, fx, hazeMap); applyFilm(img, w, h, fx, frame); return img; };
+  if (!effectsPlan(fx, !!hazeMap) && !hasFilm(fx)) return out; // (every effect off: nothing to do, nothing to measure on)
+  if (gpuForce === 'off') { fxInfo.mode = 'cpu'; fxInfo.why = '已設定使用處理器'; return cpu(out); }
+  if (fxInfo.mode === 'cpu' && gpuForce !== 'on') return cpu(out);
+  if (!gfx) {
+    try { gfx = gpuEffects(); } catch (err) { fxInfo.why = err.message; }
+    if (!gfx) { fxInfo.mode = 'cpu'; fxInfo.why = fxInfo.why || '不支援 WebGL2 浮點運算'; return cpu(out); }
+    fxInfo.renderer = gfx.info.renderer;
+  }
+  try {
+    if (fxInfo.mode === null && gpuForce !== 'on') {
+      const src = out.slice();
+      cpu(src.slice()); gfx.apply(src.slice(), w, h, fx, hazeMap, frame); // (warm-up)
+      let t = performance.now(); const a = cpu(src.slice()); fxInfo.cpuMs = performance.now() - t;
+      t = performance.now(); const b = gfx.apply(src.slice(), w, h, fx, hazeMap, frame); fxInfo.gpuMs = performance.now() - t;
+      let mx = 0; for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b[i]); if (d > mx) mx = d; }
+      fxInfo.maxDiff = mx;
+      fxInfo.mode = mx <= 3 && fxInfo.gpuMs * 1.2 < fxInfo.cpuMs ? 'gpu' : 'cpu';
+      if (fxInfo.mode === 'cpu') fxInfo.why = mx > 3 ? `顯示卡結果不同（差異 ${mx}）` : '顯示卡沒有比處理器快';
+      out.set(a); return out;
+    }
+    gfx.apply(out, w, h, fx, hazeMap, frame);
+    if (fxInfo.mode !== 'gpu') fxInfo.mode = 'gpu';
+    return out;
+  } catch (err) {
+    fxInfo.mode = 'cpu'; fxInfo.why = err.message;
+    return cpu(out);
+  }
+}
 import { featherCells, combineSelection, lumaSmall, pyramid, estimateMotion, compose, warpLayer, applyBlur, IDENTITY } from './engine/blur.js';
 import { feather, guidedFilter, resize } from './engine/masks.js';
 import { fitPairLUT } from './engine/pairfit.js';
@@ -251,11 +287,11 @@ self.onmessage = (e) => {
       const data = lut.data.slice();
       self.postMessage({ type: 'baked', id: m.id, size: lut.size, data: data.buffer }, [data.buffer]);
     } else if (m.type === 'gpu-mode') { // tests: force the grade onto the graphics card ('on') or the processor ('off'); null = measure
-      if (m.mode === 'lose') { if (gpu) gpu.lost = true; gpuForce = null; gradeInfo.mode = 'gpu'; } // (tests: the browser took the GPU context back)
-      else { gpuForce = m.mode || null; if (!gpuForce) gradeInfo.mode = null; }
+      if (m.mode === 'lose') { if (gpu) gpu.lost = true; if (gfx) gfx.lost = true; gpuForce = null; gradeInfo.mode = 'gpu'; fxInfo.mode = 'gpu'; } // (tests: the browser took the GPU context back)
+      else { gpuForce = m.mode || null; if (!gpuForce) { gradeInfo.mode = null; fxInfo.mode = null; } }
       self.postMessage({ type: 'gpu-mode-set', id: m.id });
     } else if (m.type === 'gpu-info') {
-      self.postMessage({ type: 'gpu-info', id: m.id, info: { ...gradeInfo } });
+      self.postMessage({ type: 'gpu-info', id: m.id, info: { ...gradeInfo, fx: { ...fxInfo } } });
     } else if (m.type === 'gpu-bench') { // 顯示卡測試: the current grade on this frame, processor vs graphics card, 720p and 4K
       const intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
       let g = null, why = '';
@@ -276,6 +312,21 @@ self.onmessage = (e) => {
             for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b2[i]); if (d > mx) mx = d; sum += d; }
             r.maxDiff = mx; r.meanDiff = sum / (a.length * 0.75);
           } catch (err) { r.error = err.message; }
+        }
+        // the effects of the current look (朦朧, 柔光, 暗角, 膠片), processor vs graphics card, on the graded frame
+        const fx = fxOf(m.look);
+        if (fx && (effectsPlan(fx, false) || hasFilm(fx))) {
+          const graded = renderFrame(s, W, H, lut, null), cpuFx = () => { const o = graded.slice(); applyEffects(o, W, H, fx); applyFilm(o, W, H, fx, 0); return o; };
+          r.fxCpu = time(cpuFx, W > 2000 ? 1 : 3);
+          let gx = null; try { gx = gpuEffects(); } catch { /* (none) */ }
+          if (gx) {
+            try {
+              r.fxGpu = time(() => gx.apply(graded.slice(), W, H, fx, null, 0), W > 2000 ? 2 : 5);
+              const a = cpuFx(), b2 = gx.apply(graded.slice(), W, H, fx, null, 0); let mx = 0;
+              for (let i = 0; i < a.length; i++) { if ((i & 3) === 3) continue; const d = Math.abs(a[i] - b2[i]); if (d > mx) mx = d; }
+              r.fxMaxDiff = mx;
+            } catch (err) { r.fxError = err.message; }
+          }
         }
         res.sizes.push(r);
       }
@@ -335,8 +386,9 @@ self.onmessage = (e) => {
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
       const fx = m.grade ? fxOf(j.look) : null;
       lap('blur');
-      if (fx) applyEffects(out, m.w, m.h, fx, hazePerson(j.look, m.seg, j.temporal)); // after the blur: haze and glow spread over the blurred background too
-      if (fx) applyFilm(out, m.w, m.h, fx, m.index || 0); // 膠片質感 last: softness, halation, then grain (its pattern follows the frame number)
+      // after the blur: haze and glow spread over the blurred background too; 膠片質感 last: softness, halation, then grain
+      // (its pattern follows the frame number)
+      if (fx) effectsFrame(out, m.w, m.h, fx, hazePerson(j.look, m.seg, j.temporal), m.index || 0);
       lap('effects');
       const prim = j.look && j.look.prim;
       self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo, timing: T,

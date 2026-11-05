@@ -1343,7 +1343,7 @@ $('gpuBench').onclick = async () => {
     const r = await engine.gpuBench(S.rep.img, S.look.draft, intent);
     const ms = (v) => (v == null ? '—' : `${Math.round(v)} ms`);
     $('gpuInfo').textContent = !r.renderer ? `這部裝置不能用顯示卡調色：${r.why}。處理器每格：${r.sizes.map((s) => `${s.w}×${s.h} ${ms(s.cpu)}`).join('，')}。`
-      : `顯示卡：${r.renderer}。` + r.sizes.map((s) => `${s.w}×${s.h}：處理器 ${ms(s.cpu)}／顯示卡 ${ms(s.gpu)}${s.gpu ? (s.cpu >= s.gpu ? `（顯示卡快 ${(s.cpu / s.gpu).toFixed(1)} 倍）` : `（顯示卡慢 ${(s.gpu / s.cpu).toFixed(1)} 倍）`) : ''}${s.maxDiff != null ? `，結果差異最多 ${s.maxDiff}／255（平均 ${s.meanDiff.toFixed(2)}）` : ''}${s.error ? `，錯誤：${s.error}` : ''}`).join('；') + '。（只計調色一步；霧、柔化等效果仍用處理器。）';
+      : `顯示卡：${r.renderer}。` + r.sizes.map((s) => `${s.w}×${s.h}：處理器 ${ms(s.cpu)}／顯示卡 ${ms(s.gpu)}${s.gpu ? (s.cpu >= s.gpu ? `（顯示卡快 ${(s.cpu / s.gpu).toFixed(1)} 倍）` : `（顯示卡慢 ${(s.gpu / s.cpu).toFixed(1)} 倍）`) : ''}${s.maxDiff != null ? `，結果差異最多 ${s.maxDiff}／255（平均 ${s.meanDiff.toFixed(2)}）` : ''}${s.error ? `，錯誤：${s.error}` : ''}${s.fxCpu != null ? `；效果：處理器 ${ms(s.fxCpu)}／顯示卡 ${ms(s.fxGpu)}${s.fxMaxDiff != null ? `，差異最多 ${s.fxMaxDiff}／255` : ''}${s.fxError ? `，錯誤：${s.fxError}` : ''}` : ''}`).join('；') + `。${r.sizes.some((s) => s.fxCpu != null) ? '' : '（目前的設定沒有效果，只計調色一步。）'}`;
     log('gpu-bench', r);
   } catch (err) { $('gpuInfo').textContent = `測試失敗：${err.message}`; }
   $('gpuBench').disabled = false;
@@ -1944,7 +1944,8 @@ function syncKindLabels() { // wording and controls that only make sense for one
 /** 調色計算：顯示卡／處理器 (the worker's measured choice), for the result info */
 function gradeText(g) {
   if (!g || !g.mode) return '';
-  return `調色計算：${g.mode === 'gpu' ? `顯示卡（${g.renderer || 'GPU'}）` : `處理器${g.why ? `（${g.why}）` : ''}`}${g.cpuMs != null ? `，實測每格處理器 ${Math.round(g.cpuMs)} ms／顯示卡 ${Math.round(g.gpuMs)} ms` : ''}。`;
+  const one = (x) => `${x.mode === 'gpu' ? `顯示卡（${x.renderer || 'GPU'}）` : `處理器${x.why ? `（${x.why}）` : ''}`}${x.cpuMs != null ? `，實測每格處理器 ${Math.round(x.cpuMs)} ms／顯示卡 ${Math.round(x.gpuMs)} ms` : ''}`;
+  return `調色計算：${one(g)}。${g.fx && g.fx.mode ? `效果計算：${one(g.fx)}。` : ''}`;
 }
 async function processPhotoJob(intent, token, needsSeg) {
   const m = S.video.meta, n = m.count, items = [], names = new Set();

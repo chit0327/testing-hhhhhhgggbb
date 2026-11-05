@@ -126,7 +126,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
 export const FX_KEYS = ['glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth']; // (膠片質感: film.js; hazeAir: 霧色取自參考圖, hazeDepth: 背景霧更濃)
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
-function boxBlur(buf, w, h, r) { // in place, 3 channels, sliding window (clamped edges)
+export function boxBlur(buf, w, h, r) { // in place, 3 channels, sliding window (clamped edges)
   const tmp = new Float32Array(buf.length), n = 2 * r + 1;
   for (let y = 0; y < h; y++) for (let c = 0; c < 3; c++) {
     let acc = 0;
@@ -163,8 +163,14 @@ function vignetteGain(w, h, vig, size) {
 }
 
 // the frame (linear light, weighted per pixel by wfn(luminance)) averaged onto a ~320 px grid and blurred
+export const gridDims = (w, h) => { const f = Math.max(1, Math.round(Math.max(w, h) / 320)); return { f, sw: Math.ceil(w / f), sh: Math.ceil(h / f) }; };
+export function blurGrid(small, sw, sh, radius) { // (the averaged grid, 3 channels) blurred in place ≈ Gaussian
+  const rad = Math.max(1, Math.round(radius * Math.max(sw, sh)));
+  for (let pass = 0; pass < 3; pass++) boxBlur(small, sw, sh, rad);
+  return small;
+}
 function blurredGrid(img, w, h, wfn, radius) {
-  const f = Math.max(1, Math.round(Math.max(w, h) / 320)), sw = Math.ceil(w / f), sh = Math.ceil(h / f);
+  const { f, sw, sh } = gridDims(w, h);
   const small = new Float32Array(sw * sh * 3), cnt = new Float32Array(sw * sh);
   for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
     const p = (y * w + x) * 4, r = S2L[img[p]], g = S2L[img[p + 1]], b = S2L[img[p + 2]];
@@ -172,9 +178,7 @@ function blurredGrid(img, w, h, wfn, radius) {
     small[3 * q] += r * k; small[3 * q + 1] += g * k; small[3 * q + 2] += b * k; cnt[q]++;
   }
   for (let q = 0; q < sw * sh; q++) for (let c = 0; c < 3; c++) small[3 * q + c] /= cnt[q] || 1;
-  const rad = Math.max(1, Math.round(radius * Math.max(sw, sh)));
-  for (let pass = 0; pass < 3; pass++) boxBlur(small, sw, sh, rad); // ≈ Gaussian
-  return { small, sw, sh, f };
+  return { small: blurGrid(small, sw, sh, radius), sw, sh, f };
 }
 function sampleGrid(G, x, y, out) { // bilinear, full-resolution pixel (x, y)
   const { small, sw, sh, f } = G;
@@ -206,36 +210,57 @@ export function glowTintRGB(hue, tint) {
   return l.map((v) => v / Math.max(Y, 1e-4));
 }
 /** hazeMap: optional {data, w, h} grid of the person (0..1, smoothed AI mask) for 背景霧更濃 (fx.hazeDepth 0..1). */
-export function applyEffects(img, w, h, fx, hazeMap = null) {
+/**
+ * The settings of applyEffects worked out once per frame (shared with the graphics-card version, engine/gpufx.js):
+ * which grids are needed (G 柔光, H soft copy, Bm bloom: {wfn, radius}), the mix factors, and — given the bloom grid —
+ * the veil colour and bloom scale. null: nothing to do.
+ */
+export const FX_WEIGHTS = { glow: (Y) => smooth(0.2, 0.85, Y), soft: () => 1, bloom: (Y) => smooth(0.18, 0.75, Y) };
+export function effectsPlan(fx, hasHazeMap) {
   const glow = Math.min(1, Math.max(0, fx.glow || 0)), vig = Math.min(1, Math.max(-1, fx.vignette || 0)), haze = Math.min(1, Math.max(0, fx.haze || 0));
-  if (!glow && !vig && !haze) return img;
-  const G = glow ? blurredGrid(img, w, h, (Y) => smooth(0.2, 0.85, Y), 0.008 + 0.05 * (fx.glowRadius ?? 0.5)) : null;
+  if (!glow && !vig && !haze) return null;
   const hr = fx.hazeRadius ?? 0.5;
   // the three parts of 朦朧, each 0..1 with 0.5 = the default mix (×2 at 1, off at 0): 柔化 / 發光 / 光幕
-  const part = (v) => 2 * Math.min(1, Math.max(0, v ?? 0.5)), kSoft = 0.3 * part(fx.hazeSoft), kBloom = 1.8 * part(fx.hazeBloom), kVeil = part(fx.hazeVeil);
-  const H = haze ? blurredGrid(img, w, h, () => 1, 0.004 + 0.02 * hr) : null; // soft copy (detail softening)
-  const Bm = haze ? blurredGrid(img, w, h, (Y) => smooth(0.18, 0.75, Y), 0.02 + 0.07 * hr) : null; // bloom of the lights
+  const part = (v) => 2 * Math.min(1, Math.max(0, v ?? 0.5));
+  return {
+    glow, vig, haze, vigSize: fx.vignetteSize ?? 0.5,
+    kSoft: 0.3 * part(fx.hazeSoft), kBloom: 1.8 * part(fx.hazeBloom), kVeil: part(fx.hazeVeil),
+    gridG: glow ? 0.008 + 0.05 * (fx.glowRadius ?? 0.5) : 0, // blur radii (fraction of the grid size); 0 = grid not needed
+    gridH: haze ? 0.004 + 0.02 * hr : 0, // soft copy (detail softening)
+    gridB: haze ? 0.02 + 0.07 * hr : 0, // bloom of the lights
+    // 光芒顏色 (colour wheel): the added light (柔光, 朦朧's bloom and veil) tinted towards an OKLab hue; the tint keeps
+    // the light's brightness (channel factors normalised to luminance 1), tint 0 = the light's own colour
+    tm: glowTintRGB(fx.glowHue ?? 60, fx.glowTint || 0),
+    // 背景霧更濃: haze thins on the person and thickens on the background (distant things hazier, like air between them and
+    // the camera); the person mask is the AI one, smoothed over time like the other AI regions
+    depth: haze && hasHazeMap ? Math.min(1, Math.max(0, fx.hazeDepth || 0)) : 0,
+    air: Array.isArray(fx.hazeAir) && fx.hazeAir.length === 3 ? fx.hazeAir : null,
+  };
+}
+/** veil colour and bloom scale from the (blurred) bloom grid */
+export function veilOf(plan, Bm) {
   // veil: the scene's light (colour of its bright parts) scattered evenly over the frame, like sun flare in a lens:
   // dark areas are lifted by warm light in a sunlit scene, not by grey fog
-  const veil = [0, 0, 0]; let bk = 1;
-  if (Bm) {
-    const n = Bm.sw * Bm.sh, acc = [0, 0, 0]; for (let q = 0; q < n; q++) for (let c = 0; c < 3; c++) acc[c] += Bm.small[3 * q + c] / n;
-    // light colour, luminance-normalised; in an already bright scene (white walls, sky) the bloom and veil are scaled
-    // down so lights still read as lights instead of the whole frame washing out
-    const Y = 0.2126 * acc[0] + 0.7152 * acc[1] + 0.0722 * acc[2], lvl = 0.03 + 0.06 * Math.min(1, Y * 5);
-    bk = Math.min(1, Math.sqrt(0.15 / Math.max(Y, 1e-4)));
-    // 霧色取自參考圖: the veil takes the colour of the reference's air (luminance-normalised linear RGB), not the footage's
-    // own light — warm sunlit footage under a cool misty reference got a warm veil
-    const air = Array.isArray(fx.hazeAir) && fx.hazeAir.length === 3 ? fx.hazeAir : null;
-    for (let c = 0; c < 3; c++) veil[c] = air ? lvl * air[c] : Y > 1e-4 ? lvl * acc[c] / Y : lvl;
-  }
-  // 光芒顏色 (colour wheel): the added light (柔光, 朦朧's bloom and veil) tinted towards an OKLab hue; the tint keeps
-  // the light's brightness (channel factors normalised to luminance 1), tint 0 = the light's own colour
-  const tm = glowTintRGB(fx.glowHue ?? 60, fx.glowTint || 0);
-  const vg = vig ? vignetteGain(w, h, vig, fx.vignetteSize ?? 0.5) : null;
-  // 背景霧更濃: haze thins on the person and thickens on the background (distant things hazier, like air between them and
-  // the camera); the person mask is the AI one, smoothed over time like the other AI regions
-  const depth = haze && hazeMap ? Math.min(1, Math.max(0, fx.hazeDepth || 0)) : 0;
+  const veil = [0, 0, 0];
+  const n = Bm.sw * Bm.sh, acc = [0, 0, 0]; for (let q = 0; q < n; q++) for (let c = 0; c < 3; c++) acc[c] += Bm.small[3 * q + c] / n;
+  // light colour, luminance-normalised; in an already bright scene (white walls, sky) the bloom and veil are scaled
+  // down so lights still read as lights instead of the whole frame washing out
+  const Y = 0.2126 * acc[0] + 0.7152 * acc[1] + 0.0722 * acc[2], lvl = 0.03 + 0.06 * Math.min(1, Y * 5);
+  const bk = Math.min(1, Math.sqrt(0.15 / Math.max(Y, 1e-4)));
+  // 霧色取自參考圖: the veil takes the colour of the reference's air (luminance-normalised linear RGB), not the footage's
+  // own light — warm sunlit footage under a cool misty reference got a warm veil
+  for (let c = 0; c < 3; c++) veil[c] = plan.air ? lvl * plan.air[c] : Y > 1e-4 ? lvl * acc[c] / Y : lvl;
+  return { veil, bk };
+}
+export function applyEffects(img, w, h, fx, hazeMap = null) {
+  const P = effectsPlan(fx, !!hazeMap);
+  if (!P) return img;
+  const { glow, vig, haze, kSoft, kBloom, kVeil, tm, depth } = P;
+  const G = P.gridG ? blurredGrid(img, w, h, FX_WEIGHTS.glow, P.gridG) : null;
+  const H = P.gridH ? blurredGrid(img, w, h, FX_WEIGHTS.soft, P.gridH) : null;
+  const Bm = P.gridB ? blurredGrid(img, w, h, FX_WEIGHTS.bloom, P.gridB) : null;
+  const { veil, bk } = Bm ? veilOf(P, Bm) : { veil: [0, 0, 0], bk: 1 };
+  const vg = vig ? vignetteGain(w, h, vig, P.vigSize) : null;
   // per-column / per-row grid indices and weights, computed once per frame (a per-pixel lookup cost +40 % effects time)
   let pxi0, pxi1, ptx, pyi0, pyi1, pty;
   if (depth) {
