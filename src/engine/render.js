@@ -123,7 +123,7 @@ export function renderFrame(src, w, h, lut, ev, out = new Uint8ClampedArray(src.
 // ---- spatial effects: they depend on position / neighbours, so they cannot live in the LUT ------------
 // Both work in linear light on the finished frame and are defined relative to the frame size, so the
 // 640 px preview and the 1280 px export look the same.
-export const FX_KEYS = ['glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth']; // (膠片質感: film.js; hazeAir: 霧色取自參考圖, hazeDepth: 背景霧更濃)
+export const FX_KEYS = ['glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus']; // (色散: fringe.js) (膠片質感: film.js; hazeAir: 霧色取自參考圖, hazeDepth: 背景霧更濃)
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
 
 export function boxBlur(buf, w, h, r) { // in place, 3 channels, sliding window (clamped edges)

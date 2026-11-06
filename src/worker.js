@@ -45,14 +45,15 @@ function gradeFrame(src, w, h, lut, ev, layers) {
   }
 }
 import { applyFilm, hasFilm } from './engine/film.js';
+import { applyFringe, fringePlan } from './engine/fringe.js';
 // ---- the effects after the grade (朦朧 / 柔光 / 暗角, 膠片 柔化 / 光暈 / 顆粒) on the graphics card (engine/gpufx.js),
 // decided as the grade is: measured once on the first frame with effects (both run, the same picture within rounding
 // and faster), else the processor; any GPU failure moves this frame and the next ones to the processor.
 let gfx = null;
 const fxInfo = { mode: null, renderer: '', cpuMs: null, gpuMs: null, maxDiff: null, why: '' };
 function effectsFrame(out, w, h, fx, hazeMap, frame) {
-  const cpu = (img) => { applyEffects(img, w, h, fx, hazeMap); applyFilm(img, w, h, fx, frame); return img; };
-  if (!effectsPlan(fx, !!hazeMap) && !hasFilm(fx)) return out; // (every effect off: nothing to do, nothing to measure on)
+  const cpu = (img) => { applyFringe(img, w, h, fx); applyEffects(img, w, h, fx, hazeMap); applyFilm(img, w, h, fx, frame); return img; }; // (色散 first: a lens effect)
+  if (!effectsPlan(fx, !!hazeMap) && !hasFilm(fx) && !fringePlan(fx)) return out; // (every effect off: nothing to do, nothing to measure on)
   if (gpuForce === 'off') { fxInfo.mode = 'cpu'; fxInfo.why = '已設定使用處理器'; return cpu(out); }
   if (fxInfo.mode === 'cpu' && gpuForce !== 'on') return cpu(out);
   if (!gfx) {
@@ -315,8 +316,8 @@ self.onmessage = (e) => {
         }
         // the effects of the current look (朦朧, 柔光, 暗角, 膠片), processor vs graphics card, on the graded frame
         const fx = fxOf(m.look);
-        if (fx && (effectsPlan(fx, false) || hasFilm(fx))) {
-          const graded = renderFrame(s, W, H, lut, null), cpuFx = () => { const o = graded.slice(); applyEffects(o, W, H, fx); applyFilm(o, W, H, fx, 0); return o; };
+        if (fx && (effectsPlan(fx, false) || hasFilm(fx) || fringePlan(fx))) {
+          const graded = renderFrame(s, W, H, lut, null), cpuFx = () => { const o = graded.slice(); applyFringe(o, W, H, fx); applyEffects(o, W, H, fx); applyFilm(o, W, H, fx, 0); return o; };
           r.fxCpu = time(cpuFx, W > 2000 ? 1 : 3);
           let gx = null; try { gx = gpuEffects(); } catch { /* (none) */ }
           if (gx) {

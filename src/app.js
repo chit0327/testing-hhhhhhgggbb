@@ -329,6 +329,7 @@ function defaultRegions(mh) {
 
 $('repRetry').onclick = () => loadRepFrame(S.rep ? S.rep.t : frameTime(S.video.meta, Math.floor(S.video.meta.frameCount / 2)));
 async function openDialog() {
+  stopPlay(); // (playing uses the video these need to seek)
   const mh = maskH();
   if (S.intent.confirmed) S.intent.draft = cloneIntent(S.intent.confirmed);
   else { S.intent.draft = createIntent(mh); S.intent.draft.regions = defaultRegions(mh); }
@@ -340,6 +341,7 @@ async function openDialog() {
 }
 
 async function loadRepFrame(t) {
+  stopPlay(); // (playing uses the video these need to seek)
   const m = S.video.meta, { w, h } = fitSize(m.width, m.height, 640);
   // reading the frame can fail (a tablet's video decoder busy or stuck): say so and offer a retry, instead of leaving
   // the window black with 確認 greyed out (an iPad stayed like that)
@@ -374,6 +376,12 @@ function restoreCanvas(c, norm = currentNorm()) {
   return c;
 }
 const segmentRestored = (c, mw, mh) => segment(restoreCanvas(c), mw, mh);
+
+/** AI segmentation per frame is needed: AI regions, skin protection / local grade, AI background blur, person / skin sliders, haze depth */
+function lookNeedsSeg(look, regs) {
+  const ap = look.prim, bl = look.blur;
+  return regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
+}
 
 async function runSegmentation() {
   await initSegmenter();
@@ -628,6 +636,7 @@ function describeLook(k) {
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
   if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
+  if (k.fringe) parts.push(`色散 ${Math.round(k.fringe * 100)}${(k.fringeFocus ?? 1) < 1 ? `（失焦處 ${Math.round((k.fringeFocus ?? 1) * 100)}）` : ''}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
   return parts.join('、');
@@ -660,10 +669,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   skinFollow: ['skinFollow', 100, (v) => `${v}%`], skinSat: ['skinSat', 100, (v) => `${v > 0 ? '+' : ''}${v}`], skinWarm: ['skinWarm', 100, (v) => (v > 0 ? `暖 ${v}` : v < 0 ? `冷 ${-v}` : '0')], skinHue: ['skinHue', 100, (v) => (v > 0 ? `黃 ${v}` : v < 0 ? `粉 ${-v}` : '0')], gradMap: ['gradMap', 100, (v) => `${v}%`], follow: ['follow', 100, (v) => `${v}%`],
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
   hazeDepth: ['hazeDepth', 100, (v) => `${v}`],
+  fringe: ['fringe', 100, (v) => `${v}`], fringeFocus: ['fringeFocus', 100, (v) => `${v}`],
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -1458,6 +1468,7 @@ async function previewFrame(side) { // the representative frame at a preview res
 }
 function scheduleAdjPreview() {
   if (!S.rep || $('adjustCard').hidden) return;
+  if (PLAY.on) return; // (playing: every shown frame is rendered with the current settings)
   clearTimeout(PV.finalTimer);
   if (PV.fast) { requestRender(true); PV.finalTimer = setTimeout(() => requestRender(false), 250); }
   else requestRender(false);
@@ -1487,7 +1498,73 @@ async function pumpRenders() {
     }
   } finally { PV.busy = false; }
 }
+// ---- 播放預覽: the video plays and each shown frame is graded with the current settings (colour, effects), so effects
+// are judged in motion instead of on one frame. A frame is rendered only when the previous one is back (frames in
+// between are skipped: the picture keeps up with the video), at most 640 px wide. AI segmentation runs per frame when
+// the look needs it (skin protection, AI regions); a painted blur selection belongs to the representative frame.
+var PLAY = { on: false, busy: false, n: 0, t0: 0, ms: 0 }; // (var: stopPlay may be called by showPage while the page starts)
+function playSide() { return Math.min(640, PV_SIDE[PV.q]); }
+async function playFrame() {
+  const v = S.video.meta && S.video.meta.video;
+  if (!PLAY.on || !v || PLAY.busy) return;
+  PLAY.busy = true;
+  try {
+    const m = S.video.meta, { w, h } = fitSize(m.width, m.height, playSide());
+    const c = PLAY.canvas && PLAY.canvas.width === w && PLAY.canvas.height === h ? PLAY.canvas : (PLAY.canvas = canvas2d(w, h));
+    const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(v, 0, 0, w, h);
+    const src = ctx.getImageData(0, 0, w, h), t = v.currentTime, t0 = performance.now();
+    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, look = previewLook();
+    let seg = null;
+    if (S.ai.status === 'ready' && lookNeedsSeg(look, S.intent.confirmed ? effectiveRegions(S.intent.confirmed) : [])) {
+      const sc = canvas2d(256, maskH()); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height);
+      seg = segment(restoreCanvas(sc, currentNorm()), MASK_W, maskH());
+    }
+    await S.grade.ready;
+    const r = await engine.render(src, { intent, seg, grade: true, look, draft: false });
+    if (!PLAY.on || $('adjustCard').hidden) return;
+    const ms = performance.now() - t0;
+    PLAY.n++; PLAY.ms = PLAY.ms ? PLAY.ms * 0.8 + ms * 0.2 : ms;
+    S.preview = { src, out: r.imageData, w, h, draft: false, ms, t }; // (the split compares this frame, original | graded)
+    drawAdj();
+    const fps = PLAY.n / ((performance.now() - PLAY.t0) / 1000);
+    $('pvInfo').textContent = `播放中 ${w}×${h}・每格 ${Math.round(PLAY.ms)} ms・約 ${fps.toFixed(1)} 格/秒${seg ? '・含 AI 人物偵測' : ''}`;
+    log('play-frame', { t: +t.toFixed(3), ms: Math.round(ms), seg: !!seg });
+  } catch (err) { $('adjState').textContent = `播放預覽失敗：${err.message}`; stopPlay(); }
+  finally { PLAY.busy = false; }
+}
+function playLoop() {
+  const v = S.video.meta && S.video.meta.video;
+  if (!PLAY.on || !v) return;
+  const next = () => { if (!PLAY.on) return; if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick); else requestAnimationFrame(tick); };
+  const tick = () => { if (!PLAY.on) return; playFrame(); next(); };
+  next();
+}
+async function startPlay() {
+  const v = S.video.meta && S.video.meta.video;
+  if (PLAY.on || !v || isPhoto() || !S.rep) return;
+  stopBlurPainting();
+  PLAY.on = true; PLAY.n = 0; PLAY.ms = 0; PLAY.t0 = performance.now();
+  $('pvPlay').setAttribute('aria-pressed', 'true'); $('pvPlay').textContent = '❚❚ 暫停';
+  v.muted = true; v.loop = true;
+  try { if (Math.abs(v.currentTime - S.rep.t) > 0.5 && !(PLAY.resumeT >= 0)) v.currentTime = S.rep.t; await v.play(); }
+  catch (err) { $('adjState').textContent = `不能播放影片：${err.message}`; stopPlay(); return; }
+  log('play-start', { t: v.currentTime });
+  playLoop();
+}
+function stopPlay() {
+  if (!PLAY || !PLAY.on) return;
+  PLAY.on = false;
+  const v = S.video.meta && S.video.meta.video;
+  if (v) { v.pause(); v.loop = false; PLAY.resumeT = v.currentTime; }
+  $('pvPlay').setAttribute('aria-pressed', 'false'); $('pvPlay').textContent = '▶ 播放';
+  log('play-stop', { frames: PLAY.n });
+  // back to the representative frame (the one the settings were fitted on and the masks were painted on)
+  if (S.rep && !$('adjustCard').hidden) { clearTimeout(PV.finalTimer); requestRender(false); }
+}
+$('pvPlay').onclick = () => (PLAY.on ? stopPlay() : startPlay());
+
 function drawAdj() {
+  $('pvPlay').hidden = !S.video.meta || isPhoto() || !S.rep;
   const p = S.preview;
   if (!S.rep || !p) return;
   const editing = blurEditing(), c = $('adjCanvas'), w = p.w, h = p.h, x = editing ? 0 : Math.round($('adjWipe').value / 100 * w); // editing: the whole result
@@ -1588,6 +1665,7 @@ $('scopeOrig').addEventListener('change', drawScopes);
 function showAdjustCard() { setAdjustVisible(true); syncAdjustControls(); scheduleAdjPreview(); renderCands(); renderMoodThumbs(); }
 
 async function startProcessing() {
+  stopPlay(); // (playing uses the video these need to seek)
   const intent = S.intent.confirmed;
   if (!intent) return;
   const token = ++S.job.token;
@@ -1606,9 +1684,7 @@ async function startProcessing() {
   $('photoNav').hidden = true;
   const regs = effectiveRegions(intent);
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
-  const ap = S.look.applied.prim;
-  const bl = S.look.applied.blur;
-  const needsSeg = regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(S.look.applied.personEv || S.look.applied.bgEv || S.look.applied.skinSat || S.look.applied.skinWarm || S.look.applied.skinHue || (S.look.applied.haze > 0 && S.look.applied.hazeDepth > 0));
+  const needsSeg = lookNeedsSeg(S.look.applied, regs);
   if (needsSeg) await initSegmenter();
   if (token !== S.job.token) return;
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
@@ -1809,6 +1885,7 @@ const tabObserver = new MutationObserver((list) => { for (const m of list) if (m
 for (const d of document.querySelectorAll('#adjustCard > details[data-group]')) tabObserver.observe(d, { attributes: true, attributeFilter: ['open'] });
 function unloadVideo(v) { v.pause(); if (v.getAttribute('src')) { v.removeAttribute('src'); v.load(); } }
 function showPage(p) {
+  if (p !== 'work') stopPlay();
   S.page = p;
   if (p === 'upload' && S.video.meta && !isPhoto() && !$('videoPreview').getAttribute('src')) $('videoPreview').src = S.video.meta.url; // (unloaded while processing)
   if (p === 'work') unloadVideo($('videoPreview')); // (hidden on the grading page: an iPad decodes few videos at once — only the work video needs one; reloaded on the upload page)

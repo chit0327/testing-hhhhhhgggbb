@@ -1,4 +1,4 @@
-// GPU (WebGL2) version of the spatial effects after the grade: 朦朧 / 柔光 / 暗角 (render.js applyEffects) and 膠片質感
+// GPU (WebGL2) version of the spatial effects after the grade: 色散 (fringe.js applyFringe), 朦朧 / 柔光 / 暗角 (render.js applyEffects) and 膠片質感
 // 柔化 / 光暈 / 顆粒 (film.js applyFilm). The same formulas and the same order, with the frame kept in 8-bit between the
 // steps as on the processor, so the result matches within rounding (test/e2e/gpufx.cjs).
 //
@@ -10,6 +10,7 @@
 // works in place on RGBA like applyEffects + applyFilm and returns img. renderer.lost: the browser took the context back.
 import { effectsPlan, veilOf, gridDims, blurGrid } from './render.js';
 import { hasFilm, grainGrid, blurChannels } from './film.js';
+import { fringePlan, fringeWeights, fringeStep, fringeMaxShift } from './fringe.js';
 
 const VS = `#version 300 es
 in vec2 p; void main() { gl_Position = vec4(p, 0.0, 1.0); }`;
@@ -27,15 +28,44 @@ float rollOff(float y) { if (y <= KNEE) return y; float t = y - KNEE, r = 1.0 - 
 `;
 // the frame (linear light, weighted by luminance) averaged over f×f blocks: one grid texel per block
 const DOWN = HEAD + `
-uniform sampler2D img; uniform ivec2 size; uniform int f, mode;
+uniform sampler2D img; uniform ivec2 size; uniform int f, mode, k;
+float pl(ivec2 p) { return pow(max(dot(S2L(texelFetch(img, clamp(p, ivec2(0), size - 1), 0).rgb), LUM), 0.0), 1.0 / 3.0); }
 void main() {
   ivec2 g = ivec2(gl_FragCoord.xy); vec3 acc = vec3(0.0); float n = 0.0;
+  if (mode == 4) { // 色散: mean perceptual lightness and mean fine detail (fringe.js focusGrid)
+    for (int dy = 0; dy < f; dy++) { int y = g.y * f + dy; if (y >= size.y) break;
+      for (int dx = 0; dx < f; dx++) { int x = g.x * f + dx; if (x >= size.x) break;
+        ivec2 p = ivec2(x, y); float v = pl(p), m = (pl(p - ivec2(k, 0)) + pl(p + ivec2(k, 0)) + pl(p - ivec2(0, k)) + pl(p + ivec2(0, k))) / 4.0;
+        acc.r += v; acc.g += abs(v - m); n += 1.0; } }
+    o = vec4(acc / max(n, 1.0), 1.0); return;
+  }
   for (int dy = 0; dy < f; dy++) { int y = g.y * f + dy; if (y >= size.y) break;
     for (int dx = 0; dx < f; dx++) { int x = g.x * f + dx; if (x >= size.x) break;
       vec3 l = S2L(texelFetch(img, ivec2(x, y), 0).rgb); float Y = dot(l, LUM);
       if (mode == 0) acc += l * sm(0.2, 0.85, Y); else if (mode == 1) acc += l; else if (mode == 2) acc += l * sm(0.18, 0.75, Y); else acc.r += sm(0.45, 0.95, Y) * Y;
       n += 1.0; } }
   o = vec4(acc / max(n, 1.0), 1.0);
+}`;
+// 色散: red pushed outwards, blue inwards along the line from the centre, by the out-of-focus weight (fringe.js)
+const FRINGE = HEAD + `
+uniform sampler2D img, wt; uniform ivec2 size, gs; uniform int f; uniform float ms;
+float bil(vec2 s, int c) { // bilinear on the 8-bit levels, as fringe.js
+  s = clamp(s, vec2(0.0), vec2(size - 1)); ivec2 a = ivec2(floor(s)), b = min(size - 1, a + 1); vec2 t = s - vec2(a);
+  float v00 = texelFetch(img, a, 0)[c], v01 = texelFetch(img, ivec2(b.x, a.y), 0)[c], v10 = texelFetch(img, ivec2(a.x, b.y), 0)[c], v11 = texelFetch(img, b, 0)[c];
+  float top = v00 * 255.0 + (v01 - v00) * 255.0 * t.x, bot = v10 * 255.0 + (v11 - v10) * 255.0 * t.x;
+  return top + (bot - top) * t.y;
+}
+void main() {
+  ivec2 px = ivec2(gl_FragCoord.xy); vec4 s = texelFetch(img, px, 0); o = s;
+  vec2 q = clamp((vec2(px) + 0.5) / float(f) - 0.5, vec2(0.0), vec2(gs - 1));
+  ivec2 a = ivec2(floor(q)), b = min(gs - 1, a + 1); vec2 t = q - vec2(a);
+  float w = mix(mix(texelFetch(wt, a, 0).r, texelFetch(wt, ivec2(b.x, a.y), 0).r, t.x), mix(texelFetch(wt, ivec2(a.x, b.y), 0).r, texelFetch(wt, b, 0).r, t.x), t.y);
+  vec2 c = (vec2(size) - 1.0) / 2.0, d = vec2(px) - c; float r = length(d);
+  if (r < 1.0) return;
+  float sh = ms * w * (0.3 + 0.7 * r / length(c));
+  if (sh < 0.05) return;
+  vec2 u = d / r * sh;
+  o = vec4(clamp(round(bil(vec2(px) + u, 0)), 0.0, 255.0) / 255.0, s.g, clamp(round(bil(vec2(px) - u, 2)), 0.0, 255.0) / 255.0, s.a);
 }`;
 // 朦朧 / 柔光 / 暗角 composite (render.js applyEffects, per pixel)
 const FX = HEAD + `
@@ -120,7 +150,7 @@ export function gpuEffects() {
   const vs = compile(gl.VERTEX_SHADER, VS);
   const P = {};
   try {
-    for (const [k, src] of Object.entries({ DOWN, FX, BOX, SOFTMIX, HAL, GRAIN })) {
+    for (const [k, src] of Object.entries({ DOWN, FRINGE, FX, BOX, SOFTMIX, HAL, GRAIN })) {
       const pr = gl.createProgram(); gl.attachShader(pr, vs); gl.attachShader(pr, compile(gl.FRAGMENT_SHADER, src)); gl.bindAttribLocation(pr, 0, 'p'); gl.linkProgram(pr);
       if (!gl.getProgramParameter(pr, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(pr));
       const loc = new Map(); P[k] = { pr, u: (n) => { if (!loc.has(n)) loc.set(n, gl.getUniformLocation(pr, n)); return loc.get(n); } };
@@ -168,7 +198,7 @@ export function gpuEffects() {
   const I = (v) => ({ i: v }), I2 = (a, b) => Object.assign([a, b], { int: true });
   // a grid of the frame (mode 0 glow, 1 soft copy, 2 bloom, 3 halation) averaged on the card, read back, blurred here
   const readGrid = (src, w, h, f, sw, sh, mode) => {
-    const t = pass('DOWN', { img: src }, { size: I2(w, h), f: I(f), mode: I(mode) }, target(`down${sw}x${sh}`, 'f', sw, sh));
+    const t = pass('DOWN', { img: src }, { size: I2(w, h), f: I(f), mode: I(mode), k: I(fringeStep(w, h)) }, target(`down${sw}x${sh}`, 'f', sw, sh));
     const a = new Float32Array(sw * sh * 4); gl.bindFramebuffer(gl.FRAMEBUFFER, t.fb); gl.readPixels(0, 0, sw, sh, gl.RGBA, gl.FLOAT, a);
     return a;
   };
@@ -177,11 +207,17 @@ export function gpuEffects() {
   /** in place on RGBA, as applyEffects(img, w, h, fx, hazeMap) followed by applyFilm(img, w, h, fx, frame) */
   R.apply = (img, w, h, fx, hazeMap = null, frame = 0) => {
     if (R.lost || gl.isContextLost()) { R.lost = true; throw new Error('GPU context lost'); }
-    const plan = effectsPlan(fx, !!hazeMap), film = hasFilm(fx);
-    if (!plan && !film) return img;
+    const plan = effectsPlan(fx, !!hazeMap), film = hasFilm(fx), fr = fringePlan(fx);
+    if (!plan && !film && !fr) return img;
     const [A, B] = ping(w, h); let cur = A, other = B;
     gl.bindTexture(gl.TEXTURE_2D, A.tex); gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, img instanceof Uint8Array ? img : new Uint8Array(img.buffer, img.byteOffset, img.length));
     const swap = () => { const t = cur; cur = other; other = t; };
+    if (fr) { // 色散 first (a lens effect), as in the worker's processor path
+      const { f, sw, sh } = gridDims(w, h), a = readGrid(cur, w, h, f, sw, sh, 4), g = new Float32Array(sw * sh * 2);
+      for (let q = 0; q < sw * sh; q++) { g[2 * q] = a[4 * q]; g[2 * q + 1] = a[4 * q + 1]; }
+      const W = fringeWeights(fr, { g, f, sw, sh }), wt = upload('fringe', 'f', sw, sh, rgba(W, sw * sh, 1));
+      pass('FRINGE', { img: cur, wt }, { size: I2(w, h), gs: I2(sw, sh), f: I(f), ms: fringeMaxShift(w, h) }, other); swap();
+    }
     if (plan) {
       const { f, sw, sh } = gridDims(w, h), n = sw * sh;
       const grid = (mode, radius, name) => { const a = readGrid(cur, w, h, f, sw, sh, mode), s3 = new Float32Array(n * 3); for (let i = 0; i < n; i++) for (let c = 0; c < 3; c++) s3[3 * i + c] = a[4 * i + c]; blurGrid(s3, sw, sh, radius); upload(name, 'f', sw, sh, rgba(s3, n)); return { small: s3, sw, sh, f }; };

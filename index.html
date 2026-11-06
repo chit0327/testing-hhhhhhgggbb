@@ -101,6 +101,7 @@
         <div class="stage-bar stack">
           <div class="wipe-row">
             <label class="grow"><span class="bar-lbl">原始</span><input type="range" id="adjWipe" min="0" max="100" value="50" aria-label="原始與調色結果的分隔線"><span class="bar-lbl">調色</span></label>
+            <button type="button" class="pv-play" id="pvPlay" aria-pressed="false" title="播放影片，邊播放邊看調色和效果（調整滑桿時畫面即時更新）">▶ 播放</button>
             <button type="button" class="pv-more" id="pvMore" aria-expanded="false" aria-controls="pvRow" aria-label="更多預覽選項" title="預覽畫質、快速預覽、黑白檢查、參考圖">⋯</button>
           </div>
           <div class="pv-row" id="pvRow">
@@ -359,6 +360,10 @@
                 <button type="button" class="reset" id="glowWheelReset" title="重設「光芒顏色」" aria-label="重設「光芒顏色」">↺</button>
               </div>
             </div>
+            <h3>色散（RGB 分離）</h3>
+            <label class="slider"><span>色散</span><input type="range" id="adj-fringe" min="0" max="100" value="0"><output id="adj-fringe-v">0</output></label>
+            <label class="slider sub"><span>　只在失焦處</span><input type="range" id="adj-fringeFocus" min="0" max="100" value="100"><output id="adj-fringeFocus-v">100</output></label>
+            <p class="info">像鏡頭的色差：邊緣出現紅／青色的分離，越近畫面四周越明顯。「只在失焦處」100 時只加在對焦以外（模糊）的地方，清楚的主體保持乾淨；0 時整個畫面都有，像普通鏡頭。</p>
             <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
             <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
             <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。「霧的顏色取自參考圖」令光幕用參考圖空氣的顏色（例如清晨淡藍），而不是原片本身的光色（陽光下會是暖黃）。「背景霧更濃」用 AI 偵測人物：人物的霧變淡、背景的霧變濃，像遠處隔了更多空氣（只分人物和背景兩層，不是按真正的距離）。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
