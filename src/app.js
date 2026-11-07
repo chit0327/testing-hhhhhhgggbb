@@ -20,7 +20,7 @@ import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
 import { findBars } from './engine/bars.js';
 import { refAirRGB } from './engine/render.js';
 import { dofPlan, personRel } from './engine/dof.js';
-import { initDepth, depthOf, depthInfo } from './depth.js';
+import { initDepth, depthOf, depthInfo, onDepthProgress } from './depth.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -927,12 +927,13 @@ async function repDepth() { // the representative frame's AI depth (cached per f
   const key = `${S.video.id}|${S.rep.t}`;
   if (DOF.rep && DOF.rep.key === key) return DOF.rep.depth;
   DOF.loading = true; $('dofInfo').textContent = depthInfo() ? 'AI 深度計算中…' : '載入 AI 深度模型（約 27 MB，只在第一次）…';
+  const off = onDepthProgress((st) => { $('dofInfo').textContent = `${st}…（只在第一次）`; });
   try {
     const bm = await createImageBitmap(S.rep.img), depth = await depthOf(bm, bm.width, bm.height);
     DOF.rep = { key, depth }; log('dof-depth', { ms: depth.ms, w: depth.w, h: depth.h, ep: depthInfo() && depthInfo().ep });
     return depth;
-  } catch (err) { $('dofInfo').textContent = `不能計算深度：${err.message}`; throw err; }
-  finally { DOF.loading = false; syncDof(); }
+  } catch (err) { DOF.error = err.message; throw err; }
+  finally { off(); DOF.loading = false; syncDof(); if (DOF.error) { $('dofInfo').textContent = `不能計算深度：${DOF.error}`; DOF.error = null; } }
 }
 function setFocus(pt) {
   const [x, y] = pt.map((v) => Math.min(1, Math.max(0, v)));
