@@ -47,7 +47,7 @@ export class EngineClient {
     // buffer less per frame while processing)
     const buf = give ? img.data.buffer : img.data.slice().buffer;
     return this.call({ type: 'render', rgba: buf, w: img.width, h: img.height, ...opts }, [buf]).then((m) => ({
-      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index, blur: m.blur, timing: m.timing,
+      imageData: new ImageData(new Uint8ClampedArray(m.rgba), m.w, m.h), intentHash: m.intentHash, localApplied: m.localApplied, dof: m.dof, skinProtected: m.skinProtected, localGraded: m.localGraded, index: m.index, blur: m.blur, timing: m.timing,
     }));
   }
 }
@@ -251,15 +251,16 @@ export const probeImage = (file) => probeImages([file]);
  * (quality 0.95). Returns {blob, width, height, intentHash, lookHash, jobRegions}; with keepPixels also
  * {imageData, source} (single photos: the wipe compare draws from them).
  */
-export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, maskH, maxSide = 4096, index = 0, keepPixels = true }) {
+export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, needsDepth = false, depthFn = null, maskH, maxSide = 4096, index = 0, keepPixels = true }) {
   const img = await meta.video.frameAt(index, maxSide), w = img.width, h = img.height;
   const c = canvas2d(w, h); c.getContext('2d').putImageData(img, 0, 0);
   let seg = null;
   if (needsSeg) { const sc = canvas2d(256, Math.max(2, Math.round(256 * h / w))); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height); seg = segmentFn(sc, MASK_W, maskH); }
+  const depth = needsDepth && depthFn ? await depthFn(c, w, h) : null; // 對焦（景深）
   const jobId = `photo${Date.now().toString(36)}_${index}`;
   const started = await engine.startJob(jobId, intentJson, look, { noTrack: true });
   try {
-    const r = await engine.render(img, { jobId, index: 0, seg, grade: true });
+    const r = await engine.render(img, { jobId, index: 0, seg, depth, grade: true });
     if (r.intentHash !== started.intentHash) throw new Error('處理引擎收到的設定與確認的設定不一致');
     c.getContext('2d').putImageData(r.imageData, 0, 0);
     const blob = c.convertToBlob ? await c.convertToBlob({ type: 'image/jpeg', quality: 0.95 }) : await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.95));
@@ -321,12 +322,12 @@ async function segWorkers() {
 const IN_FLIGHT = 4, IN_FLIGHT_LOW = 2;
 // a stage that stops answering ends the job with a message instead of 正在處理 forever
 const withTimeout = (p, ms, what) => { let timer; return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${what}，處理已停止。請重新整理頁面再試。`)), ms); })]).finally(() => clearTimeout(timer)); };
-export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, segPrepare = null, maskH, maxSide = 1280, onProgress, onStage = () => {}, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
+export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, needsDepth = false, depthFn = null, segPrepare = null, maskH, maxSide = 1280, onProgress, onStage = () => {}, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
   const kept = {}, blurTrack = { frames: 0, lost: 0, chained: 0 };
   // where the time goes (ms, summed over frames): grab = decode + draw + read the frame (main thread), seg = AI
   // segmentation (in its workers, overlapped), render = grading in the render worker (its own split in .worker),
   // wait = main thread waiting for finished frames, encode = waiting for the encoder queue
-  const timing = { grab: 0, seg: 0, render: 0, wait: 0, encode: 0, worker: {} }, now = () => performance.now();
+  const timing = { grab: 0, seg: 0, depth: 0, render: 0, wait: 0, encode: 0, worker: {} }, now = () => performance.now();
   if (typeof VideoEncoder === 'undefined') throw new Error('此瀏覽器不支援 WebCodecs，無法輸出影片（請使用最新版 Chrome 或 Edge）');
   const { w, h } = fitSize(meta.width, meta.height, maxSide);
   const fps = meta.fps, n = meta.frameCount;
@@ -416,8 +417,10 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
           segP = workers[segCalls++ % workers.length].segment(sImg, MASK_W, maskH).then((g) => { timing.seg += now() - ts; return g; });
         } else { tt = now(); segP = Promise.resolve(segmentFn(segCanvas, MASK_W, maskH)); timing.seg += now() - tt; }
       }
-      // post to the render worker in frame order (after this frame's masks and the previous frame's post)
-      const step = posted.then(() => segP).then((seg) => ({ r: engine.render(img, { jobId, index: i, seg, grade: true }, { give: !keepFrames.includes(i) }) }));
+      // 對焦（景深）: this frame's AI depth (read from the canvas now, estimated in the depth worker meanwhile)
+      const depP = needsDepth && depthFn ? depthFn(canvas, w, h).then((d) => { timing.depth += d.ms || 0; return d; }) : Promise.resolve(null);
+      // post to the render worker in frame order (after this frame's masks and depth and the previous frame's post)
+      const step = posted.then(() => Promise.all([segP, depP])).then(([seg, depth]) => ({ r: engine.render(img, { jobId, index: i, seg, depth, grade: true }, { give: !keepFrames.includes(i) }) }));
       posted = step.then(() => {}, () => {});
       const render = step.then((o) => o.r);
       render.catch(() => {}); // (handled when finished, in order)

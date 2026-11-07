@@ -104,6 +104,11 @@
             <button type="button" class="pv-play" id="pvPlay" aria-pressed="false" title="播放影片，邊播放邊看調色和效果（調整滑桿時畫面即時更新）">▶ 播放</button>
             <button type="button" class="pv-more" id="pvMore" aria-expanded="false" aria-controls="pvRow" aria-label="更多預覽選項" title="預覽畫質、快速預覽、黑白檢查、參考圖">⋯</button>
           </div>
+          <div class="pv-timeline" id="pvTimeline" hidden>
+            <input type="range" id="pvTime" min="0" max="1000" value="0" aria-label="影片位置：拖動跳到影片的任何時間">
+            <span class="pv-time" id="pvTimeLbl">0:00 / 0:00</span>
+            <button type="button" class="pv-rep" id="pvRep" hidden title="回到調色和畫遮罩用的代表影格">代表影格</button>
+          </div>
           <div class="pv-row" id="pvRow">
             <span class="bar-lbl">預覽畫質</span>
             <div class="pv-seg" role="radiogroup" aria-label="預覽畫質">
@@ -360,6 +365,10 @@
                 <button type="button" class="reset" id="glowWheelReset" title="重設「光芒顏色」" aria-label="重設「光芒顏色」">↺</button>
               </div>
             </div>
+            <h3>對焦（景深）</h3>
+            <div class="row"><button type="button" id="dofPick" class="primary" aria-pressed="false">選對焦點</button><button type="button" id="dofOff" disabled>關閉</button></div>
+            <label class="slider"><span>景深強度</span><input type="range" id="dofAmount" min="0" max="100" value="50" disabled><output id="dofAmount-v">50</output></label>
+            <p class="info" id="dofInfo">按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
             <h3>色散（RGB 分離）</h3>
             <label class="slider"><span>色散</span><input type="range" id="adj-fringe" min="0" max="100" value="0"><output id="adj-fringe-v">0</output></label>
             <label class="slider sub"><span>　只在失焦處</span><input type="range" id="adj-fringeFocus" min="0" max="100" value="100"><output id="adj-fringeFocus-v">100</output></label>

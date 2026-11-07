@@ -46,6 +46,27 @@ function gradeFrame(src, w, h, lut, ev, layers) {
 }
 import { applyFilm, hasFilm } from './engine/film.js';
 import { applyFringe, fringePlan } from './engine/fringe.js';
+import { dofPlan, dofScale, depthRange, normaliseDepth, focusDepth, applyDof } from './engine/dof.js';
+/**
+ * 對焦（景深） for one frame (in place, after the background blur, before the effects: a lens effect). depth: the AI depth
+ * grid of this frame {data, w, h}; temporal (a video job): the depth scale and the focus depth are smoothed over the
+ * frames, so the focus does not pump when the depth model's estimate of one frame wavers.
+ */
+function dofFrame(out, w, h, dof, depth, seg, temporal) {
+  const plan = dofPlan(dof);
+  if (!plan || !depth || !depth.data) return null;
+  const raw = { data: depth.data instanceof Float32Array ? depth.data : new Float32Array(depth.data), w: depth.w, h: depth.h };
+  let range = depthRange(raw);
+  const prev = temporal && temporal.dof;
+  if (prev) range = [0.8 * prev.range[0] + 0.2 * range[0], 0.8 * prev.range[1] + 0.2 * range[1]];
+  const dn = normaliseDepth(raw, range);
+  const mh = seg && seg.person ? seg.person.length / MASK_W : 0;
+  let df = focusDepth(dn, plan, Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null);
+  if (prev) df = 0.7 * prev.df + 0.3 * df;
+  if (temporal) temporal.dof = { range, df };
+  const r = applyDof(out, w, h, dn, df, dofScale(plan, w, h));
+  return { focus: +df.toFixed(3), maxRadius: +r.maxRadius.toFixed(1) };
+}
 // ---- the effects after the grade (朦朧 / 柔光 / 暗角, 膠片 柔化 / 光暈 / 顆粒) on the graphics card (engine/gpufx.js),
 // decided as the grade is: measured once on the first frame with effects (both run, the same picture within rounding
 // and faster), else the processor; any GPU failure moves this frame and the next ones to the processor.
@@ -129,7 +150,7 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   if (full.follow > 0 && full.prim && full.source === 'reference' && fitStore) full.prim = followed(full.prim, Math.min(1, full.follow));
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
-  delete full.blur; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; delete full.skinWarm; delete full.skinHue; // applied outside the main LUT
+  delete full.blur; delete full.dof; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; delete full.skinWarm; delete full.skinHue; // applied outside the main LUT
   const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
@@ -385,14 +406,16 @@ self.onmessage = (e) => {
       const out = gradeFrame(src, m.w, m.h, lut, ev, layers);
       lap('grade');
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
-      const fx = m.grade ? fxOf(j.look) : null;
       lap('blur');
+      const dofInfo = m.grade && j.look ? dofFrame(out, m.w, m.h, j.look.dof, m.depth, m.seg, m.jobId ? j.temporal : null) : null;
+      const fx = m.grade ? fxOf(j.look) : null;
+      lap('dof');
       // after the blur: haze and glow spread over the blurred background too; 膠片質感 last: softness, halation, then grain
       // (its pattern follows the frame number)
       if (fx) effectsFrame(out, m.w, m.h, fx, hazePerson(j.look, m.seg, j.temporal), m.index || 0);
       lap('effects');
       const prim = j.look && j.look.prim;
-      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo, timing: T,
+      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo, dof: dofInfo, timing: T,
         skinProtected: layers.length > 0 && !!(prim && prim.skin), localGraded: layers.length > 1 }, [out.buffer]);
     }
   } catch (err) {

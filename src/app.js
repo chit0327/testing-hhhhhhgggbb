@@ -19,6 +19,8 @@ import { suggestLook } from './engine/suggest.js';
 import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
 import { findBars } from './engine/bars.js';
 import { refAirRGB } from './engine/render.js';
+import { dofPlan, personRel } from './engine/dof.js';
+import { initDepth, depthOf, depthInfo } from './depth.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -380,7 +382,7 @@ const segmentRestored = (c, mw, mh) => segment(restoreCanvas(c), mw, mh);
 /** AI segmentation per frame is needed: AI regions, skin protection / local grade, AI background blur, person / skin sliders, haze depth */
 function lookNeedsSeg(look, regs) {
   const ap = look.prim, bl = look.blur;
-  return regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
+  return !!(look.dof && look.dof.on && look.dof.person) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
 }
 
 async function runSegmentation() {
@@ -636,6 +638,7 @@ function describeLook(k) {
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
   if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
+  if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : '點選位置'}`);
   if (k.fringe) parts.push(`色散 ${Math.round(k.fringe * 100)}${(k.fringeFocus ?? 1) < 1 ? `（失焦處 ${Math.round((k.fringeFocus ?? 1) * 100)}）` : ''}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
@@ -673,7 +676,7 @@ const ADJ = { // control id -> [look key, slider scale, display]
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'dof', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -682,6 +685,7 @@ const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEF
   for (const el of document.querySelectorAll('input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
 }
 function syncAdjustControls() {
+  syncDof();
   $('hazeFromRef').checked = Array.isArray(S.look.draft.hazeAir);
   $('hazeFromRef').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
   for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
@@ -874,7 +878,7 @@ $('blurBokehGlow').addEventListener('input', (e) => { editBlur({ bokehGlow: e.ta
 $('blurBokehRange').addEventListener('input', (e) => { editBlur({ bokehRange: e.target.value / 100 }); });
 // narrow screens: the panel is below the picture, so bring the picture into view to draw on it
 const showCanvasForEditing = () => { if (window.innerWidth <= 1024 && blurEditing()) $('adjCanvas').scrollIntoView({ block: 'center', behavior: 'instant' }); };
-for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { BL.tool = el.value; BL.dir = false; if (BL.tool !== 'none' && !$('blurShow').checked) { $('blurShow').checked = true; scheduleAdjPreview(); } /* selecting: show the mask */ $('blurTolRow').hidden = !BL.tool.startsWith('wand'); $('blurSizeRow').hidden = !(BL.tool === 'brush' || BL.tool === 'erase'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
+for (const el of document.querySelectorAll('input[name=blurTool]')) el.addEventListener('change', () => { if (el.value !== 'none' && (PLAY.on || PLAY.viewT !== null)) stopPlay(true); BL.tool = el.value; BL.dir = false; if (BL.tool !== 'none' && !$('blurShow').checked) { $('blurShow').checked = true; scheduleAdjPreview(); } /* selecting: show the mask */ $('blurTolRow').hidden = !BL.tool.startsWith('wand'); $('blurSizeRow').hidden = !(BL.tool === 'brush' || BL.tool === 'erase'); syncBlurControls(); drawAdj(); showCanvasForEditing(); });
 $('blurTol').addEventListener('input', (e) => { BL.tol = +e.target.value; $('blurTol-v').textContent = e.target.value; });
 $('blurBrush').addEventListener('input', (e) => { BL.brush = +e.target.value; $('blurBrush-v').textContent = BL.brush; drawAdj(); });
 $('blurBrushSoft').addEventListener('input', (e) => { BL.soft = e.target.value / 100; $('blurBrushSoft-v').textContent = e.target.value; drawAdj(); });
@@ -906,6 +910,44 @@ function toAnchorGrid(fx, fy) {
 }
 // pointer → position in the picture as 0..1 of its width / height (the canvas is letterboxed by object-fit: contain,
 // and its pixel size changes between the quick and the full-quality preview, so canvas pixels are not stable)
+// ---- 對焦（景深）: tap the preview to set the focus; the AI depth model (src/depth.js, loaded on first use) gives each
+// frame's depth. On a person (AI mask at the tapped point) the focus follows that person; elsewhere it stays on the
+// depth at the tapped point. The representative frame's depth is kept (repDepth) for the preview.
+const DOF = { picking: false, rep: null, loading: false };
+function syncDof() {
+  const d = S.look.draft.dof, on = !!(d && d.on);
+  $('dofAmount').value = Math.round(((d && d.amount) ?? 0.5) * 100); $('dofAmount-v').textContent = $('dofAmount').value;
+  $('dofAmount').disabled = !on; $('dofOff').disabled = !on;
+  $('dofPick').textContent = DOF.picking ? '在預覽上點一下…（再按取消）' : on ? '重新選對焦點' : '選對焦點';
+  $('dofPick').setAttribute('aria-pressed', DOF.picking ? 'true' : 'false');
+  $('adjCanvas').classList.toggle('picking', DOF.picking);
+  if (!DOF.loading) $('dofInfo').textContent = on ? `對焦在${d.person ? '人物（人物移動時焦點跟着）' : '點選的位置'}；比它近或遠的地方都會按距離逐漸變模糊。${depthInfo() ? `深度計算：${depthInfo().ep === 'gpu' ? '顯示卡' : '處理器'}。` : ''}` : '按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。';
+}
+async function repDepth() { // the representative frame's AI depth (cached per frame)
+  const key = `${S.video.id}|${S.rep.t}`;
+  if (DOF.rep && DOF.rep.key === key) return DOF.rep.depth;
+  DOF.loading = true; $('dofInfo').textContent = depthInfo() ? 'AI 深度計算中…' : '載入 AI 深度模型（約 27 MB，只在第一次）…';
+  try {
+    const bm = await createImageBitmap(S.rep.img), depth = await depthOf(bm, bm.width, bm.height);
+    DOF.rep = { key, depth }; log('dof-depth', { ms: depth.ms, w: depth.w, h: depth.h, ep: depthInfo() && depthInfo().ep });
+    return depth;
+  } catch (err) { $('dofInfo').textContent = `不能計算深度：${err.message}`; throw err; }
+  finally { DOF.loading = false; syncDof(); }
+}
+function setFocus(pt) {
+  const [x, y] = pt.map((v) => Math.min(1, Math.max(0, v)));
+  const seg = S.rep.seg, mh = seg && seg.person ? seg.person.length / MASK_W : 0;
+  const rel = mh ? personRel(x, y, { person: seg.person, mw: MASK_W, mh }) : null, onPerson = rel !== null;
+  const prev = S.look.draft.dof;
+  S.look.auto = false;
+  S.look.draft.dof = { on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
+  DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview();
+  log('dof-focus', { x: +x.toFixed(3), y: +y.toFixed(3), person: onPerson, rel });
+}
+$('dofPick').onclick = () => { if (!S.rep) return; DOF.picking = !DOF.picking; if (DOF.picking) { stopBlurPainting(); initDepth().catch(() => {}); } syncDof(); };
+$('dofOff').onclick = () => { if (S.look.draft.dof) S.look.draft.dof = { ...S.look.draft.dof, on: false }; DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview(); log('dof-off'); };
+$('dofAmount').addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, amount: e.target.value / 100 }; $('dofAmount-v').textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
+
 function canvasPoint(e) {
   const c = $('adjCanvas'), r = c.getBoundingClientRect(), k = Math.min(r.width / c.width, r.height / c.height);
   return [(e.clientX - r.left - (r.width - c.width * k) / 2) / (c.width * k), (e.clientY - r.top - (r.height - c.height * k) / 2) / (c.height * k)];
@@ -955,6 +997,7 @@ async function commitSelection() {
     drawAdj();
   };
   cv.addEventListener('pointerdown', (e) => {
+    if (DOF.picking && S.rep) { e.preventDefault(); setFocus(canvasPoint(e)); return; } // 對焦（景深）: the tap is the focus
     if (!blurEditing() || !S.rep) return;
     e.preventDefault(); try { cv.setPointerCapture(e.pointerId); } catch { /* (no capture: painting still works while the pointer stays on the picture) */ }
     if (e.pointerType !== 'mouse') touches.set(e.pointerId, [e.clientX, e.clientY]);
@@ -1469,6 +1512,7 @@ async function previewFrame(side) { // the representative frame at a preview res
 function scheduleAdjPreview() {
   if (!S.rep || $('adjustCard').hidden) return;
   if (PLAY.on) return; // (playing: every shown frame is rendered with the current settings)
+  if (PLAY.viewT !== null) { videoFrame(); return; } // (paused on another frame: that frame follows the settings)
   clearTimeout(PV.finalTimer);
   if (PV.fast) { requestRender(true); PV.finalTimer = setTimeout(() => requestRender(false), 250); }
   else requestRender(false);
@@ -1485,7 +1529,8 @@ async function pumpRenders() {
         const side = job.draft ? Math.max(320, PV_SIDE[PV.q] / 2) : PV_SIDE[PV.q];
         const src = await previewFrame(side), t0 = performance.now();
         const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
-        const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: previewLook(), draft: job.draft });
+        const depth = dofPlan(S.look.draft.dof) ? await repDepth() : null;
+        const r = await engine.render(src, { intent, seg: S.rep.seg, depth, grade: true, look: previewLook(), draft: job.draft });
         if (seq !== adjSeq) continue;
         const ms = performance.now() - t0;
         adjRendered = r.imageData;
@@ -1502,13 +1547,25 @@ async function pumpRenders() {
 // are judged in motion instead of on one frame. A frame is rendered only when the previous one is back (frames in
 // between are skipped: the picture keeps up with the video), at most 640 px wide. AI segmentation runs per frame when
 // the look needs it (skin protection, AI regions); a painted blur selection belongs to the representative frame.
-var PLAY = { on: false, busy: false, n: 0, t0: 0, ms: 0 }; // (var: stopPlay may be called by showPage while the page starts)
+// The timeline under the preview shows where it is and can be dragged (playing or paused); ❚❚ keeps the frame it
+// stopped on (PLAY.viewT) and sliders then re-render that frame; 代表影格 returns to the representative frame (the
+// one the settings were fitted on and the masks are painted on).
+var PLAY = { on: false, busy: false, pending: false, n: 0, t0: 0, ms: 0, viewT: null, drag: false }; // (var: stopPlay may be called by showPage while the page starts)
 function playSide() { return Math.min(640, PV_SIDE[PV.q]); }
-async function playFrame() {
+const fmtT = (t) => `${Math.floor(t / 60)}:${String(Math.floor(t % 60)).padStart(2, '0')}`;
+function syncTimeline(t) {
+  const m = S.video.meta; if (!m || !m.duration) return;
+  if (!PLAY.drag) $('pvTime').value = Math.round(t / m.duration * 1000);
+  $('pvTimeLbl').textContent = `${fmtT(t)} / ${fmtT(m.duration)}`;
+}
+/** grade the frame the video shows now (playing, or paused on PLAY.viewT); one at a time, the latest wins */
+async function videoFrame() {
   const v = S.video.meta && S.video.meta.video;
-  if (!PLAY.on || !v || PLAY.busy) return;
+  if (!v || (!PLAY.on && PLAY.viewT === null)) return;
+  if (PLAY.busy) { if (!PLAY.on) PLAY.pending = true; return; }
   PLAY.busy = true;
   try {
+    if (!PLAY.on && Math.abs(v.currentTime - PLAY.viewT) > 0.02) await seek(v, PLAY.viewT); // (another read of the video moved it)
     const m = S.video.meta, { w, h } = fitSize(m.width, m.height, playSide());
     const c = PLAY.canvas && PLAY.canvas.width === w && PLAY.canvas.height === h ? PLAY.canvas : (PLAY.canvas = canvas2d(w, h));
     const ctx = c.getContext('2d', { willReadFrequently: true }); ctx.drawImage(v, 0, 0, w, h);
@@ -1519,52 +1576,82 @@ async function playFrame() {
       const sc = canvas2d(256, maskH()); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height);
       seg = segment(restoreCanvas(sc, currentNorm()), MASK_W, maskH());
     }
+    const depth = dofPlan(look.dof) ? await depthOf(c, w, h) : null;
     await S.grade.ready;
-    const r = await engine.render(src, { intent, seg, grade: true, look, draft: false });
-    if (!PLAY.on || $('adjustCard').hidden) return;
+    const r = await engine.render(src, { intent, seg, depth, grade: true, look, draft: false });
+    if ((!PLAY.on && PLAY.viewT === null) || $('adjustCard').hidden) return;
     const ms = performance.now() - t0;
-    PLAY.n++; PLAY.ms = PLAY.ms ? PLAY.ms * 0.8 + ms * 0.2 : ms;
     S.preview = { src, out: r.imageData, w, h, draft: false, ms, t }; // (the split compares this frame, original | graded)
-    drawAdj();
-    const fps = PLAY.n / ((performance.now() - PLAY.t0) / 1000);
-    $('pvInfo').textContent = `播放中 ${w}×${h}・每格 ${Math.round(PLAY.ms)} ms・約 ${fps.toFixed(1)} 格/秒${seg ? '・含 AI 人物偵測' : ''}`;
-    log('play-frame', { t: +t.toFixed(3), ms: Math.round(ms), seg: !!seg });
+    drawAdj(); syncTimeline(t);
+    if (PLAY.on) {
+      PLAY.n++; PLAY.ms = PLAY.ms ? PLAY.ms * 0.8 + ms * 0.2 : ms;
+      const fps = PLAY.n / ((performance.now() - PLAY.t0) / 1000);
+      $('pvInfo').textContent = `播放中 ${w}×${h}・每格 ${Math.round(PLAY.ms)} ms・約 ${fps.toFixed(1)} 格/秒${seg ? '・含 AI 人物偵測' : ''}`;
+      log('play-frame', { t: +t.toFixed(3), ms: Math.round(ms), seg: !!seg });
+    } else {
+      $('pvInfo').textContent = `${fmtT(t)} 的畫面 ${w}×${h}・${Math.round(ms)} ms（按「代表影格」回到調色用的那一格）`;
+      log('view-frame', { t: +t.toFixed(3), ms: Math.round(ms) });
+    }
   } catch (err) { $('adjState').textContent = `播放預覽失敗：${err.message}`; stopPlay(); }
-  finally { PLAY.busy = false; }
+  finally {
+    PLAY.busy = false;
+    if (PLAY.pending && !PLAY.on) { PLAY.pending = false; videoFrame(); }
+  }
 }
 function playLoop() {
   const v = S.video.meta && S.video.meta.video;
   if (!PLAY.on || !v) return;
   const next = () => { if (!PLAY.on) return; if (v.requestVideoFrameCallback) v.requestVideoFrameCallback(tick); else requestAnimationFrame(tick); };
-  const tick = () => { if (!PLAY.on) return; playFrame(); next(); };
+  const tick = () => { if (!PLAY.on) return; videoFrame(); next(); };
   next();
 }
 async function startPlay() {
   const v = S.video.meta && S.video.meta.video;
   if (PLAY.on || !v || isPhoto() || !S.rep) return;
   stopBlurPainting();
-  PLAY.on = true; PLAY.n = 0; PLAY.ms = 0; PLAY.t0 = performance.now();
-  $('pvPlay').setAttribute('aria-pressed', 'true'); $('pvPlay').textContent = '❚❚ 暫停';
+  const from = PLAY.viewT !== null ? PLAY.viewT : S.rep.t; // (from the frame on screen)
+  PLAY.on = true; PLAY.n = 0; PLAY.ms = 0; PLAY.t0 = performance.now(); PLAY.viewT = null;
+  $('pvPlay').setAttribute('aria-pressed', 'true'); $('pvPlay').textContent = '❚❚ 暫停'; $('pvRep').hidden = false;
   v.muted = true; v.loop = true;
-  try { if (Math.abs(v.currentTime - S.rep.t) > 0.5 && !(PLAY.resumeT >= 0)) v.currentTime = S.rep.t; await v.play(); }
-  catch (err) { $('adjState').textContent = `不能播放影片：${err.message}`; stopPlay(); return; }
+  try { if (Math.abs(v.currentTime - from) > 0.05) v.currentTime = from; await v.play(); }
+  catch (err) { $('adjState').textContent = `不能播放影片：${err.message}`; stopPlay(true); return; }
   log('play-start', { t: v.currentTime });
   playLoop();
 }
-function stopPlay() {
-  if (!PLAY || !PLAY.on) return;
-  PLAY.on = false;
+/** pause: stay on the frame it stopped on (toRep: back to the representative frame, e.g. before the lighting dialog) */
+function stopPlay(toRep = true) {
+  if (!PLAY) return;
   const v = S.video.meta && S.video.meta.video;
-  if (v) { v.pause(); v.loop = false; PLAY.resumeT = v.currentTime; }
-  $('pvPlay').setAttribute('aria-pressed', 'false'); $('pvPlay').textContent = '▶ 播放';
-  log('play-stop', { frames: PLAY.n });
-  // back to the representative frame (the one the settings were fitted on and the masks were painted on)
-  if (S.rep && !$('adjustCard').hidden) { clearTimeout(PV.finalTimer); requestRender(false); }
+  if (PLAY.on) {
+    PLAY.on = false;
+    if (v) { v.pause(); v.loop = false; }
+    $('pvPlay').setAttribute('aria-pressed', 'false'); $('pvPlay').textContent = '▶ 播放';
+    log('play-stop', { frames: PLAY.n });
+    if (!toRep && v) { PLAY.viewT = v.currentTime; videoFrame(); return; }
+  }
+  if (toRep && PLAY.viewT !== null) PLAY.viewT = null;
+  if (toRep) { $('pvRep').hidden = true; if (S.rep && !$('adjustCard').hidden && S.preview && S.preview.t !== undefined) { clearTimeout(PV.finalTimer); requestRender(false); } if (S.rep) syncTimeline(S.rep.t); }
 }
-$('pvPlay').onclick = () => (PLAY.on ? stopPlay() : startPlay());
+$('pvPlay').onclick = () => (PLAY.on ? stopPlay(false) : startPlay());
+$('pvRep').onclick = () => { stopPlay(true); log('view-rep'); };
+// the timeline: dragging seeks (playing: it plays on from there; paused: that frame is graded and shown)
+$('pvTime').addEventListener('input', async (e) => {
+  const v = S.video.meta && S.video.meta.video, m = S.video.meta;
+  if (!v || !m || !m.duration || isPhoto() || !S.rep) return;
+  PLAY.drag = true;
+  const t = Math.min(m.duration - 0.01, e.target.value / 1000 * m.duration);
+  $('pvTimeLbl').textContent = `${fmtT(t)} / ${fmtT(m.duration)}`;
+  if (PLAY.on) { v.currentTime = t; return; }
+  stopBlurPainting();
+  PLAY.viewT = t; $('pvRep').hidden = false;
+  try { await seek(v, t); } catch { return; }
+  if (PLAY.viewT === t) videoFrame();
+});
+$('pvTime').addEventListener('change', () => { PLAY.drag = false; });
 
 function drawAdj() {
-  $('pvPlay').hidden = !S.video.meta || isPhoto() || !S.rep;
+  $('pvPlay').hidden = $('pvTimeline').hidden = !S.video.meta || isPhoto() || !S.rep;
+  if (S.rep && !PLAY.on && PLAY.viewT === null && !$('pvTimeline').hidden) syncTimeline(S.rep.t);
   const p = S.preview;
   if (!S.rep || !p) return;
   const editing = blurEditing(), c = $('adjCanvas'), w = p.w, h = p.h, x = editing ? 0 : Math.round($('adjWipe').value / 100 * w); // editing: the whole result
@@ -1686,8 +1773,11 @@ async function startProcessing() {
   // AI segmentation per frame: for AI regions, and for skin protection of the pro grade
   const needsSeg = lookNeedsSeg(S.look.applied, regs);
   if (needsSeg) await initSegmenter();
+  // 對焦（景深）: the AI depth of every frame
+  const needsDepth = !!dofPlan(S.look.applied.dof);
+  if (needsDepth) { $('progressText').textContent = '載入 AI 深度模型（約 27 MB，只在第一次）…'; try { await initDepth(); } catch { /* (the processing below reports it as its error) */ } }
   if (token !== S.job.token) return;
-  if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg); }
+  if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg, needsDepth); }
   // while processing, only the hidden work video decodes the source: the upload preview and the comparison
   // players are unloaded (on iPad every <video> holding a 4K clip takes a hardware decoder and a lot of memory, and
   // four at once gave "Decoder failure" / "out of memory"). They are loaded again afterwards; nothing about the
@@ -1696,7 +1786,7 @@ async function startProcessing() {
   await primeVideo(S.video.meta.video); // (iPad: the decoder back to the work video, should another video have taken it)
   try {
     const res = await processVideo({
-      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH,
+      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH, needsDepth, depthFn: depthOf,
       look: S.look.applied, isCancelled: () => token !== S.job.token, keepFrames: window.__keepFrames || [], stream: !window.__noStream, segWorker: !window.__noSegWorker,
       onStage: (text) => { if (token === S.job.token) { $('progressText').textContent = text; log('processing-stage', { text }); } },
       onProgress: ({ done, total, elapsed }) => {
@@ -1715,6 +1805,7 @@ async function startProcessing() {
     + `；局部調整區域：${res.jobRegions.length ? res.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
     + (res.audio.kept ? `音訊：已保留原片音軌（${res.audio.codec}，未重新編碼）。` : `音訊：${res.audio.reason}。`)
     + (res.timing && res.timing.segInfo ? `AI 人物偵測：${res.timing.segInfo.delegate === 'GPU' ? '顯示卡（GPU）' : '處理器（CPU）'}${res.timing.segInfo.cpuMs ? `（實測每格 CPU ${Math.round(res.timing.segInfo.cpuMs)} ms${res.timing.segInfo.gpuMs ? `、GPU ${Math.round(res.timing.segInfo.gpuMs)} ms` : '、GPU 不可用'}）` : ''}。` : '')
+    + dofText(res.timing, res.frames)
     + gradeText(res.timing && res.timing.gradeInfo)
     + (res.timing && res.timing.total ? `處理時間 ${(res.timing.total / 1000).toFixed(1)} 秒。` : '');
     log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio, timing: res.timing });
@@ -1885,7 +1976,7 @@ const tabObserver = new MutationObserver((list) => { for (const m of list) if (m
 for (const d of document.querySelectorAll('#adjustCard > details[data-group]')) tabObserver.observe(d, { attributes: true, attributeFilter: ['open'] });
 function unloadVideo(v) { v.pause(); if (v.getAttribute('src')) { v.removeAttribute('src'); v.load(); } }
 function showPage(p) {
-  if (p !== 'work') stopPlay();
+  if (p !== 'work') stopPlay(true);
   S.page = p;
   if (p === 'upload' && S.video.meta && !isPhoto() && !$('videoPreview').getAttribute('src')) $('videoPreview').src = S.video.meta.url; // (unloaded while processing)
   if (p === 'work') unloadVideo($('videoPreview')); // (hidden on the grading page: an iPad decodes few videos at once — only the work video needs one; reloaded on the upload page)
@@ -2019,19 +2110,26 @@ function syncKindLabels() { // wording and controls that only make sense for one
   $('reprocess').textContent = '以目前設定重新處理';
 }
 /** 調色計算：顯示卡／處理器 (the worker's measured choice), for the result info */
+/** 對焦深度：顯示卡／處理器 (the depth worker's measured choice) and the time per frame, for the result info */
+function dofText(timing, frames = 0) {
+  const i = depthInfo();
+  if (!dofPlan(S.look.applied && S.look.applied.dof) || !i) return '';
+  const per = timing && timing.depth && frames ? `，每格約 ${Math.round(timing.depth / frames)} ms` : '';
+  return `對焦深度計算：${i.ep === 'gpu' ? '顯示卡' : `處理器${i.why ? `（${i.why}）` : ''}`}${per}。`;
+}
 function gradeText(g) {
   if (!g || !g.mode) return '';
   const one = (x) => `${x.mode === 'gpu' ? `顯示卡（${x.renderer || 'GPU'}）` : `處理器${x.why ? `（${x.why}）` : ''}`}${x.cpuMs != null ? `，實測每格處理器 ${Math.round(x.cpuMs)} ms／顯示卡 ${Math.round(x.gpuMs)} ms` : ''}`;
   return `調色計算：${one(g)}。${g.fx && g.fx.mode ? `效果計算：${one(g.fx)}。` : ''}`;
 }
-async function processPhotoJob(intent, token, needsSeg) {
+async function processPhotoJob(intent, token, needsSeg, needsDepth = false) {
   const m = S.video.meta, n = m.count, items = [], names = new Set();
   let first = null;
   try {
     for (let i = 0; i < n; i++) { // one after another (in parallel they only compete for the CPU and memory)
       if (token !== S.job.token) return;
       $('progressBar').style.width = `${(i / n) * 100}%`; $('progressText').textContent = `${i} / ${n} 張`;
-      const res = await processPhoto({ engine, meta: m, index: i, keepPixels: false, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, maskH: intent.maskH, look: S.look.applied });
+      const res = await processPhoto({ engine, meta: m, index: i, keepPixels: false, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, needsDepth, depthFn: depthOf, maskH: intent.maskH, look: S.look.applied });
       if (res.intentHash !== hashIntent(intent)) throw new Error(`第 ${i + 1} 張：處理引擎收到的設定與確認的設定不一致`);
       let name = `${S.video.files[i].name.replace(/\.[^.]+$/, '')}_graded.jpg`;
       for (let k = 2; names.has(name); k++) name = `${S.video.files[i].name.replace(/\.[^.]+$/, '')}_graded_${k}.jpg`;
@@ -2048,6 +2146,7 @@ async function processPhotoJob(intent, token, needsSeg) {
     $('resultInfo').textContent = `${n > 1 ? `${n} 張照片，同一組調色設定` : `照片 ${items[0].width}×${items[0].height}`}，JPEG，共 ${mb.toFixed(1)} MB。`
       + `處理引擎回報的光暗設定雜湊 ${first.intentHash}（與確認的設定一致），色彩設定雜湊 ${first.lookHash}（${describeLook(S.look.applied)}）`
       + `；局部調整區域：${first.jobRegions.length ? first.jobRegions.map((r) => `${KINDS[r.kind].label} ${r.ev > 0 ? '+' : ''}${r.ev.toFixed(2)} 檔`).join('、') : '無'}。`
+      + dofText(null)
       + gradeText(await engine.call({ type: 'gpu-info' }).then((r) => r.info).catch(() => null));
     log('processing-done', { frames: n, photo: true, count: n, hash: first.intentHash, size: Math.round(mb * 1e6) });
     setPhase('done');

@@ -190,6 +190,11 @@ input[type=range].hue::-moz-range-thumb { width: 14px; height: 14px; border-radi
 /* preview quality (After Effects style) */
 .pv-play { flex: none; padding: 4px 10px; white-space: nowrap; }
 .pv-play[aria-pressed="true"] { background: var(--accent, #2b6cb0); color: #fff; }
+.pv-timeline { display: flex; align-items: center; gap: 8px; }
+.pv-timeline[hidden] { display: none; }
+.pv-timeline input { flex: 1; min-width: 0; }
+.pv-time { font-variant-numeric: tabular-nums; font-size: 12px; white-space: nowrap; }
+.pv-rep { flex: none; padding: 3px 8px; font-size: 12px; }
 .pv-row { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 12px; }
 .pv-seg { display: inline-flex; border: 1px solid #3a3a42; border-radius: 99px; overflow: hidden; }
 .pv-seg button { border: none; border-radius: 0; padding: 3px 12px; font-size: 13px; background: #2a2a30; color: #d8d8de; }
@@ -324,3 +329,6 @@ body::before { content: ""; position: fixed; inset: 0; z-index: -1; pointer-even
 .pv-reset-zoom { position: absolute; right: 10px; bottom: 10px; z-index: 3; padding: 5px 10px; font-size: 13px; border-radius: 8px; border: 0; background: rgba(0, 0, 0, .6); color: #fff; }
 
 .rep-msg { color: var(--warn); margin: 6px 0; }
+
+/* 對焦（景深）: picking the focus point on the preview */
+#adjCanvas.picking { cursor: crosshair; outline: 2px dashed var(--accent, #2b6cb0); outline-offset: -2px; }
