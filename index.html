@@ -368,6 +368,8 @@
             <h3>對焦（景深）</h3>
             <div class="row"><button type="button" id="dofPick" class="primary" aria-pressed="false">選對焦點</button><button type="button" id="dofOff" disabled>關閉</button></div>
             <label class="slider"><span>景深強度</span><input type="range" id="dofAmount" min="0" max="100" value="50" disabled><output id="dofAmount-v">50</output></label>
+            <label class="slider sub"><span>　光斑亮度</span><input type="range" id="dofGlow" min="0" max="100" value="50" disabled><output id="dofGlow-v">50</output></label>
+            <label class="slider sub"><span>　光斑範圍</span><input type="range" id="dofRange" min="0" max="100" value="50" disabled><output id="dofRange-v">50</output></label>
             <p class="info" id="dofInfo">按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
             <h3>色散（RGB 分離）</h3>
             <label class="slider"><span>色散</span><input type="range" id="adj-fringe" min="0" max="100" value="0"><output id="adj-fringe-v">0</output></label>

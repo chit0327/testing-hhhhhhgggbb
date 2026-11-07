@@ -638,7 +638,7 @@ function describeLook(k) {
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
   if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
-  if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : '點選位置'}`);
+  if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : '點選位置'}、光斑 ${Math.round((k.dof.glow ?? 0.5) * 100)}`);
   if (k.fringe) parts.push(`色散 ${Math.round(k.fringe * 100)}${(k.fringeFocus ?? 1) < 1 ? `（失焦處 ${Math.round((k.fringeFocus ?? 1) * 100)}）` : ''}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
@@ -841,7 +841,7 @@ function editBlur(changes) {
   const next = { ...blurOf(), ...changes };
   if (BL.layer && !next.selId) next.selId = BL.curSel;
   S.look.draft.blur = next;
-  syncBlurControls(); updateAdjState(); scheduleAdjPreview();
+  syncBlurControls(); syncDof(); updateAdjState(); scheduleAdjPreview(); // (syncDof: the note when background blur and 對焦 are both on)
 }
 function syncBlurControls() {
   const b = blurOf();
@@ -866,7 +866,7 @@ $('blurOn').addEventListener('change', (e) => { if (e.target.checked) $('blurSho
 // 顯示遮罩 is separate from 開啟模糊: while the mask is shown, the preview is rendered WITHOUT the blur (sharp picture,
 // so the selection can be checked and erased precisely); the look itself (and the processed file) is unchanged
 const maskShown = () => $('blurShow').checked && !$('catBlur').hidden && $('catBlur').open && $('adjustCard').dataset.tab === $('catBlur').dataset.group && !$('viewPreview').hidden; // (the 效果 tab shown: the tabs hide the other categories with CSS)
-function previewLook() { const d = S.look.draft; return maskShown() && d.blur && d.blur.on ? { ...d, blur: { ...d.blur, on: false } } : d; }
+function previewLook(d = S.look.draft) { return maskShown() && d.blur && d.blur.on ? { ...d, blur: { ...d.blur, on: false } } : d; }
 $('blurAi').addEventListener('change', (e) => { editBlur({ ai: e.target.checked }); if (e.target.checked && !(S.rep && S.rep.seg)) $('blurInfo').textContent = 'AI 背景偵測還沒有結果（請先完成光暗設定的 AI 辨識），可以先用筆刷或套索。'; });
 $('blurInvert').addEventListener('change', (e) => editBlur({ invert: e.target.checked }));
 $('blurShow').addEventListener('change', () => { drawAdj(); scheduleAdjPreview(); });
@@ -918,10 +918,12 @@ function syncDof() {
   const d = S.look.draft.dof, on = !!(d && d.on);
   $('dofAmount').value = Math.round(((d && d.amount) ?? 0.5) * 100); $('dofAmount-v').textContent = $('dofAmount').value;
   $('dofAmount').disabled = !on; $('dofOff').disabled = !on;
+  for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range']]) { $(id).value = Math.round(((d && d[k]) ?? 0.5) * 100); $(`${id}-v`).textContent = $(id).value; $(id).disabled = !on; }
   $('dofPick').textContent = DOF.picking ? '在預覽上點一下…（再按取消）' : on ? '重新選對焦點' : '選對焦點';
   $('dofPick').setAttribute('aria-pressed', DOF.picking ? 'true' : 'false');
   $('adjCanvas').classList.toggle('picking', DOF.picking);
-  if (!DOF.loading) $('dofInfo').textContent = on ? `對焦在${d.person ? '人物（人物移動時焦點跟着）' : '點選的位置'}；比它近或遠的地方都會按距離逐漸變模糊。${depthInfo() ? `深度計算：${depthInfo().ep === 'gpu' ? '顯示卡' : '處理器'}。` : ''}` : '按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。';
+  const bl = S.look.draft.blur, both = on && bl && bl.on && bl.amount > 0;
+  if (!DOF.loading) $('dofInfo').textContent = on ? `對焦在${d.person ? '人物（人物移動時焦點跟着）' : '點選的位置'}；比它近或遠的地方都會按距離逐漸變模糊，背景的小光點會散開成圓形光斑（光斑亮度、光斑範圍）。${depthInfo() ? `深度計算：${depthInfo().ep === 'gpu' ? '顯示卡' : '處理器'}。` : ''}${both ? '　注意：「背景模糊」也開着，兩者會疊加（先背景模糊、再景深），背景被模糊兩次，背景模糊的光斑會被再糊開；用景深時通常關掉背景模糊、改用這裏的光斑。' : ''}` : '按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。';
 }
 async function repDepth() { // the representative frame's AI depth (cached per frame)
   const key = `${S.video.id}|${S.rep.t}`;
@@ -941,12 +943,13 @@ function setFocus(pt) {
   const rel = mh ? personRel(x, y, { person: seg.person, mw: MASK_W, mh }) : null, onPerson = rel !== null;
   const prev = S.look.draft.dof;
   S.look.auto = false;
-  S.look.draft.dof = { on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
+  S.look.draft.dof = { ...(prev ? { amount: prev.amount, glow: prev.glow, range: prev.range } : {}), on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
   DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview();
   log('dof-focus', { x: +x.toFixed(3), y: +y.toFixed(3), person: onPerson, rel });
 }
 $('dofPick').onclick = () => { if (!S.rep) return; DOF.picking = !DOF.picking; if (DOF.picking) { stopBlurPainting(); initDepth().catch(() => {}); } syncDof(); };
 $('dofOff').onclick = () => { if (S.look.draft.dof) S.look.draft.dof = { ...S.look.draft.dof, on: false }; DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview(); log('dof-off'); };
+for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range']]) $(id).addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, [k]: e.target.value / 100 }; $(`${id}-v`).textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
 $('dofAmount').addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, amount: e.target.value / 100 }; $('dofAmount-v').textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
 
 function canvasPoint(e) {
@@ -1530,8 +1533,9 @@ async function pumpRenders() {
         const side = job.draft ? Math.max(320, PV_SIDE[PV.q] / 2) : PV_SIDE[PV.q];
         const src = await previewFrame(side), t0 = performance.now();
         const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
-        const depth = dofPlan(S.look.draft.dof) ? await repDepth() : null;
-        const r = await engine.render(src, { intent, seg: S.rep.seg, depth, grade: true, look: previewLook(), draft: job.draft });
+        const used = JSON.parse(JSON.stringify(S.look.draft)); // (the settings this picture is made with: logged below, not whatever the sliders say by the time it is back)
+        const depth = dofPlan(used.dof) ? await repDepth() : null;
+        const r = await engine.render(src, { intent, seg: S.rep.seg, depth, grade: true, look: previewLook(used), draft: job.draft });
         if (seq !== adjSeq) continue;
         const ms = performance.now() - t0;
         adjRendered = r.imageData;
@@ -1539,7 +1543,7 @@ async function pumpRenders() {
         drawAdj();
         $('pvInfo').textContent = `${src.width}×${src.height}・${job.draft ? '快速（17³）' : '完整品質（41³）'}・${Math.round(ms)} ms`;
         if (job.draft) log('adjust-preview-draft', { w: src.width, ms: Math.round(ms) });
-        else { drawScopes(); log('adjust-preview', { look: { ...S.look.draft }, w: src.width, ms: Math.round(ms) }); setTimeout(renderPicks, 0); } // (四選一 follows the current look, when open)
+        else { drawScopes(); log('adjust-preview', { look: used, w: src.width, ms: Math.round(ms) }); setTimeout(renderPicks, 0); } // (四選一 follows the current look, when open)
       } catch (err) { $('adjState').textContent = `預覽失敗：${err.message}`; }
     }
   } finally { PV.busy = false; }

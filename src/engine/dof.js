@@ -15,6 +15,8 @@
 // ~6 cells), the result is brought back to full size and mixed with the original pixels where the visible blur is
 // under ~1 px, so what is in focus keeps every pixel of detail.
 import { S2L } from './color.js';
+import { rollOff, boxBlur } from './render.js';
+import { guidedFilter } from './masks.js';
 
 const clamp01 = (v) => Math.min(1, Math.max(0, +v || 0));
 const SLICES = 10;
@@ -24,7 +26,8 @@ export function dofPlan(dof) {
   if (!dof || !dof.on) return null;
   const amount = clamp01(dof.amount ?? 0.5);
   if (!amount || !Number.isFinite(dof.x) || !Number.isFinite(dof.y)) return null;
-  return { amount, x: clamp01(dof.x), y: clamp01(dof.y), person: !!dof.person, rel: Number.isFinite(dof.rel) ? clamp01(dof.rel) : null };
+  return { amount, x: clamp01(dof.x), y: clamp01(dof.y), person: !!dof.person, rel: Number.isFinite(dof.rel) ? clamp01(dof.rel) : null,
+    glow: Number.isFinite(dof.glow) ? clamp01(dof.glow) : 0.5, range: Number.isFinite(dof.range) ? clamp01(dof.range) : 0.5 };
 }
 /** blur radius in px per unit of (0..1) depth difference, at the frame's size */
 export const dofScale = (plan, w, h) => plan.amount * 0.04 * Math.max(w, h);
@@ -99,9 +102,15 @@ function disc(buf, w, h, R) {
 
 /**
  * In place on RGBA (w×h): dn = 0..1 depth grid {data, w, h} (1 = near), df = focus depth, K = blur px per unit depth.
- * Returns {maxRadius} (px) for the record.
+ * bokeh {glow, range} 0..1: 光斑 — as in the background blur's bokeh (blur.js), bright points are boosted before the
+ * round blur so they open into bright discs (a camera records lights far brighter than the screen shows; blurred
+ * without that they turn into dull grey smudges), then rolled off so they never clip. glow 0.5 → ×16 (only points much brighter than
+ * their surroundings count as lights, so a white wall is never brightened).
+ * range: the brightness where a highlight starts to count as a light (0.8 … 0.2). The boost grows with the layer's blur,
+ * so what is in focus is not brightened. Returns {maxRadius} (px) for the record.
  */
-export function applyDof(img, w, h, dn, df, K) {
+export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }) {
+  const gain = 30 * clamp01(bokeh.glow ?? 0.5), lo = 0.8 - 0.6 * clamp01(bokeh.range ?? 0.5);
   const f0 = Math.max(1, Math.round(Math.max(w, h) / 640)), sw = Math.ceil(w / f0), sh = Math.ceil(h / f0), n = sw * sh;
   // the frame (linear light) and its depth on the base grid
   const lin = new Float32Array(n * 3), cnt = new Float32Array(n), dg = new Float32Array(n);
@@ -116,6 +125,26 @@ export function applyDof(img, w, h, dn, df, K) {
     return (d[y0 * dn.w + x0] * (1 - tx) + d[y0 * dn.w + x1] * tx) * (1 - ty) + (d[y1 * dn.w + x0] * (1 - tx) + d[y1 * dn.w + x1] * tx) * ty;
   };
   for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) dg[y * sw + x] = depthAt((x + 0.5) / sw, (y + 0.5) / sh);
+  // the depth refined along the picture's own edges (guided filter, guide = lightness): the AI depth is ~3–4× coarser
+  // than the picture and its edge along a slanted boundary steps cell by cell — those steps became a saw-tooth line
+  // between a sharp subject and the blurred background (seen at a white table's edge against a dark floor). Fitted
+  // locally as a linear function of the lightness, the depth edge follows the real edge smoothly. (Radius ~2 depth
+  // cells; a wider one printed shadows on the table into the depth.)
+  {
+    const I = new Float32Array(n);
+    for (let q = 0; q < n; q++) I[q] = Math.cbrt(0.2126 * lin[3 * q] + 0.7152 * lin[3 * q + 1] + 0.0722 * lin[3 * q + 2]);
+    dg.set(guidedFilter(dg, I, sw, sh, Math.max(1, Math.round(4 * sw / 640)), 1e-3));
+  }
+  // 光斑: which cells are lights — bright AND much brighter than their surroundings (a lamp, a sparkle), not a large
+  // bright surface (a white table, a sunlit wall stays as bright when blurred: boosting it washed it out)
+  const pt = new Float32Array(n);
+  if (gain) {
+    const Yl = new Float32Array(n * 3);
+    for (let q = 0; q < n; q++) Yl[3 * q] = Yl[3 * q + 1] = Yl[3 * q + 2] = 0.2126 * lin[3 * q] + 0.7152 * lin[3 * q + 1] + 0.0722 * lin[3 * q + 2];
+    const M = Yl.slice(); boxBlur(M, sw, sh, Math.max(2, Math.round(6 / f0 * (sw / 640 * f0))));
+    const sm = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+    for (let q = 0; q < n; q++) pt[q] = sm(lo, 1, Yl[3 * q]) * sm(0.45, 0.7, Yl[3 * q] - M[3 * q]); // (an edge of a large bright area stands out about half as much as a point)
+  }
   // slices far → near, "over" composite (premultiplied); vis = the blur radius of what is visible (for the final mix)
   const acc = new Float32Array(n * 4), vis = new Float32Array(n);
   let maxR = 0;
@@ -124,7 +153,7 @@ export function applyDof(img, w, h, dn, df, K) {
   for (let k = -Math.ceil(df / step) - 1; df + k * step <= 1 + step; k++) if (df + k * step >= -step) centres.push(df + k * step);
   for (const c of centres) {
     const rPx = Math.abs(c - df) * K, rb = rPx / f0;
-    const g = Math.max(1, Math.ceil(rb / 6)), gw = Math.ceil(sw / g), gh = Math.ceil(sh / g);
+    const g = Math.max(1, Math.ceil(rb / 6)), gw = Math.ceil(sw / g), gh = Math.ceil(sh / g), gb = gain * Math.min(1, Math.max(0, (rPx - 1) / 3));
     const buf = new Float32Array(gw * gh * 4), gc = new Float32Array(gw * gh);
     let any = false;
     for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
@@ -132,7 +161,9 @@ export function applyDof(img, w, h, dn, df, K) {
       gc[o]++;
       if (m <= 0) continue;
       any = true;
-      buf[4 * o] += lin[3 * q] * m; buf[4 * o + 1] += lin[3 * q + 1] * m; buf[4 * o + 2] += lin[3 * q + 2] * m; buf[4 * o + 3] += m;
+      const r = lin[3 * q], gg = lin[3 * q + 1], bb = lin[3 * q + 2];
+      const kb = gb ? 1 + gb * pt[q] : 1;
+      buf[4 * o] += r * m * kb; buf[4 * o + 1] += gg * m * kb; buf[4 * o + 2] += bb * m * kb; buf[4 * o + 3] += m;
     }
     if (!any) continue;
     for (let o = 0; o < gw * gh; o++) { const k = 1 / (gc[o] || 1); for (let ch = 0; ch < 4; ch++) buf[4 * o + ch] *= k; }
@@ -162,10 +193,16 @@ export function applyDof(img, w, h, dn, df, K) {
       const w00 = (1 - tx) * (1 - ty), w01 = tx * (1 - ty), w10 = (1 - tx) * ty, w11 = tx * ty;
       const r = vis[q00] * w00 + vis[q01] * w01 + vis[q10] * w10 + vis[q11] * w11, k = Math.min(1, Math.max(0, (r - 0.5) / 1.5));
       if (k <= 0) continue;
-      const p = (y * w + x) * 4;
+      const p = (y * w + x) * 4, bl = [0, 0, 0];
       for (let ch = 0; ch < 3; ch++) {
         const v = (q) => acc[4 * q + ch] / Math.max(acc[4 * q + 3], 1e-6);
-        const b = v(q00) * w00 + v(q01) * w01 + v(q10) * w10 + v(q11) * w11, o = S2L[img[p + ch]], m = Math.min(1, Math.max(0, o + (b - o) * k));
+        bl[ch] = v(q00) * w00 + v(q01) * w01 + v(q10) * w10 + v(q11) * w11;
+      }
+      const Y = 0.2126 * bl[0] + 0.7152 * bl[1] + 0.0722 * bl[2]; // boosted lights: rolled off, never clipped
+      if (Y > 0.8) { const sc = rollOff(Y) / Y; bl[0] *= sc; bl[1] *= sc; bl[2] *= sc; }
+      const mx = Math.max(bl[0], bl[1], bl[2]); if (mx > 1) { const Yn = Math.min(1, Y > 0.8 ? rollOff(Y) : Y), t = (mx - 1) / Math.max(mx - Yn, 1e-6); for (let ch = 0; ch < 3; ch++) bl[ch] += (Yn - bl[ch]) * t; }
+      for (let ch = 0; ch < 3; ch++) {
+        const o = S2L[img[p + ch]], m = Math.min(1, Math.max(0, o + (bl[ch] - o) * k));
         img[p + ch] = 255 * (m <= 0.0031308 ? 12.92 * m : 1.055 * Math.pow(m, 1 / 2.4) - 0.055);
       }
     }

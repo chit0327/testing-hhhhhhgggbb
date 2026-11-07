@@ -64,7 +64,7 @@ function dofFrame(out, w, h, dof, depth, seg, temporal) {
   let df = focusDepth(dn, plan, Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null);
   if (prev) df = 0.7 * prev.df + 0.3 * df;
   if (temporal) temporal.dof = { range, df };
-  const r = applyDof(out, w, h, dn, df, dofScale(plan, w, h));
+  const r = applyDof(out, w, h, dn, df, dofScale(plan, w, h), { glow: plan.glow, range: plan.range });
   return { focus: +df.toFixed(3), maxRadius: +r.maxRadius.toFixed(1) };
 }
 // ---- the effects after the grade (朦朧 / 柔光 / 暗角, 膠片 柔化 / 光暈 / 顆粒) on the graphics card (engine/gpufx.js),
