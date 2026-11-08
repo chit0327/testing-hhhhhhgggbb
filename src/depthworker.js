@@ -19,26 +19,52 @@ function tensor(rgba, w, h) {
 }
 const run = async (s, rgba, w, h) => { const o = await s.run({ [s.inputNames[0]]: tensor(rgba, w, h) }); return o[s.outputNames[0]].data; };
 const norm = (d) => { let lo = Infinity, hi = -Infinity; for (const v of d) { if (v < lo) lo = v; if (v > hi) hi = v; } const k = 1 / Math.max(1e-6, hi - lo); return Float32Array.from(d, (v) => (v - lo) * k); };
-async function download(url) { // the model, with progress
-  const res = await fetch(url);
-  if (!res.ok) throw new Error('找不到 AI 深度模型（請先執行 npm run setup）');
-  const total = +res.headers.get('content-length') || 27258801;
+// The large files (model, runtime): kept in the browser's Cache Storage after the first download (a static host's HTTP
+// cache is short and Safari drops large entries: every visit downloaded ~40 MB again), downloaded as the gzip copy
+// (.gz, unpacked here: the runtime 14 MB → ~3 MB) where the browser can unpack (DecompressionStream), with progress.
+const CACHE = 'zhaoyang-depth-v1';
+async function cached(url) {
+  try { const c = await caches.open(CACHE), hit = await c.match(url); if (hit) return new Uint8Array(await hit.arrayBuffer()); } catch { /* (no Cache Storage: download) */ }
+  return null;
+}
+async function store(url, bytes) { try { const c = await caches.open(CACHE); await c.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream' } })); } catch { /* (storage full or unavailable: next time it downloads again) */ } }
+async function readAll(res, what, totalGuess) {
+  const total = +res.headers.get('content-length') || totalGuess;
   if (!res.body || !res.body.getReader) return new Uint8Array(await res.arrayBuffer());
   const reader = res.body.getReader(), parts = []; let loaded = 0, last = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    parts.push(value); loaded += value.length;
-    if (loaded - last > 1e6) { last = loaded; progress('download', { loaded, total }); }
-  }
+  for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); loaded += value.length; if (loaded - last > 5e5) { last = loaded; progress(what, { loaded, total }); } }
   const out = new Uint8Array(loaded); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
+}
+async function download(url, what, sizeGuess) {
+  const hit = await cached(url);
+  if (hit) { progress(`${what}-cached`); return hit; }
+  let bytes = null;
+  if (typeof DecompressionStream !== 'undefined') {
+    try {
+      const r = await fetch(`${url}.gz`);
+      if (r.ok) { const gz = await readAll(r, what, sizeGuess * 0.6); bytes = new Uint8Array(await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()); }
+    } catch { bytes = null; }
+  }
+  if (!bytes) {
+    const r = await fetch(url);
+    if (!r.ok) throw new Error(what === 'download' ? '找不到 AI 深度模型（請先執行 npm run setup）' : '找不到 AI 執行程式');
+    bytes = await readAll(r, what, sizeGuess);
+  }
+  await store(url, bytes);
+  return bytes;
 }
 
 self.onmessage = async (e) => {
   const m = e.data;
   try {
-    if (m.type === 'init') {
+    if (m.type === 'prefetch') { // download and keep the files only (no model in memory): the page asks for it on opening
+      const webkit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent) || /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const tryGpu = m.gpu !== false && !!(self.navigator && self.navigator.gpu) && !webkit;
+      await download(new URL(`../vendor/ort/ort-wasm-simd-threaded${tryGpu ? '.asyncify' : ''}.wasm`, import.meta.url).href, 'runtime-wasm', tryGpu ? 28.7e6 : 14.8e6);
+      await download(MODEL, 'download', 27258801);
+      self.postMessage({ type: 'prefetched', id: m.id });
+    } else if (m.type === 'init') {
       const t0 = performance.now(), webkit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent) || /iPad|iPhone|iPod/.test(navigator.userAgent);
       const tryGpu = m.gpu !== false && !!(self.navigator && self.navigator.gpu) && !webkit;
       info.runtime = tryGpu ? 'webgpu' : 'wasm';
@@ -47,7 +73,9 @@ self.onmessage = async (e) => {
       ort = await timeout(import(tryGpu ? '../vendor/ort/ort.webgpu.min.mjs' : '../vendor/ort/ort.wasm.min.mjs'), 60000, '載入執行程式');
       ort.env.wasm.wasmPaths = new URL('../vendor/ort/', import.meta.url).href;
       ort.env.wasm.numThreads = 1; // (no cross-origin isolation on a static host: one thread)
-      const model = await download(MODEL);
+      const wasmUrl = new URL(`../vendor/ort/ort-wasm-simd-threaded${tryGpu ? '.asyncify' : ''}.wasm`, import.meta.url).href;
+      ort.env.wasm.wasmBinary = await download(wasmUrl, 'runtime-wasm', tryGpu ? 28.7e6 : 14.8e6); // (handed to the runtime: cached / compressed like the model)
+      const model = await download(MODEL, 'download', 27258801);
       progress('session');
       cpu = await timeout(ort.InferenceSession.create(model, { executionProviders: ['wasm'] }), 120000, '準備 AI 深度模型');
       if (tryGpu) {

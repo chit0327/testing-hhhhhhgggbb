@@ -452,6 +452,13 @@
 </main>
 
 <!-- 匯出: matching the colours and effects (processing), then the download; × asks before leaving -->
+<dialog id="depthDialog" class="proc-dialog" aria-labelledby="depthDlTitle">
+  <h2 id="depthDlTitle">下載 AI 深度模型</h2>
+  <p id="depthDlMsg">「對焦（景深）」和「依深度分層匹配」需要 AI 深度模型。現在先在背景下載（約 25–30 MB，只需一次，之後存在這部裝置上），用到時就不用再等。</p>
+  <div class="progress" id="depthDlProg" hidden><div id="depthDlBar"></div><span id="depthDlText">準備中…</span></div>
+  <div class="row proc-answers" id="depthDlAsk"><button type="button" id="depthDlLater">稍後</button><button type="button" id="depthDlOk" class="primary">允許下載</button></div>
+  <div class="row proc-answers" id="depthDlBg" hidden><button type="button" id="depthDlHide">在背景繼續下載</button></div>
+</dialog>
 <dialog id="procDialog" class="proc-dialog" aria-labelledby="procTitle">
   <button type="button" id="procClose" class="proc-close" aria-label="退出">×</button>
   <div id="procMain">

@@ -20,7 +20,7 @@ import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
 import { findBars } from './engine/bars.js';
 import { refAirRGB } from './engine/render.js';
 import { dofPlan, personRel } from './engine/dof.js';
-import { initDepth, depthOf, depthInfo, onDepthProgress } from './depth.js';
+import { initDepth, depthOf, depthInfo, onDepthProgress, prefetchDepth, depthStored } from './depth.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -2372,3 +2372,32 @@ applyTheme((() => { try { return localStorage.getItem(THEME_KEY); } catch { retu
 setAdjustVisible(false);
 updateStart();
 setPhase('idle');
+
+// ---- on opening the site: ask to download the AI depth model (對焦（景深）, 依深度分層匹配) now, in the background, so it is
+// there when used (~25–30 MB, compressed; kept in the browser afterwards). Only downloaded and stored: the model is
+// loaded into memory when a feature needs it. Not asked when it is already stored, nor again in this session after
+// 稍後. (Automated browsers are not asked — the dialog would cover the page in every test — unless a test sets
+// localStorage zhaoyang-depth-prompt = 'ask'.)
+async function askDepthDownload() {
+  let force = false; try { force = localStorage.getItem('zhaoyang-depth-prompt') === 'ask'; } catch { /* (no storage) */ }
+  if (navigator.webdriver && !force) return;
+  try { if (sessionStorage.getItem('zhaoyang-depth-later')) return; } catch { /* (no storage) */ }
+  if (await depthStored()) { log('depth-already-stored'); return; }
+  const d = $('depthDialog');
+  d.showModal(); log('depth-prompt');
+  $('depthDlLater').onclick = () => { try { sessionStorage.setItem('zhaoyang-depth-later', '1'); } catch { /* */ } d.close(); log('depth-prompt-later'); };
+  $('depthDlHide').onclick = () => { d.close(); log('depth-download-background'); };
+  $('depthDlOk').onclick = async () => {
+    $('depthDlAsk').hidden = true; $('depthDlBg').hidden = false; $('depthDlProg').hidden = false;
+    const off = onDepthProgress((st, m) => { $('depthDlText').textContent = st; if (m && m.total) $('depthDlBar').style.width = `${Math.min(100, m.loaded / m.total * 100)}%`; });
+    log('depth-download-allowed');
+    try {
+      await prefetchDepth();
+      $('depthDlBar').style.width = '100%'; $('depthDlText').textContent = '已下載並儲存在這部裝置上。';
+      log('depth-downloaded');
+      setTimeout(() => { if (d.open) d.close(); }, 1200);
+    } catch (err) { $('depthDlText').textContent = `下載失敗：${err.message}（用到時會再試）`; log('depth-download-failed', { message: err.message }); }
+    finally { off(); }
+  };
+}
+askDepthDownload();
