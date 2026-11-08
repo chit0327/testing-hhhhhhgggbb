@@ -47,6 +47,21 @@ function gradeFrame(src, w, h, lut, ev, layers) {
 import { applyFilm, hasFilm } from './engine/film.js';
 import { applyFringe, fringePlan } from './engine/fringe.js';
 import { dofPlan, dofScale, depthRange, normaliseDepth, focusDepth, applyDof } from './engine/dof.js';
+import { layerStats, fitLayers, applyLayers } from './engine/layermatch.js';
+const segGrid = (seg) => { const mh = seg && seg.person ? seg.person.length / MASK_W : 0; return Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null; };
+const rawDepth = (d) => (d && d.data ? { data: d.data instanceof Float32Array ? d.data : new Float32Array(d.data), w: d.w, h: d.h } : null);
+/** 依深度分層匹配 for one frame (in place, right after the grade): the depth scale is smoothed over a video's frames */
+function layersFrame(out, w, h, lm, depth, seg, temporal) {
+  if (!lm || !lm.on || !(((lm.amt > 0) && lm.fit) || lm.bgSat)) return null;
+  const raw = rawDepth(depth);
+  if (!raw) return null;
+  let range = depthRange(raw);
+  const prev = temporal && temporal.lm;
+  if (prev) range = [0.8 * prev[0] + 0.2 * range[0], 0.8 * prev[1] + 0.2 * range[1]];
+  if (temporal) temporal.lm = range;
+  applyLayers(out, w, h, normaliseDepth(raw, range), segGrid(seg), lm.fit, Math.min(1.5, lm.amt || 0), lm.bgSat || 0);
+  return true;
+}
 /**
  * 對焦（景深） for one frame (in place, after the background blur, before the effects: a lens effect). depth: the AI depth
  * grid of this frame {data, w, h}; temporal (a video job): the depth scale and the focus depth are smoothed over the
@@ -150,7 +165,7 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   if (full.follow > 0 && full.prim && full.source === 'reference' && fitStore) full.prim = followed(full.prim, Math.min(1, full.follow));
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
-  delete full.blur; delete full.dof; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; delete full.skinWarm; delete full.skinHue; // applied outside the main LUT
+  delete full.blur; delete full.dof; delete full.layerMatch; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; delete full.skinWarm; delete full.skinHue; // applied outside the main LUT
   const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
@@ -353,6 +368,13 @@ self.onmessage = (e) => {
         res.sizes.push(r);
       }
       self.postMessage({ type: 'gpu-benched', id: m.id, res });
+    } else if (m.type === 'fit-layers') { // 依深度分層匹配: the representative frame graded with the current look, then its layers vs the reference's
+      const t = performance.now(), intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
+      const src = new Uint8ClampedArray(m.src.data), graded = renderFrame(src, m.src.w, m.src.h, lut, null);
+      const dS = rawDepth(m.src.depth), dR = rawDepth(m.ref.depth);
+      const S = layerStats(graded, m.src.w, m.src.h, normaliseDepth(dS, depthRange(dS)), segGrid(m.src.seg));
+      const R = layerStats(new Uint8ClampedArray(m.ref.data), m.ref.w, m.ref.h, normaliseDepth(dR, depthRange(dR)), segGrid(m.ref.seg));
+      self.postMessage({ type: 'layers-fitted', id: m.id, fit: fitLayers(S, R), src: S, ref: R, ms: performance.now() - t });
     } else if (m.type === 'fit-local') { // per-region adjustments for each candidate (rep frame vs reference)
       const t = performance.now();
       const src = { rgba: new Uint8ClampedArray(m.src.data), w: m.src.w, h: m.src.h, seg: m.src.seg };
@@ -405,6 +427,8 @@ self.onmessage = (e) => {
       lap('lut');
       const out = gradeFrame(src, m.w, m.h, lut, ev, layers);
       lap('grade');
+      if (m.grade && j.look) layersFrame(out, m.w, m.h, j.look.layerMatch, m.depth, m.seg, m.jobId ? j.temporal : null);
+      lap('layers-depth');
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
       lap('blur');
       const dofInfo = m.grade && j.look ? dofFrame(out, m.w, m.h, j.look.dof, m.depth, m.seg, m.jobId ? j.temporal : null) : null;

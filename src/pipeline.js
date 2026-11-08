@@ -26,6 +26,11 @@ export class EngineClient {
     const a = src.data.slice().buffer, b = ai.data.slice().buffer;
     return this.call({ type: 'fit-pair', src: a, ai: b, w: src.width, h: src.height, pairId }, [a, b]);
   }
+  /** 依深度分層匹配: src / ref ImageData with their AI person grids and depth grids → {fit, src, ref} */
+  fitLayers(src, srcSeg, srcDepth, ref, refSeg, refDepth, look, intentJson) {
+    const a = src.data.slice().buffer, b = ref.data.slice().buffer;
+    return this.call({ type: 'fit-layers', src: { data: a, w: src.width, h: src.height, seg: srcSeg, depth: srcDepth }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg, depth: refDepth }, look, intent: intentJson }, [a, b]);
+  }
   fitLocal(src, srcSeg, ref, refSeg, cands) { // src, ref: ImageData; seg: {w, h, skin, hair, clothes, background}
     const a = src.data.slice().buffer, b = ref.data.slice().buffer;
     return this.call({ type: 'fit-local', src: { data: a, w: src.width, h: src.height, seg: srcSeg }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg }, cands }, [a, b]);

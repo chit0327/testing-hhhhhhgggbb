@@ -78,6 +78,7 @@ $('refInput').addEventListener('change', async (e) => {
   if (!file) return;
   const id = ++S.ref.id;
   S.ref = { status: 'loading', id };
+  if (typeof LM !== 'undefined') { LM.user = null; $('lmSuggest').hidden = true; } // (a new reference: 依深度分層匹配 is suggested afresh)
   $('refInfo').textContent = '載入中…';
   if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo.video.remove(); S.refVideo = null; } $('refVideoBox').hidden = true;
   if (file.type.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/i.test(file.name)) { await loadRefVideo(file, id); assetsChanged('ref'); return; }
@@ -382,7 +383,7 @@ const segmentRestored = (c, mw, mh) => segment(restoreCanvas(c), mw, mh);
 /** AI segmentation per frame is needed: AI regions, skin protection / local grade, AI background blur, person / skin sliders, haze depth */
 function lookNeedsSeg(look, regs) {
   const ap = look.prim, bl = look.blur;
-  return !!(look.dof && look.dof.on && look.dof.person) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
+  return !!(look.dof && look.dof.on && look.dof.person) || !!(look.layerMatch && look.layerMatch.on) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
 }
 
 async function runSegmentation() {
@@ -638,6 +639,7 @@ function describeLook(k) {
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
   if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
+  if (k.layerMatch && k.layerMatch.on && k.layerMatch.fit) parts.push(`依深度分層匹配 ${Math.round((k.layerMatch.amt ?? 0.8) * 100)}%${k.layerMatch.bgSat ? `、背景飽和度 ${k.layerMatch.bgSat > 0 ? '+' : ''}${Math.round(k.layerMatch.bgSat * 100)}` : ''}`);
   if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : '點選位置'}、光斑 ${Math.round((k.dof.glow ?? 0.5) * 100)}`);
   if (k.fringe) parts.push(`色散 ${Math.round(k.fringe * 100)}${(k.fringeFocus ?? 1) < 1 ? `（失焦處 ${Math.round((k.fringeFocus ?? 1) * 100)}）` : ''}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
@@ -676,7 +678,7 @@ const ADJ = { // control id -> [look key, slider scale, display]
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'dof', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'dof', 'layerMatch', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -685,7 +687,7 @@ const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEF
   for (const el of document.querySelectorAll('input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
 }
 function syncAdjustControls() {
-  syncDof();
+  syncDof(); syncLm();
   $('hazeFromRef').checked = Array.isArray(S.look.draft.hazeAir);
   $('hazeFromRef').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
   for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
@@ -825,6 +827,7 @@ function applyAutoLook(mode = 'look') { // 風格: the stable default (same look
   $('suggestInfo').textContent = `已依參考圖自動匹配：${describeLook(S.look.draft)}。可以再用滑桿微調。`;
   log('suggested', { look: { ...S.look.draft } });
   if (!$('adjustCard').hidden) { syncAdjustControls(); scheduleAdjPreview(); }
+  scheduleLmAuto();
 }
 $('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.candMode || 'look'); syncAdjustControls(); scheduleAdjPreview(); renderCands(); };
 
@@ -910,6 +913,73 @@ function toAnchorGrid(fx, fy) {
 }
 // pointer → position in the picture as 0..1 of its width / height (the canvas is letterboxed by object-fit: contain,
 // and its pixel size changes between the quick and the full-quality preview, so canvas pixels are not stable)
+/** the AI depth of every frame is needed: 對焦（景深） or 依深度分層匹配 */
+function needsDepthFor(look) { return !!(dofPlan(look.dof) || (look.layerMatch && look.layerMatch.on && look.layerMatch.fit)); }
+
+// ---- 依深度分層匹配: the background, split by depth into near and far, each matched to the reference's same layer.
+// The fit (worker 'fit-layers') uses the representative frame graded with the current look, its AI person mask and
+// depth, and the reference's; it is redone when switched on and when the reference or the candidate changes.
+const LM = { busy: false, refDepth: null, user: null, timer: null, suggestedFor: null }; // user: the user switched it by hand
+/**
+ * Automatically after the reference matching: fitted in the background and SUGGESTED (a 建議開啟 button) when the
+ * reference's background layers clearly differ from the video's after the grade (brightness ≥ 0.04, contrast or the
+ * vivid colours ≥ 20 %). It never switches itself on: switched on, every exported frame needs its AI depth and person
+ * mask (an export took ~40 % longer here), and a picture that changed by itself seconds after it appeared raced with
+ * exporting. Once per reference and representative frame; not after the user switched it by hand.
+ */
+function scheduleLmAuto() {
+  clearTimeout(LM.timer);
+  if (LM.user !== null || !S.rep || !(S.ref.status === 'ready' && S.ref.imageData) || (S.look.draft.layerMatch && S.look.draft.layerMatch.on)) return;
+  const key = `${S.ref.id}|${S.video.id}|${S.rep.t}`;
+  if (LM.suggestedFor === key) return;
+  LM.timer = setTimeout(() => { if (!LM.busy) { LM.suggestedFor = key; fitLm({ auto: true }); } }, 400);
+}
+const lmWorth = (fit) => ['near', 'far'].some((k) => { const f = fit && fit[k]; if (!f) return false; const vivid = f.cs ? f.cr[3] / Math.max(f.cs[3], 1e-4) : 1; return Math.abs(f.dL) >= 0.04 || f.k <= 0.8 || f.k >= 1.25 || vivid <= 0.8; });
+function syncLm() {
+  const l = S.look.draft.layerMatch, on = !!(l && l.on);
+  $('lmOn').checked = on; $('lmAmt').disabled = !on;
+  $('lmAmt').value = Math.round(((l && l.amt) ?? 0.8) * 100); $('lmAmt-v').textContent = `${$('lmAmt').value}%`;
+  $('lmSat').disabled = !on; $('lmSat').value = Math.round(((l && l.bgSat) ?? 0) * 100); $('lmSat-v').textContent = `${+$('lmSat').value > 0 ? '+' : ''}${$('lmSat').value}`;
+  $('lmOn').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
+}
+const fmtAdj = (f) => (f ? `${f.dL > 0.005 ? '亮 +' + Math.round(f.dL * 100) : f.dL < -0.005 ? '暗 ' + Math.round(f.dL * 100) : '亮度不變'}、對比 ×${f.k.toFixed(2)}、鮮艷處 ×${(f.cs ? f.cr[3] / Math.max(f.cs[3], 1e-4) : f.sat ?? 1).toFixed(2)}${f.cb && f.cb[3] != null ? `、亮部飽和 ×${f.cb.slice(3).filter((v) => v != null).map((v) => v.toFixed(2)).join('／')}` : ''}` : '面積太小，不調整');
+async function fitLm({ auto = false } = {}) {
+  if (!S.rep || !(S.ref.status === 'ready' && S.ref.imageData)) return;
+  LM.busy = true; $('lmInfo').textContent = 'AI 深度和人物偵測中…';
+  try {
+    await initSegmenter(); if (!S.rep.seg) await runSegmentation();
+    const refSeg = await referenceSeg(), seg = { w: MASK_W, h: maskH(), ...S.rep.seg };
+    const repD = await repDepth();
+    if (!LM.refDepth || LM.refDepth.for !== S.ref.imageData) { const bm = await createImageBitmap(S.ref.imageData); LM.refDepth = { for: S.ref.imageData, depth: await depthOf(bm, bm.width, bm.height) }; }
+    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, base = { ...S.look.draft, layerMatch: null };
+    const r = await engine.fitLayers(S.rep.img, seg, repD, S.ref.imageData, refSeg, LM.refDepth.depth, base, intent);
+    if (auto) { // only a suggestion: the picture is not changed
+      const worth = lmWorth(r.fit);
+      $('lmSuggest').hidden = !worth;
+      $('lmInfo').textContent = worth ? `參考圖的背景分層和影片明顯不同（遠景：${fmtAdj(r.fit.far)}；近景：${fmtAdj(r.fit.near)}）。建議開啟：` : '參考圖和影片的背景分層差不多，不需要開啟（需要時可以自己勾選）。';
+      if (worth && !/建議開啟下面/.test($('suggestInfo').textContent)) $('suggestInfo').textContent += ' 背景的遠近分層和參考圖明顯不同，建議開啟下面的「依深度分層匹配」。';
+      log('layers-fitted', { fit: r.fit, src: r.src, ref: r.ref, ms: Math.round(r.ms), auto, suggested: worth });
+      return;
+    }
+    $('lmSuggest').hidden = true;
+    const prev = S.look.draft.layerMatch;
+    S.look.draft.layerMatch = { on: true, amt: (prev && prev.amt) ?? 0.8, bgSat: (prev && prev.bgSat) || 0, fit: r.fit };
+    $('lmInfo').textContent = `遠景：${fmtAdj(r.fit.far)}；近景：${fmtAdj(r.fit.near)}（人物不變）。`;
+    log('layers-fitted', { fit: r.fit, src: r.src, ref: r.ref, ms: Math.round(r.ms), auto, on: true });
+    syncLm(); updateAdjState(); scheduleAdjPreview();
+  } catch (err) { $('lmInfo').textContent = `不能分層匹配：${err.message}`; if (!auto) S.look.draft.layerMatch = null; syncLm(); }
+  finally { LM.busy = false; }
+}
+$('lmSuggest').onclick = () => { LM.user = true; $('lmSuggest').hidden = true; $('lmOn').checked = true; S.look.auto = false; log('layers-suggestion-taken'); fitLm(); };
+$('lmOn').addEventListener('change', (e) => {
+  $('lmSuggest').hidden = true;
+  S.look.auto = false; LM.user = e.target.checked;
+  if (e.target.checked) fitLm();
+  else { if (S.look.draft.layerMatch) S.look.draft.layerMatch = { ...S.look.draft.layerMatch, on: false }; syncLm(); updateAdjState(); scheduleAdjPreview(); log('layers-off'); }
+});
+$('lmSat').addEventListener('input', (e) => { const l = S.look.draft.layerMatch; if (!l || !l.on) return; S.look.auto = false; S.look.draft.layerMatch = { ...l, bgSat: e.target.value / 100 }; $('lmSat-v').textContent = `${+e.target.value > 0 ? '+' : ''}${e.target.value}`; updateAdjState(); scheduleAdjPreview(); });
+$('lmAmt').addEventListener('input', (e) => { const l = S.look.draft.layerMatch; if (!l || !l.on) return; S.look.auto = false; S.look.draft.layerMatch = { ...l, amt: e.target.value / 100 }; $('lmAmt-v').textContent = `${e.target.value}%`; updateAdjState(); scheduleAdjPreview(); });
+
 // ---- 對焦（景深）: tap the preview to set the focus; the AI depth model (src/depth.js, loaded on first use) gives each
 // frame's depth. On a person (AI mask at the tapped point) the focus follows that person; elsewhere it stays on the
 // depth at the tapped point. The representative frame's depth is kept (repDepth) for the preview.
@@ -1373,7 +1443,7 @@ buildPro();
   const def = new Map();
   for (const [id, [key, scale]] of Object.entries(ADJ)) def.set($(`adj-${id}`), () => Math.round(DEFAULT_LOOK[key] * scale));
   for (const c of PRO) def.set(c.el, /膚色保護/.test(c.label || '') ? () => (S.look.draft.source === 'reference' ? 100 : 0) : () => Math.round(c.get(neutralPrim()))); // skin protection is on by default for reference grading
-  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12]]) def.set($(id), () => v);
+  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0]]) def.set($(id), () => v);
   for (const row of $('adjustCard').querySelectorAll('label.slider, .tone-row, .wheel-row, .curve-row, .hue-row')) {
     const inputs = [...row.querySelectorAll('input[type=range]')].filter((el) => def.has(el));
     if (!inputs.length) continue;
@@ -1534,7 +1604,7 @@ async function pumpRenders() {
         const src = await previewFrame(side), t0 = performance.now();
         const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
         const used = JSON.parse(JSON.stringify(S.look.draft)); // (the settings this picture is made with: logged below, not whatever the sliders say by the time it is back)
-        const depth = dofPlan(used.dof) ? await repDepth() : null;
+        const depth = needsDepthFor(used) ? await repDepth() : null;
         const r = await engine.render(src, { intent, seg: S.rep.seg, depth, grade: true, look: previewLook(used), draft: job.draft });
         if (seq !== adjSeq) continue;
         const ms = performance.now() - t0;
@@ -1581,7 +1651,7 @@ async function videoFrame() {
       const sc = canvas2d(256, maskH()); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height);
       seg = segment(restoreCanvas(sc, currentNorm()), MASK_W, maskH());
     }
-    const depth = dofPlan(look.dof) ? await depthOf(c, w, h) : null;
+    const depth = needsDepthFor(look) ? await depthOf(c, w, h) : null;
     await S.grade.ready;
     const r = await engine.render(src, { intent, seg, depth, grade: true, look, draft: false });
     if ((!PLAY.on && PLAY.viewT === null) || $('adjustCard').hidden) return;
@@ -1779,7 +1849,7 @@ async function startProcessing() {
   const needsSeg = lookNeedsSeg(S.look.applied, regs);
   if (needsSeg) await initSegmenter();
   // 對焦（景深）: the AI depth of every frame
-  const needsDepth = !!dofPlan(S.look.applied.dof);
+  const needsDepth = needsDepthFor(S.look.applied);
   if (needsDepth) { $('progressText').textContent = '載入 AI 深度模型（約 27 MB，只在第一次）…'; try { await initDepth(); } catch { /* (the processing below reports it as its error) */ } }
   if (token !== S.job.token) return;
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg, needsDepth); }
@@ -2118,9 +2188,9 @@ function syncKindLabels() { // wording and controls that only make sense for one
 /** 對焦深度：顯示卡／處理器 (the depth worker's measured choice) and the time per frame, for the result info */
 function dofText(timing, frames = 0) {
   const i = depthInfo();
-  if (!dofPlan(S.look.applied && S.look.applied.dof) || !i) return '';
+  if (!needsDepthFor(S.look.applied || {}) || !i) return '';
   const per = timing && timing.depth && frames ? `，每格約 ${Math.round(timing.depth / frames)} ms` : '';
-  return `對焦深度計算：${i.ep === 'gpu' ? '顯示卡' : `處理器${i.why ? `（${i.why}）` : ''}`}${per}。`;
+  return `AI 深度計算：${i.ep === 'gpu' ? '顯示卡' : `處理器${i.why ? `（${i.why}）` : ''}`}${per}。`;
 }
 function gradeText(g) {
   if (!g || !g.mode) return '';
