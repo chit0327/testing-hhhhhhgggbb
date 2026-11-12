@@ -52,6 +52,12 @@ const S = {
   log: [],                         // event log (used by the end-to-end test)
 };
 window.__app = { S, hashIntent, engine };
+// long help paragraphs (the fixed ones in the page, not the status lines the app writes): two lines, the rest on a tap
+for (const p of document.querySelectorAll('.cat-body p.info:not([id]), .intent-box p.info:not([id]), .ref-video p.info:not([id])')) {
+  if (p.textContent.trim().length < 70) continue;
+  p.classList.add('clamp'); p.title = '按一下展開／收起';
+  p.addEventListener('click', () => p.classList.toggle('open'));
+}
 const AUTOFIT_V2 = new URLSearchParams(location.search).has('v2'); // grey balance + absent colours kept (under evaluation)
 const AUTOFIT_V3 = new URLSearchParams(location.search).has('v3'); // v2 + tone from the look prior, not the reference content (under evaluation)
 const AUTOFIT_WHITE = !new URLSearchParams(location.search).has('nowhite'); // white point matched to the reference's white (default since round-3 blind rating; ?nowhite = before)
@@ -384,7 +390,7 @@ const segmentRestored = (c, mw, mh) => segment(restoreCanvas(c), mw, mh);
 /** AI segmentation per frame is needed: AI regions, skin protection / local grade, AI background blur, person / skin sliders, haze depth */
 function lookNeedsSeg(look, regs) {
   const ap = look.prim, bl = look.blur;
-  return !!(look.dof && look.dof.on && look.dof.person) || !!(look.layerMatch && look.layerMatch.on) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
+  return !!(look.dof && look.dof.on && look.dof.person) || !!(look.layerMatch && look.layerMatch.on) || !!(look.classMatch && look.classMatch.on) || !!(look.source === 'preset' && look.presetLayers && look.presetLayers.length) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
 }
 
 async function runSegmentation() {
@@ -637,9 +643,12 @@ function describeLook(k) {
     if (k[`${key}Amt`]) parts.push(`${name} ${Math.round(k[`${key}Hue`])}° ${Math.round(k[`${key}Amt`] * 100)}`);
   }
   if (k.source === 'ai') parts.unshift('AI 調色圖');
+  if (k.source === 'preset') parts.unshift(`設定檔「${k.presetName || '未命名'}」`);
   if (k.amount !== undefined && k.amount !== 1) parts.unshift(`整體強度 ${Math.round(k.amount * 100)}%`);
   if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
+  if (k.colorPairs && k.colorPairs.on && k.colorPairs.items && k.colorPairs.items.length) parts.push(`點選對應顏色 ${k.colorPairs.items.length} 對`);
+  if (k.classMatch && k.classMatch.on && k.classMatch.fit) parts.push(`同類別匹配 ${Math.round((k.classMatch.amt ?? 0.8) * 100)}%`);
   if (k.layerMatch && k.layerMatch.on && k.layerMatch.fit) parts.push(`依深度分層匹配 ${Math.round((k.layerMatch.amt ?? 0.8) * 100)}%${k.layerMatch.bgSat ? `、背景飽和度 ${k.layerMatch.bgSat > 0 ? '+' : ''}${Math.round(k.layerMatch.bgSat * 100)}` : ''}`);
   if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : `點選位置（焦點範圍 ${Math.round((k.dof.area ?? 0.35) * 100)}）`}、光斑 ${Math.round((k.dof.glow ?? 0.5) * 100)}`);
   if (k.fringe) parts.push(`色散 ${Math.round(k.fringe * 100)}${(k.fringeFocus ?? 1) < 1 ? `（失焦處 ${Math.round((k.fringeFocus ?? 1) * 100)}）` : ''}`);
@@ -679,7 +688,7 @@ const ADJ = { // control id -> [look key, slider scale, display]
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'dof', 'layerMatch', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'dof', 'layerMatch', 'classMatch', 'colorPairs', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -688,7 +697,7 @@ const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEF
   for (const el of document.querySelectorAll('input.hue')) el.style.setProperty('--hue-gradient', `linear-gradient(90deg, ${stops.join(', ')})`);
 }
 function syncAdjustControls() {
-  syncDof(); syncLm();
+  syncDof(); syncLm(); syncCm(); syncCp();
   $('hazeFromRef').checked = Array.isArray(S.look.draft.hazeAir);
   $('hazeFromRef').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
   for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
@@ -705,7 +714,59 @@ function syncAdjustControls() {
   syncBlurControls();
   drawGlowWheel(); markHazePreset();
 }
+// ---- 復原 / 重做: every settled change of the settings (the whole look: sliders, moods, candidates, effects, 對焦,
+// matching, colour pairs, a loaded 設定檔) is one step. A change is recorded 0.5 s after the last update (a slider drag
+// is one step, not one per pixel); undo / redo first records a change still pending. Kept per video, at most 60 steps.
+// Not covered: the painted background-blur selection itself (its strokes are not part of the settings) and the
+// lighting intent (its own dialog).
+const HIST = { stack: [], at: -1, timer: 0, restoring: false, video: null, touched: false };
+// until the user first touches the workspace, what the site sets by itself (the automatic match, its suggestions) only
+// moves the starting point: undoing back to an ungraded picture made no sense
+for (const ev of ['pointerdown', 'keydown']) document.addEventListener(ev, (e) => { if (e.isTrusted && !$('pageWork').hidden) HIST.touched = true; }, true);
+const histSnap = () => JSON.stringify({ draft: S.look.draft, auto: S.look.auto, candMode: S.candMode ?? null });
+function histRecord() {
+  clearTimeout(HIST.timer); HIST.timer = 0;
+  if (!S.rep || HIST.restoring) return;
+  if (HIST.video !== S.video.id) { HIST.video = S.video.id; HIST.stack = []; HIST.at = -1; HIST.touched = false; }
+  const snap = histSnap();
+  if (HIST.at >= 0 && HIST.stack[HIST.at] === snap) return;
+  if (!HIST.touched) { HIST.stack = [snap]; HIST.at = 0; syncHist(); return; } // (still the starting point)
+  HIST.stack = HIST.stack.slice(0, HIST.at + 1); HIST.stack.push(snap);
+  if (HIST.stack.length > 60) HIST.stack.shift();
+  HIST.at = HIST.stack.length - 1;
+  syncHist();
+}
+function histNote() { if (HIST.restoring || !S.rep) return; clearTimeout(HIST.timer); HIST.timer = setTimeout(histRecord, 500); }
+function syncHist() {
+  const same = HIST.video === (S.video && S.video.id);
+  $('undoBtn').disabled = !same || HIST.at <= 0; $('redoBtn').disabled = !same || HIST.at < 0 || HIST.at >= HIST.stack.length - 1;
+}
+function histGo(d) {
+  if (HIST.timer) histRecord(); // (a change still settling counts as a step first)
+  const to = HIST.at + d;
+  if (to < 0 || to >= HIST.stack.length) return;
+  HIST.at = to; HIST.restoring = true;
+  try {
+    const o = JSON.parse(HIST.stack[to]);
+    S.look.draft = o.draft; S.look.auto = o.auto; S.candMode = o.candMode ?? null;
+    for (const el of $('candBox').children) el.classList.toggle('chosen', !!S.candMode && el.dataset.mode === S.candMode);
+    DOF.picking = false; CP.step = null; CP.pending = null;
+    syncAdjustControls(); scheduleAdjPreview();
+    log(d < 0 ? 'undo' : 'redo', { at: to, of: HIST.stack.length });
+  } finally { HIST.restoring = false; }
+  syncHist();
+}
+$('undoBtn').onclick = () => histGo(-1);
+$('redoBtn').onclick = () => histGo(1);
+document.addEventListener('keydown', (e) => {
+  if (!(e.metaKey || e.ctrlKey) || e.altKey || $('pageWork').hidden) return;
+  const t = e.target, typing = t && (t.isContentEditable || (t.tagName === 'INPUT' && !/^(range|checkbox|radio|button)$/.test(t.type)) || t.tagName === 'TEXTAREA');
+  if (typing || document.querySelector('dialog[open]')) return;
+  const k = e.key.toLowerCase();
+  if (k === 'z' && !e.shiftKey) { e.preventDefault(); histGo(-1); } else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); histGo(1); }
+});
 function updateAdjState() {
+  histNote();
   const dirty = !S.look.applied || JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
   $('adjState').textContent = !S.intent.confirmed ? '確認光暗設定後即可處理影片。'
     : upToDate() ? `${isPhoto() ? '照片' : '影片'}已使用目前的調整：按「${$('exportBtn').textContent}」直接下載。`
@@ -828,7 +889,7 @@ function applyAutoLook(mode = 'look') { // 風格: the stable default (same look
   $('suggestInfo').textContent = `已依參考圖自動匹配：${describeLook(S.look.draft)}。可以再用滑桿微調。`;
   log('suggested', { look: { ...S.look.draft } });
   if (!$('adjustCard').hidden) { syncAdjustControls(); scheduleAdjPreview(); }
-  scheduleLmAuto();
+  scheduleLmAuto(); scheduleCmAuto();
 }
 $('adjSuggest').onclick = async () => { await S.grade.ready; applyAutoLook(S.candMode || 'look'); syncAdjustControls(); scheduleAdjPreview(); renderCands(); };
 
@@ -915,7 +976,7 @@ function toAnchorGrid(fx, fy) {
 // pointer → position in the picture as 0..1 of its width / height (the canvas is letterboxed by object-fit: contain,
 // and its pixel size changes between the quick and the full-quality preview, so canvas pixels are not stable)
 /** the AI depth of every frame is needed: 對焦（景深） or 依深度分層匹配 */
-function needsDepthFor(look) { const d = dofPlan(look.dof); return !!((d && d.mode !== 'tilt') || (look.layerMatch && look.layerMatch.on && look.layerMatch.fit)); } // (移軸 needs no depth model)
+function needsDepthFor(look) { const d = dofPlan(look.dof); return !!((d && d.mode !== 'tilt') || (look.layerMatch && look.layerMatch.on && look.layerMatch.fit) || (look.classMatch && look.classMatch.on && look.classMatch.fit)); } // (移軸 needs no depth model)
 
 // ---- 依深度分層匹配: the background, split by depth into near and far, each matched to the reference's same layer.
 // The fit (worker 'fit-layers') uses the representative frame graded with the current look, its AI person mask and
@@ -971,6 +1032,180 @@ async function fitLm({ auto = false } = {}) {
   } catch (err) { $('lmInfo').textContent = `不能分層匹配：${err.message}`; if (!auto) S.look.draft.layerMatch = null; syncLm(); }
   finally { LM.busy = false; }
 }
+// ---- 同類別匹配 (engine/classes.js + layermatch.js): sky / plants / rest of the background, each towards the same class of
+// the reference. Like 依深度分層匹配: fitted in the background after the reference matching and only SUGGESTED (a
+// 建議開啟 button) when some class clearly differs; on by hand at any time.
+const CM = { busy: false, user: null, suggestedFor: '', timer: 0, refDepth: null };
+const CM_NAMES = { sky: '天空', plants: '植物', rest: '建築地面' };
+// suggested only when the sky or the plants can be matched (both pictures have them) and differ: with only 「建築地面」
+// in common it is close to the whole-picture grade (it was suggested for 10 of 11 test pairs that way)
+const cmWorth = (fit) => ['sky', 'plants'].some((k) => { const f = fit && fit[k]; if (!f) return false; const vivid = f.cs ? f.cr[3] / Math.max(f.cs[3], 1e-4) : 1; return Math.abs(f.dL) >= 0.04 || f.k <= 0.8 || f.k >= 1.25 || vivid <= 0.8 || Math.hypot(f.da, f.db) >= 0.012; });
+const cmText = (r) => ['sky', 'plants', 'rest'].map((k) => `${CM_NAMES[k]}：${r.fit[k] ? fmtAdj(r.fit[k]) + `${Math.hypot(r.fit[k].da, r.fit[k].db) >= 0.006 ? '、色調移向參考' : ''}` : (r.shares.src[k] < 0.04 ? '影片沒有' : '參考圖沒有') + '，不調整'}`).join('；');
+function scheduleCmAuto() {
+  clearTimeout(CM.timer);
+  if (CM.user !== null || !S.rep || !(S.ref.status === 'ready' && S.ref.imageData) || (S.look.draft.classMatch && S.look.draft.classMatch.on)) return;
+  const key = `${S.ref.id}|${S.video.id}|${S.rep.t}`;
+  if (CM.suggestedFor === key) return;
+  CM.timer = setTimeout(() => { if (!CM.busy && !LM.busy) { CM.suggestedFor = key; fitCm({ auto: true }); } else { CM.suggestedFor = ''; scheduleCmAuto(); } }, 900);
+}
+function syncCm() {
+  const c = S.look.draft.classMatch, on = !!(c && c.on);
+  $('cmOn').checked = on; $('cmAmt').disabled = !on;
+  $('cmAmt').value = Math.round(((c && c.amt) ?? 0.8) * 100); $('cmAmt-v').textContent = `${$('cmAmt').value}%`;
+  $('cmOn').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
+}
+async function fitCm({ auto = false } = {}) {
+  if (!S.rep || !(S.ref.status === 'ready' && S.ref.imageData)) return;
+  CM.busy = true; $('cmInfo').textContent = 'AI 深度和人物偵測中…';
+  try {
+    await initSegmenter(); if (!S.rep.seg) await runSegmentation();
+    const refSeg = await referenceSeg(), seg = { w: MASK_W, h: maskH(), ...S.rep.seg };
+    const repD = await repDepth();
+    if (!LM.refDepth || LM.refDepth.for !== S.ref.imageData) { const bm = await createImageBitmap(S.ref.imageData); LM.refDepth = { for: S.ref.imageData, depth: await depthOf(bm, bm.width, bm.height) }; }
+    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, base = { ...S.look.draft, classMatch: null };
+    const r = await engine.fitClasses(S.rep.img, seg, repD, S.ref.imageData, refSeg, LM.refDepth.depth, base, intent);
+    log('classes-fitted', { fit: r.fit, shares: r.shares, ms: Math.round(r.ms), auto });
+    if (auto) {
+      const worth = cmWorth(r.fit);
+      $('cmSuggest').hidden = !worth;
+      $('cmInfo').textContent = worth ? `參考圖的天空、植物或建築地面和影片明顯不同（${cmText(r)}）。建議開啟：` : '影片和參考圖同類的地方差不多，不需要開啟（需要時可以自己勾選）。';
+      return;
+    }
+    $('cmSuggest').hidden = true;
+    const prev = S.look.draft.classMatch;
+    S.look.draft.classMatch = { on: true, amt: (prev && prev.amt) ?? 0.8, fit: r.fit };
+    $('cmInfo').textContent = `${cmText(r)}（人物不變）。`;
+    syncCm(); updateAdjState(); scheduleAdjPreview();
+  } catch (err) { $('cmInfo').textContent = `不能同類別匹配：${err.message}`; if (!auto) S.look.draft.classMatch = null; syncCm(); }
+  finally { CM.busy = false; }
+}
+$('cmSuggest').onclick = () => { CM.user = true; $('cmSuggest').hidden = true; $('cmOn').checked = true; S.look.auto = false; log('classes-suggestion-taken'); fitCm(); };
+$('cmOn').addEventListener('change', (e) => {
+  $('cmSuggest').hidden = true; S.look.auto = false; CM.user = e.target.checked;
+  if (e.target.checked) fitCm();
+  else { if (S.look.draft.classMatch) S.look.draft.classMatch = { ...S.look.draft.classMatch, on: false }; syncCm(); updateAdjState(); scheduleAdjPreview(); log('classes-off'); }
+});
+$('cmAmt').addEventListener('input', (e) => { const c = S.look.draft.classMatch; if (!c || !c.on) return; S.look.auto = false; S.look.draft.classMatch = { ...c, amt: e.target.value / 100 }; $('cmAmt-v').textContent = `${e.target.value}%`; updateAdjState(); scheduleAdjPreview(); });
+// ---- 點選對應顏色 (engine/colorpairs.js, baked into the LUT): tap the reference's colour, then the video's matching place.
+// The video's colour is read from the ORIGINAL representative frame (before grading: the bake grades it with the rest of
+// the look, so the pair stays right while other settings change); the reference's as it is (OKLab), 7×7 px averaged.
+const CP = { step: null, pending: null };
+const meanAt = (img, fx, fy) => { const x0 = Math.round(fx * (img.width - 1)), y0 = Math.round(fy * (img.height - 1)), r = Math.max(2, Math.round(img.width / 160)); let s = [0, 0, 0], n = 0;
+  for (let y = Math.max(0, y0 - r); y <= Math.min(img.height - 1, y0 + r); y++) for (let x = Math.max(0, x0 - r); x <= Math.min(img.width - 1, x0 + r); x++) { const p = 4 * (y * img.width + x); s[0] += img.data[p]; s[1] += img.data[p + 1]; s[2] += img.data[p + 2]; n++; }
+  return s.map((v) => v / n / 255); };
+const rgbCss = (c) => `rgb(${c.map((v) => Math.round(Math.min(1, Math.max(0, v)) * 255)).join(',')})`;
+function drawCpRef() {
+  const c = $('cpRef'), img = S.ref.imageData;
+  if (!img) { c.hidden = true; return; }
+  c.hidden = false; c.width = 320; c.height = Math.round(320 * img.height / img.width);
+  const t = canvas2d(img.width, img.height); t.getContext('2d').putImageData(img, 0, 0);
+  const x = c.getContext('2d'); x.drawImage(t, 0, 0, c.width, c.height);
+  const items = (S.look.draft.colorPairs && S.look.draft.colorPairs.items) || [];
+  const marks = items.map((it) => it.ref).concat(CP.pending ? [CP.pending.ref] : []);
+  marks.forEach((m, i) => { if (!m) return; x.beginPath(); x.arc(m[0] * c.width, m[1] * c.height, 6, 0, 7); x.lineWidth = 2; x.strokeStyle = '#fff'; x.stroke(); x.fillStyle = '#000'; x.font = '10px sans-serif'; x.fillText(String(i + 1), m[0] * c.width + 8, m[1] * c.height + 4); });
+}
+function syncCp() {
+  const cp = S.look.draft.colorPairs, items = (cp && cp.items) || [], has = !!(cp && cp.on && items.length), ok = S.ref.status === 'ready' && !!S.ref.imageData;
+  $('cpAdd').disabled = !ok || items.length >= 6; $('cpClear').disabled = !items.length;
+  $('cpRange').disabled = !has; $('cpAmt').disabled = !has;
+  $('cpRange').value = Math.round(((cp && cp.range) ?? 0.5) * 100); $('cpRange-v').textContent = $('cpRange').value;
+  $('cpAmt').value = Math.round(((cp && cp.amt) ?? 1) * 100); $('cpAmt-v').textContent = `${$('cpAmt').value}%`;
+  $('cpAdd').textContent = CP.step === 'ref' ? '在參考圖點想要的顏色…（再按取消）' : CP.step === 'src' ? '在預覽畫面點對應的地方…（再按取消）' : '新增一對顏色';
+  $('cpRef').classList.toggle('picking', CP.step === 'ref'); $('adjCanvas').classList.toggle('cp-picking', CP.step === 'src');
+  const list = $('cpList'); list.textContent = '';
+  items.forEach((it, i) => {
+    const row = document.createElement('div'); row.className = 'cp-item';
+    const a = document.createElement('span'); a.className = 'cp-sw'; a.style.background = rgbCss(it.s0); a.title = '影片原本的顏色';
+    const b = document.createElement('span'); b.className = 'cp-sw'; b.style.background = rgbCss(it.rgb || [0, 0, 0]); b.title = '參考圖的顏色';
+    const t = document.createElement('span'); t.textContent = `${i + 1}. 影片 → 參考圖`;
+    const del = document.createElement('button'); del.type = 'button'; del.textContent = '刪除'; del.onclick = () => { const c = S.look.draft.colorPairs; S.look.auto = false; S.look.draft.colorPairs = { ...c, items: c.items.filter((_, k) => k !== i) }; log('color-pair-removed', { i }); syncCp(); updateAdjState(); scheduleAdjPreview(); };
+    row.append(t, a, document.createTextNode('→'), b, del); list.appendChild(row);
+  });
+  drawCpRef();
+}
+function cpPickSource(pt) {
+  const [fx, fy] = pt.map((v) => Math.min(1, Math.max(0, v))), prev = S.look.draft.colorPairs || { on: true, amt: 1, range: 0.5, items: [] };
+  const it = { s0: meanAt(S.rep.img, fx, fy), r: CP.pending.r, rgb: CP.pending.rgb, ref: CP.pending.ref, src: [+fx.toFixed(4), +fy.toFixed(4)] };
+  S.look.auto = false;
+  S.look.draft.colorPairs = { ...prev, on: true, items: [...prev.items, it].slice(-6) };
+  CP.step = null; CP.pending = null;
+  $('cpInfo').textContent = `已加入第 ${S.look.draft.colorPairs.items.length} 對：影片中這個顏色和相近的顏色會變成參考圖的顏色。「影響範圍」越大，越多相近顏色一起改變。`;
+  log('color-pair-added', { s0: it.s0, r: it.r });
+  syncCp(); updateAdjState(); scheduleAdjPreview();
+}
+$('cpAdd').onclick = () => { if (CP.step) { CP.step = null; CP.pending = null; } else { CP.step = 'ref'; DOF.picking = false; stopBlurPainting(); syncDof(); $('cpInfo').textContent = '在上面的參考圖點想要的顏色（例如天空、牆、草地）。'; } syncCp(); };
+$('cpRef').addEventListener('pointerdown', (e) => {
+  if (CP.step !== 'ref' || !S.ref.imageData) return;
+  e.preventDefault();
+  const r = $('cpRef').getBoundingClientRect(), fx = Math.min(1, Math.max(0, (e.clientX - r.left) / r.width)), fy = Math.min(1, Math.max(0, (e.clientY - r.top) / r.height));
+  const rgb = meanAt(S.ref.imageData, fx, fy), lab = srgbToOklab(rgb[0], rgb[1], rgb[2], [0, 0, 0]);
+  CP.pending = { r: lab.map((v) => +v.toFixed(5)), rgb, ref: [+fx.toFixed(4), +fy.toFixed(4)] }; CP.step = 'src';
+  $('cpInfo').textContent = '現在在預覽畫面點影片中對應的地方（例如影片的天空）。';
+  if ($('viewPreview').hidden) showView('preview');
+  syncCp();
+});
+$('cpClear').onclick = () => { S.look.auto = false; S.look.draft.colorPairs = null; CP.step = null; CP.pending = null; log('color-pairs-cleared'); syncCp(); updateAdjState(); scheduleAdjPreview(); };
+for (const [id, k, fmt] of [['cpRange', 'range', (v) => v], ['cpAmt', 'amt', (v) => `${v}%`]]) $(id).addEventListener('input', (e) => { const c = S.look.draft.colorPairs; if (!c) return; S.look.auto = false; S.look.draft.colorPairs = { ...c, [k]: e.target.value / 100 }; $(`${id}-v`).textContent = fmt(e.target.value); updateAdjState(); scheduleAdjPreview(); });
+// ---- 設定檔 (.preset): the grade as baked LUTs (the main one and the skin / hair-clothes layers, 33³, 16-bit) plus the
+// settings that are not part of the LUT (effects, 對焦 strengths, 人物／背景亮度). Loaded, it becomes the colour source
+// (like an AI-graded frame's LUT): no reference needed; the sliders still work on top. Things tied to the original
+// video (focus point, blur selection, layer / class fits, colour pairs' positions) are not kept — the colour pairs and
+// everything else in the grade are inside the LUT already.
+const PRESET_FORMAT = 'zhaoyang-preset';
+const PRESET_KEEP = ['personEv', 'bgEv', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus'];
+const b64of = (f32) => { const u = new Uint16Array(f32.length); for (let i = 0; i < f32.length; i++) u[i] = Math.round(Math.min(1, Math.max(0, f32[i])) * 65535); const b = new Uint8Array(u.buffer); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
+const f32of = (b64, n) => { const s = atob(b64), b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); const u = new Uint16Array(b.buffer); if (u.length !== n) throw new Error('調色表大小不符'); const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = u[i] / 65535; return f; };
+function presetSettings(look) {
+  const o = {};
+  for (const k of PRESET_KEEP) if (look[k] !== undefined && look[k] !== DEFAULT_LOOK[k]) o[k] = look[k];
+  const d = look.dof;
+  if (d && d.on) { // strengths kept; the tapped point only for 移軸 (a height across the frame, not a thing in the picture)
+    const { x, y, person, rel, ...rest } = d;
+    o.dof = d.mode === 'tilt' ? { ...rest, x, y, on: true } : { ...rest, on: false };
+  }
+  return o;
+}
+async function savePreset() {
+  if (!S.rep) return;
+  $('presetSave').disabled = true; $('presetInfo').textContent = '正在產生設定檔…';
+  try {
+    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, look = S.look.draft, b = await engine.bakePreset(look, intent);
+    const name = $('presetName').value.trim() || (look.source === 'preset' && look.presetName) || '我的調色';
+    const file = { format: PRESET_FORMAT, version: 1, app: '照樣調色', name, created: new Date().toISOString(), from: describeLook(look),
+      lut: { size: b.size, encoding: 'uint16-base64', main: b64of(b.main), layers: Object.fromEntries(Object.entries(b.layers).map(([k, v]) => [k, b64of(v)])) },
+      settings: presetSettings(look) };
+    const blob = new Blob([JSON.stringify(file)], { type: 'application/octet-stream' }) /* (no type: Safari would add .json) */, fname = `${name.replace(/[\\/:*?"<>|]+/g, '_')}.preset`;
+    await saveBlob(blob, fname);
+    $('presetInfo').textContent = `已儲存「${fname}」（${(blob.size / 1024).toFixed(0)} KB）：色調${Object.keys(b.layers).length ? '、膚色保護' : ''}和效果設定。下次按「載入設定檔」選它即可。`;
+    log('preset-saved', { name, size: blob.size, layers: Object.keys(b.layers), settings: Object.keys(file.settings) });
+  } catch (err) { $('presetInfo').textContent = `不能儲存設定檔：${err.message}`; }
+  finally { $('presetSave').disabled = false; }
+}
+async function loadPreset(f) {
+  try {
+    const j = JSON.parse(await f.text());
+    if (!j || j.format !== PRESET_FORMAT || !j.lut || !j.lut.main) throw new Error('這不是照樣調色的 .preset 設定檔');
+    if (j.version > 1) throw new Error('這個設定檔來自較新版本的網站，請重新整理頁面再試');
+    const N = j.lut.size | 0, n = N * N * N * 3;
+    if (!(N >= 2 && N <= 65)) throw new Error('調色表大小不正確');
+    const main = f32of(j.lut.main, n), layers = Object.fromEntries(Object.entries(j.lut.layers || {}).filter(([k]) => k === 'skin' || k === 'hair').map(([k, v]) => [k, f32of(v, n)]));
+    let h = 2166136261; for (let i = 0; i < j.lut.main.length; i += 97) h = Math.imul(h ^ j.lut.main.charCodeAt(i), 16777619);
+    const id = `p${(h >>> 0).toString(36)}${N}`;
+    await engine.setPreset(id, N, main, layers);
+    const st = j.settings || {}, keep = Object.fromEntries(PRESET_KEEP.filter((k) => st[k] !== undefined).map((k) => [k, st[k]]));
+    S.look.auto = false; S.candMode = null;
+    S.look.draft = { ...DEFAULT_LOOK, ...keep, ...(st.dof ? { dof: st.dof } : {}), source: 'preset', presetId: id, presetName: String(j.name || '未命名').slice(0, 40), presetLayers: Object.keys(layers), strength: 1, match: 0 };
+    for (const el of $('candBox').children) el.classList.remove('chosen');
+    $('presetName').value = S.look.draft.presetName;
+    $('presetInfo').textContent = `已載入「${S.look.draft.presetName}」${j.from ? `（${j.from}）` : ''}。滑桿可以在這個色調上再微調；「強度」調整設定檔色調的程度。${st.dof && !st.dof.on ? '對焦的強度已恢復，請按「選對焦點」重新點一下。' : ''}`;
+    log('preset-loaded', { name: S.look.draft.presetName, layers: Object.keys(layers), settings: Object.keys(st) });
+    markMood(); syncAdjustControls(); updateAdjState(); scheduleAdjPreview();
+    if ($('viewPreview').hidden) showView('preview');
+  } catch (err) { $('presetInfo').textContent = `不能載入設定檔：${err.message}`; log('preset-failed', { message: err.message }); }
+}
+$('presetSave').onclick = () => savePreset();
+$('presetLoad').onclick = () => $('presetInput').click();
+$('presetInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) loadPreset(f); });
 $('lmSuggest').onclick = () => { LM.user = true; $('lmSuggest').hidden = true; $('lmOn').checked = true; S.look.auto = false; log('layers-suggestion-taken'); fitLm(); };
 $('lmOn').addEventListener('change', (e) => {
   $('lmSuggest').hidden = true;
@@ -1094,6 +1329,7 @@ async function commitSelection() {
   };
   cv.addEventListener('pointerdown', (e) => {
     if (DOF.picking && S.rep) { e.preventDefault(); setFocus(canvasPoint(e)); return; } // 對焦（景深）: the tap is the focus
+    if (CP.step === 'src' && S.rep) { e.preventDefault(); cpPickSource(canvasPoint(e)); return; } // 點選對應顏色: the video's colour
     if (!blurEditing() || !S.rep) return;
     e.preventDefault(); try { cv.setPointerCapture(e.pointerId); } catch { /* (no capture: painting still works while the pointer stays on the picture) */ }
     if (e.pointerType !== 'mouse') touches.set(e.pointerId, [e.clientX, e.clientY]);
@@ -1472,7 +1708,7 @@ buildPro();
   const def = new Map();
   for (const [id, [key, scale]] of Object.entries(ADJ)) def.set($(`adj-${id}`), () => Math.round(DEFAULT_LOOK[key] * scale));
   for (const c of PRO) def.set(c.el, /膚色保護/.test(c.label || '') ? () => (S.look.draft.source === 'reference' ? 100 : 0) : () => Math.round(c.get(neutralPrim()))); // skin protection is on by default for reference grading
-  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofArea', 35], ['dofAngle', 0], ['dofGrain', 50], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0]]) def.set($(id), () => v);
+  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofArea', 35], ['dofAngle', 0], ['dofGrain', 50], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0], ['cmAmt', 80], ['cpRange', 50], ['cpAmt', 100]]) def.set($(id), () => v);
   for (const row of $('adjustCard').querySelectorAll('label.slider, .tone-row, .wheel-row, .curve-row, .hue-row')) {
     const inputs = [...row.querySelectorAll('input[type=range]')].filter((el) => def.has(el));
     if (!inputs.length) continue;

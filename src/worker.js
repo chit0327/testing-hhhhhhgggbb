@@ -1,7 +1,7 @@
 // Processing worker: fits the reference grade, bakes LUTs, builds region masks from the CONFIRMED
 // LightingIntent it receives, and renders frames. The page never renders pixels itself, so the dialog
 // preview, the result preview and the export all come out of this one code path.
-import { fitGrade, bakeLUT, bakeLook, sampleOklab } from './engine/grade.js';
+import { fitGrade, bakeLUT, bakeLook, sampleOklab, LUT_SIZE } from './engine/grade.js';
 import { fitCandidates, autoSkinFollow, withFollow } from './engine/autofit.js';
 import { deserializeIntent, effectiveRegions, hashIntent, MASK_W } from './engine/intent.js';
 import { regionMasks } from './engine/regionmasks.js';
@@ -47,7 +47,8 @@ function gradeFrame(src, w, h, lut, ev, layers) {
 import { applyFilm, hasFilm } from './engine/film.js';
 import { applyFringe, fringePlan } from './engine/fringe.js';
 import { dofPlan, dofScale, depthRange, normaliseDepth, focusDepth, applyDof, tiltDepth } from './engine/dof.js';
-import { layerStats, fitLayers, applyLayers } from './engine/layermatch.js';
+import { layerStats, fitLayers, applyLayers, statsBy, fitBy, applyBy } from './engine/layermatch.js';
+import { classGrid, classSampler, classShares, CLASSES } from './engine/classes.js';
 const segGrid = (seg) => { const mh = seg && seg.person ? seg.person.length / MASK_W : 0; return Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null; };
 const rawDepth = (d) => (d && d.data ? { data: d.data instanceof Float32Array ? d.data : new Float32Array(d.data), w: d.w, h: d.h } : null);
 /** 依深度分層匹配 for one frame (in place, right after the grade): the depth scale is smoothed over a video's frames */
@@ -60,6 +61,20 @@ function layersFrame(out, w, h, lm, depth, seg, temporal) {
   if (prev) range = [0.8 * prev[0] + 0.2 * range[0], 0.8 * prev[1] + 0.2 * range[1]];
   if (temporal) temporal.lm = range;
   applyLayers(out, w, h, normaliseDepth(raw, range), segGrid(seg), lm.fit, Math.min(1.5, lm.amt || 0), lm.bgSat || 0);
+  return true;
+}
+/**
+ * 同類別匹配 for one frame (in place, after 依深度分層匹配): sky / plants / rest of THIS frame's source picture (classes.js,
+ * with its depth and person mask), each moved by its class's fit. In a video the class masks are smoothed over the frames
+ * (half the previous frame's), so a boundary does not flicker. src: the frame before grading (the classes are read from
+ * it, as when fitting).
+ */
+function classFrame(out, src, w, h, cm, depth, seg, temporal) {
+  if (!cm || !cm.on || !(cm.amt > 0) || !cm.fit) return null;
+  const cg = classGrid(src, w, h, segGrid(seg), rawDepth(depth)), prev = temporal && temporal.cls;
+  if (prev && prev.gw === cg.gw && prev.gh === cg.gh) for (const k of ['sky', 'plants', 'rest']) for (let q = 0; q < cg[k].length; q++) cg[k][q] = 0.5 * cg[k][q] + 0.5 * prev[k][q];
+  if (temporal) temporal.cls = cg;
+  applyBy(out, w, h, classSampler(cg), CLASSES, cm.fit, Math.min(1.5, cm.amt), 0, { keepVivid: true });
   return true;
 }
 /**
@@ -168,7 +183,10 @@ const memoFor = (base) => {
   if (!baseMemos.has(key)) { if (baseMemos.size > 1) baseMemos.delete(baseMemos.keys().next().value); baseMemos.set(key, new Map()); }
   return baseMemos.get(key);
 };
-function lutFor(intent, look, { forExport = false, draft = false } = {}) {
+// 設定檔 (.preset): baked LUTs loaded from a file — the main grade and its region layers (skin, hair / clothes) — by id
+const presets = new Map();
+const PRESET_N = 33;
+function lutFor(intent, look, { forExport = false, draft = false, preset = false } = {}) {
   const full = { ...(look || {}), preserveLuminance: intent ? intent.mode === 'preserve' : false };
   // 漸層映射: the reference's gradient, at the look's strength, as the last colour step of the pro stage (inside the
   // region layers too, so protected skin does not receive it)
@@ -177,13 +195,15 @@ function lutFor(intent, look, { forExport = false, draft = false } = {}) {
   if (full.follow > 0 && full.prim && full.source === 'reference' && fitStore) full.prim = followed(full.prim, Math.min(1, full.follow));
   if (full.prim) full.prim = forExport ? { ...full.prim, local: null, post: null } : basePrim(full.prim); // the .cube is the global grade only
   for (const k of FX_KEYS) delete full[k]; // spatial effects are not part of the LUT: changing them needs no re-bake
-  delete full.blur; delete full.dof; delete full.layerMatch; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; delete full.skinWarm; delete full.skinHue; // applied outside the main LUT
+  delete full.blur; delete full.dof; delete full.layerMatch; delete full.classMatch; delete full.personEv; delete full.bgEv; delete full.skinFollow; delete full.skinSat; delete full.skinWarm; delete full.skinHue; // applied outside the main LUT
+  const pair = full.source === 'ai' ? pairs.get(full.pairId) : full.source === 'preset' ? presets.get(full.presetId) : null, m = full.source === 'mood' ? null : pair ? { ...model, pair } : model;
+  if (preset) return bakeLUT(m, full, PRESET_N); // (saving a 設定檔: a plain grid, not cached)
   const key = JSON.stringify(full) + (forExport ? '|export' : draft ? '|draft' : '');
   if (!luts.has(key)) {
     if (luts.size > 24) luts.delete(luts.keys().next().value);
-    const pair = full.source === 'ai' ? pairs.get(full.pairId) : null, m = full.source === 'mood' ? null : pair ? { ...model, pair } : model;
     const gridLook = full.prim ? { ...full, prim: sanitizePrim({ ...full.prim, post: null, keep: 0, local: null }) } : full;
-    luts.set(key, forExport ? bakeLUT(m, full, 65) : draft ? bakeLUT(m, full, DRAFT_N, { memo: memoFor }) : bakeLook(m, full, { shaperLook: gridLook, memo: memoFor }));
+    // (a 設定檔's region layers must share the main LUT's grid: a plain grid for all of them, no shaper)
+    luts.set(key, forExport ? bakeLUT(m, full, 65) : draft ? bakeLUT(m, full, DRAFT_N, { memo: memoFor }) : full.source === 'preset' ? bakeLUT(m, full, LUT_SIZE, { memo: memoFor }) : bakeLook(m, full, { shaperLook: gridLook, memo: memoFor }));
   }
   return luts.get(key);
 }
@@ -224,7 +244,34 @@ function subjectEv(ev, look, src, w, h, seg, temporal) {
  * clothes) gets its own LUT — the grade with that region's adjustment — and its temporally smoothed mask;
  * the background's adjustment lives in the main LUT. Returns [] when nothing is local.
  */
+/** the look a region layer is baked with (skin protection, 膚色 settings, local grade) — shared by layersFor and the 設定檔 */
+function regionLook(look, r) {
+  const skinSat = (look && look.skinSat) || 0, skinWarm = (look && look.skinWarm) || 0, skinHue = (look && look.skinHue) || 0, skinOwn = !!(skinSat || skinWarm || skinHue);
+  const prim = (look && look.prim) || neutralPrim(), local = !!prim.local && (prim.localAmt ?? 1) > 0;
+  const q = local ? scaled(prim, r) : null;
+  const post = r !== 'skin' || !skinOwn ? q : { ...(q || { L: 0, a: 0, b: 0, sat: 0 }), sat: ((q && q.sat) || 0) + 0.6 * skinSat, warm: skinWarm, hue: skinHue };
+  return { ...look, prim: { ...layerPrim(prim, r), skinFollow: r === 'skin' ? look.skinFollow || 0 : 0, post } };
+}
+/** which region layers a look has: [] | ['skin'] | ['skin', 'hair'] (hair = hair and clothes) */
+function regionsOf(look) {
+  const skinOwn = !!(look && (look.skinSat || look.skinWarm || look.skinHue)), prim = (look && look.prim) || (skinOwn ? neutralPrim() : null);
+  if (!prim) return [];
+  const local = !!prim.local && (prim.localAmt ?? 1) > 0;
+  return local ? ['skin', 'hair'] : prim.skin || skinOwn ? ['skin'] : [];
+}
 function layersFor(intent, look, src, w, h, seg, temporal, draft = false) {
+  if (look && look.source === 'preset') { // 設定檔: its own baked region layers on this video's AI masks
+    const regs0 = (look.presetLayers || []).filter((r) => presets.has(`${look.presetId}:${r}`));
+    if (!regs0.length || !seg) return [];
+    const mh = Math.round(MASK_W * h / w);
+    if (!seg.skin || seg.skin.length !== MASK_W * mh) return [];
+    const regions = regs0.includes('hair') && seg.hair ? ['skin', 'hair', 'clothes'] : ['skin'];
+    const masks = regionMasks(regions.map((r) => aiRegion(`ai-${r}`, mh)), { seg, L: lightnessGrid(src, w, h, MASK_W, mh) }, MASK_W, mh, 0.006, temporal);
+    const lay = (r, data) => ({ lut: lutFor(intent, { ...look, presetId: `${look.presetId}:${r}` }, { draft }), mask: { data, w: MASK_W, h: mh }, k: 1 });
+    const out = regs0.includes('skin') ? [lay('skin', masks['__ai-skin'])] : [];
+    if (regions.length > 1 && regs0.includes('hair')) { const hm = masks['__ai-hair'], cm = masks['__ai-clothes'], mm = new Float32Array(hm.length); for (let i = 0; i < mm.length; i++) mm[i] = Math.min(1, hm[i] + cm[i]); out.push(lay('hair', mm)); }
+    return out;
+  }
   const skinSat = (look && look.skinSat) || 0; // 膚色飽和度 (−1..1): only the AI skin mask, ×2^(0.6·v) chroma
   const skinWarm = (look && look.skinWarm) || 0, skinHue = (look && look.skinHue) || 0; // 膚色冷暖 / 膚色色調 (−1..1), skin mask only
   const skinOwn = !!(skinSat || skinWarm || skinHue);
@@ -298,6 +345,22 @@ function lookHash(look) {
   return h.toString(16).padStart(8, '0');
 }
 
+/**
+ * the representative frame graded exactly as the preview grades it (lighting-intent masks, skin protection and local
+ * layers, the LUT) — for fitting what comes after the grade (分層匹配, 同類別匹配): fitted on the LUT alone, the fit missed
+ * the region layers and the bedroom's background came out brighter, not closer (|ΔL| 1.9 → 3.2).
+ */
+function gradedLike(src, w, h, seg, intentJson, look) {
+  const j = { ...prepare(intentJson), look: look || null, temporal: null };
+  let ev = null;
+  if (j.regions.length) {
+    const mh = j.intent.maskH, mw = MASK_W;
+    ev = evField(j.regions, regionMasks(j.regions, { seg: seg || null, L: lightnessGrid(src, w, h, mw, mh) }, mw, mh, j.intent.feather, null), mw, mh);
+  }
+  ev = subjectEv(ev, j.look, src, w, h, seg, null);
+  const layers = layersFor(j.intent, j.look, src, w, h, seg, null);
+  return gradeFrame(src, w, h, lutFor(j.intent, j.look), ev, layers);
+}
 function prepare(intentJson) {
   const intent = intentJson ? deserializeIntent(intentJson) : null;
   return { intent, regions: intent ? effectiveRegions(intent) : [], hash: intent ? hashIntent(intent) : null };
@@ -381,12 +444,30 @@ self.onmessage = (e) => {
       }
       self.postMessage({ type: 'gpu-benched', id: m.id, res });
     } else if (m.type === 'fit-layers') { // 依深度分層匹配: the representative frame graded with the current look, then its layers vs the reference's
-      const t = performance.now(), intent = m.intent ? deserializeIntent(m.intent) : null, lut = lutFor(intent, m.look);
-      const src = new Uint8ClampedArray(m.src.data), graded = renderFrame(src, m.src.w, m.src.h, lut, null);
+      const t = performance.now(), src = new Uint8ClampedArray(m.src.data), graded = gradedLike(src, m.src.w, m.src.h, m.src.seg, m.intent, m.look);
       const dS = rawDepth(m.src.depth), dR = rawDepth(m.ref.depth);
       const S = layerStats(graded, m.src.w, m.src.h, normaliseDepth(dS, depthRange(dS)), segGrid(m.src.seg));
       const R = layerStats(new Uint8ClampedArray(m.ref.data), m.ref.w, m.ref.h, normaliseDepth(dR, depthRange(dR)), segGrid(m.ref.seg));
       self.postMessage({ type: 'layers-fitted', id: m.id, fit: fitLayers(S, R), src: S, ref: R, ms: performance.now() - t });
+    } else if (m.type === 'fit-classes') { // 同類別匹配: the representative frame graded (and layer-matched) with the current look, then sky / plants / rest vs the reference's
+      const t = performance.now(), src = new Uint8ClampedArray(m.src.data), graded = gradedLike(src, m.src.w, m.src.h, m.src.seg, m.intent, m.look);
+      if (m.look) layersFrame(graded, m.src.w, m.src.h, m.look.layerMatch, m.src.depth, m.src.seg, null);
+      const cS = classGrid(src, m.src.w, m.src.h, segGrid(m.src.seg), rawDepth(m.src.depth));
+      const refPx = new Uint8ClampedArray(m.ref.data), cR = classGrid(refPx, m.ref.w, m.ref.h, segGrid(m.ref.seg), rawDepth(m.ref.depth));
+      const S = statsBy(graded, m.src.w, m.src.h, classSampler(cS), CLASSES), R = statsBy(refPx, m.ref.w, m.ref.h, classSampler(cR), CLASSES);
+      self.postMessage({ type: 'classes-fitted', id: m.id, fit: fitBy(S, R, CLASSES, 0.04), src: S, ref: R, shares: { src: classShares(cS), ref: classShares(cR) }, ms: performance.now() - t });
+    } else if (m.type === 'bake-preset') { // 設定檔: the current grade as plain-grid LUTs — the main one and each region layer
+      const out = { size: PRESET_N, main: lutFor(m.intent ? deserializeIntent(m.intent) : null, m.look, { preset: true }).data, layers: {} };
+      if (m.look && m.look.source === 'preset') { for (const r of m.look.presetLayers || []) if (presets.has(`${m.look.presetId}:${r}`)) out.layers[r] = lutFor(m.intent ? deserializeIntent(m.intent) : null, { ...m.look, presetId: `${m.look.presetId}:${r}` }, { preset: true }).data; } // (a loaded 設定檔, saved again with changes)
+      else for (const r of regionsOf(m.look)) out.layers[r] = lutFor(m.intent ? deserializeIntent(m.intent) : null, regionLook(m.look, r), { preset: true }).data;
+      const bufs = [out.main.buffer, ...Object.values(out.layers).map((d) => d.buffer)];
+      self.postMessage({ type: 'preset-baked', id: m.id, ...out }, bufs);
+    } else if (m.type === 'set-preset') { // 設定檔 loaded: its LUTs by id (main, and `${id}:skin` / `${id}:hair`)
+      const lut = (d) => ({ size: m.size, data: new Float32Array(d) });
+      presets.set(m.presetId, lut(m.main));
+      for (const [r, d] of Object.entries(m.layers || {})) presets.set(`${m.presetId}:${r}`, lut(d));
+      for (const k of [...luts.keys()]) if (k.includes(`"presetId":"${m.presetId}`)) luts.delete(k);
+      self.postMessage({ type: 'preset-set', id: m.id });
     } else if (m.type === 'fit-local') { // per-region adjustments for each candidate (rep frame vs reference)
       const t = performance.now();
       const src = { rgba: new Uint8ClampedArray(m.src.data), w: m.src.w, h: m.src.h, seg: m.src.seg };
@@ -414,7 +495,8 @@ self.onmessage = (e) => {
       jobs.delete(m.jobId);
     } else if (m.type === 'render') {
       const lk = m.jobId ? jobs.get(m.jobId)?.look : m.look;
-      if (!model && m.grade && !(lk && lk.source === 'mood')) throw new Error('grade model not fitted yet'); // a mood needs no reference
+      if (!model && m.grade && !(lk && (lk.source === 'mood' || lk.source === 'preset'))) throw new Error('grade model not fitted yet'); // a mood or a 設定檔 needs no reference
+      if (m.grade && lk && lk.source === 'preset' && !presets.has(lk.presetId)) throw new Error('設定檔的調色表不在處理引擎中，請重新載入設定檔');
       if (m.grade && lk && lk.source === 'ai' && !pairs.has(lk.pairId)) throw new Error('AI 調色圖的 LUT 與目前設定不一致，請重新上傳');
       // one-off renders (dialog preview) carry their own intent; job renders reuse the job's state
       const j = m.jobId ? jobs.get(m.jobId) : { ...prepare(m.intent), look: m.look || null, temporal: null };
@@ -458,6 +540,8 @@ self.onmessage = (e) => {
         lap('grade');
         if (m.grade && j.look) layersFrame(out, m.w, m.h, j.look.layerMatch, m.depth, m.seg, m.jobId ? j.temporal : null);
         lap('layers-depth');
+        if (m.grade && j.look) classFrame(out, src, m.w, m.h, j.look.classMatch, m.depth, m.seg, m.jobId ? j.temporal : null);
+        lap('classes');
         if (pk && !dofFirst) PVC.base[draft ? 'draft' : 'full'] = { key: pk.base, out: out.slice(), ev, layers };
       }
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;

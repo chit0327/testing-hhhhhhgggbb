@@ -9,19 +9,24 @@
 <body>
 <header class="top">
   <div class="brand">
-    <h1>照樣調色</h1>
+    <h1><span class="logo" aria-hidden="true"></span>照樣調色</h1>
     <button type="button" id="backToUpload" class="link-btn" hidden>← 返回<span class="long">上傳</span></button>
   </div>
   <div class="status" id="status" data-state="idle" role="status" aria-live="polite">請先上傳參考圖片和目標影片</div>
   <div class="theme-switch" role="radiogroup" aria-label="介面顏色">
-    <button type="button" role="radio" data-theme-choice="light" aria-checked="false">米白</button>
+    <button type="button" role="radio" data-theme-choice="light" aria-checked="false">淺色</button>
     <button type="button" role="radio" data-theme-choice="dark" aria-checked="false">深色</button>
   </div>
 </header>
 
 <!-- page 1: uploads -->
 <main id="pageUpload" class="page-upload">
+  <div class="hero">
+    <p class="hero-kicker">照樣調色 · 瀏覽器內的調色工具</p>
+    <h2 class="hero-title">把喜歡的畫面色調，套用到你的影片和照片</h2>
   <p class="sub">上傳參考圖片和要調色的影片，網站會分析參考圖的色彩風格，套用到影片上；沒有參考圖也可以，直接在工作區選一種氛圍色調。所有處理都在你的瀏覽器內完成，不會上傳任何檔案。</p>
+    <ul class="hero-points"><li>檔案不離開你的裝置</li><li>影片、照片都可以</li><li>AI 人物偵測與景深</li></ul>
+  </div>
   <section class="uploads">
     <article class="card upcard" id="refCard">
       <h2>參考圖片或影片 <span class="optional">（可選）</span></h2>
@@ -158,6 +163,14 @@
           <button type="button" role="tab" data-tab="fx" aria-selected="false">效果</button>
           <button type="button" role="tab" data-tab="pro" aria-selected="false">專業調色</button>
         </div>
+        <details class="cat" id="catPreset" data-group="simple">
+          <summary>設定檔（.preset）</summary>
+          <div class="cat-body">
+            <label class="preset-name"><span>名稱</span><input type="text" id="presetName" maxlength="40" placeholder="例如：日系淡藍"></label>
+            <div class="row"><button type="button" id="presetSave" class="primary">儲存設定檔</button><button type="button" id="presetLoad">載入設定檔</button><input type="file" id="presetInput" class="sr-only"></div>
+            <p class="info" id="presetInfo">把現在的色調和效果存成一個 .preset 檔；下次載入就能把同一個色調和效果套用到其他影片或照片，不需要原本的參考圖。對焦點、背景模糊選區和分層／同類別匹配只適用於原本的影片，不會保存。</p>
+          </div>
+        </details>
         <details class="cat" id="catMood" data-group="simple">
           <summary>氛圍色調</summary>
           <div class="cat-body">
@@ -190,6 +203,18 @@
             <label class="slider sub"><span>　背景飽和度</span><input type="range" id="lmSat" min="-100" max="50" value="0" disabled><output id="lmSat-v">0</output></label>
             <button type="button" id="lmSuggest" class="primary" hidden>建議開啟：按一下套用分層匹配</button>
             <p class="info" id="lmInfo">整體調色是用整張參考圖的顏色；這裏用 AI 深度把背景分成近景和遠景，各自往參考圖同一層的亮度、對比、色調和濃淡靠近（例如參考圖遠處較亮、較朦朧）。人物不受影響（保持整體調色和膚色保護）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
+            <h3>同類別匹配</h3>
+            <label class="check"><input type="checkbox" id="cmOn"> 天空、植物、建築地面分別匹配參考圖</label>
+            <label class="slider sub"><span>　強度</span><input type="range" id="cmAmt" min="0" max="150" value="80" disabled><output id="cmAmt-v">80%</output></label>
+            <button type="button" id="cmSuggest" class="primary" hidden>建議開啟：按一下套用同類別匹配</button>
+            <p class="info" id="cmInfo">把背景分成天空、植物和建築地面（牆、路面、物件），各自往參考圖裏同一類的亮度、對比、色調和濃淡靠近：影片的天空對照參考圖的天空，樹對照樹，牆對照牆，而不是全部用整張參考圖的平均。天空用 AI 深度判斷（最遠處），第一次使用會下載 AI 深度模型（約 27 MB）；人物不受影響。</p>
+            <h3>點選對應顏色</h3>
+            <canvas id="cpRef" class="cp-ref" width="320" height="180" aria-label="參考圖：點想要的顏色"></canvas>
+            <div class="row"><button type="button" id="cpAdd" class="primary">新增一對顏色</button><button type="button" id="cpClear" disabled>全部清除</button></div>
+            <div class="cp-list" id="cpList"></div>
+            <label class="slider sub"><span>　影響範圍</span><input type="range" id="cpRange" min="0" max="100" value="50" disabled><output id="cpRange-v">50</output></label>
+            <label class="slider sub"><span>　強度</span><input type="range" id="cpAmt" min="0" max="100" value="100" disabled><output id="cpAmt-v">100%</output></label>
+            <p class="info" id="cpInfo">自己指定哪裏要像參考圖：按「新增一對顏色」，先在上面的參考圖點想要的顏色（例如天空），再在預覽畫面點影片中對應的地方，影片那個顏色就會變成參考圖的顏色，相近的顏色一起柔和地跟着變。可以加最多 6 對。</p>
             <div class="row">
               <button type="button" id="adjSuggest">恢復自動匹配</button>
               <button type="button" id="claudeGrade" class="primary" hidden>Claude 看圖自動調色</button>
@@ -451,6 +476,8 @@
     <div class="panel-actions" id="panelActions">
       <p class="info" id="adjState"></p>
       <div class="action-row">
+        <button type="button" id="undoBtn" class="hist-btn" title="復原（⌘Z／Ctrl+Z）" aria-label="復原" disabled>↶</button>
+        <button type="button" id="redoBtn" class="hist-btn" title="重做（⇧⌘Z／Ctrl+Y）" aria-label="重做" disabled>↷</button>
         <button type="button" id="adjReset">全部歸零</button>
         <button type="button" id="adjApply" class="primary" hidden>套用並處理影片</button>
         <button type="button" id="exportBtn" class="primary" disabled>匯出影片</button>

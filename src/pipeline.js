@@ -31,11 +31,19 @@ export class EngineClient {
     const a = src.data.slice().buffer, b = ref.data.slice().buffer;
     return this.call({ type: 'fit-layers', src: { data: a, w: src.width, h: src.height, seg: srcSeg, depth: srcDepth }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg, depth: refDepth }, look, intent: intentJson }, [a, b]);
   }
+  /** 同類別匹配: as fitLayers → {fit, src, ref, shares} (sky / plants / rest) */
+  fitClasses(src, srcSeg, srcDepth, ref, refSeg, refDepth, look, intentJson) {
+    const a = src.data.slice().buffer, b = ref.data.slice().buffer;
+    return this.call({ type: 'fit-classes', src: { data: a, w: src.width, h: src.height, seg: srcSeg, depth: srcDepth }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg, depth: refDepth }, look, intent: intentJson }, [a, b]);
+  }
   fitLocal(src, srcSeg, ref, refSeg, cands) { // src, ref: ImageData; seg: {w, h, skin, hair, clothes, background}
     const a = src.data.slice().buffer, b = ref.data.slice().buffer;
     return this.call({ type: 'fit-local', src: { data: a, w: src.width, h: src.height, seg: srcSeg }, ref: { data: b, w: ref.width, h: ref.height, seg: refSeg }, cands }, [a, b]);
   }
   clearPair() { return this.call({ type: 'clear-pair' }); }
+  /** 設定檔: the current grade as LUTs {size, main: Float32Array, layers: {skin?, hair?}} */
+  bakePreset(look, intentJson) { return this.call({ type: 'bake-preset', look, intent: intentJson }).then((m) => ({ size: m.size, main: new Float32Array(m.main), layers: Object.fromEntries(Object.entries(m.layers || {}).map(([k, v]) => [k, new Float32Array(v)])) })); }
+  setPreset(presetId, size, main, layers) { const L = Object.fromEntries(Object.entries(layers || {}).map(([k, v]) => [k, v.buffer])); return this.call({ type: 'set-preset', presetId, size, main: main.buffer, layers: L }, [main.buffer, ...Object.values(L)]); }
   gpuBench(img, look, intentJson) { const d = img.data.slice(); return this.call({ type: 'gpu-bench', data: d.buffer, w: img.width, h: img.height, look, intent: intentJson }, [d.buffer]).then((m) => m.res); }
   bake(look, intentJson) { return this.call({ type: 'bake', look, intent: intentJson }).then((m) => ({ size: m.size, data: new Float32Array(m.data) })); }
   startJob(jobId, intentJson, look, { noTrack = false } = {}) { // noTrack: photos (separate pictures, no camera motion to follow)

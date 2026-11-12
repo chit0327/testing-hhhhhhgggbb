@@ -9,6 +9,7 @@
 //   * fit once per video on keyframes spread over the clip (per-frame refits flicker),
 //   * analyse only the central 70% of the reference (a vignette there is not part of the colour grade),
 //   * the grade is a pure function of colour -> one LUT, identical in preview and export.
+import { pairsPlan, pairWarp, warpRGB } from './colorpairs.js';
 import { srgbToOklab, oklabToSrgb } from './color.js';
 import { compilePrim, isNeutralPrim } from './primary.js';
 
@@ -340,8 +341,8 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
   const lab = srgbToOklab(r, g, b, _lab);
   const L0 = lab[0], a0 = lab[1], b0 = lab[2];
   let L = L0, a = a0, bb = b0;
-  if (model && k.source === 'ai') {
-    if (!model.pair) throw new Error('AI 調色圖的 LUT 尚未建立');
+  if (model && (k.source === 'ai' || k.source === 'preset')) { // (設定檔 .preset: its baked LUT, used as the AI-graded frame's is)
+    if (!model.pair) throw new Error(k.source === 'preset' ? '設定檔的調色表尚未載入' : 'AI 調色圖的 LUT 尚未建立');
     const c = lutLookup(model.pair, r, g, b, _pairRGB), t = srgbToOklab(c[0], c[1], c[2], _pairLab);
     L = L0 + k.strength * (t[0] - L0); a = a0 + k.strength * (t[1] - a0); bb = b0 + k.strength * (t[2] - b0);
   } else if (model) {
@@ -448,7 +449,9 @@ export function bakeLUT(model, look = {}, N = 33, { shaper = null, memo = null }
   const lut = new Float32Array(N * N * N * 3), o = [0, 0, 0], t = [0, 0, 0];
   const k = { ...DEFAULT_LOOK, ...look };
   const primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim, { memo }); // memo: see compilePrim
-  const neutral = !model && !primFn && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
+  // 點選對應顏色 (colorpairs.js): last, on the graded colour; each pair's video colour is graded by this same function
+  const pp = pairsPlan(k.colorPairs), warp = pp ? pairWarp(pp, (r, g, b) => gradeColour(model, r, g, b, look, [0, 0, 0], [0, 0, 0], primFn)) : null, wl = [0, 0, 0], wr = [0, 0, 0];
+  const neutral = !warp && !model && !primFn && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
   // input value of grid node i: inverse of the shaper (linear between its 256 levels)
   const node = new Float64Array(N);
   for (let i = 0; i < N; i++) {
@@ -461,6 +464,7 @@ export function bakeLUT(model, look = {}, N = 33, { shaper = null, memo = null }
   for (let r = 0; r < N; r++) for (let g = 0; g < N; g++) for (let b = 0; b < N; b++) {
     if (neutral) { o[0] = node[r]; o[1] = node[g]; o[2] = node[b]; }
     else gradeColour(model, node[r], node[g], node[b], look, o, t, primFn);
+    if (warp) warpRGB(warp, o, wl, wr);
     const i = ((r * N + g) * N + b) * 3;
     lut[i] = o[0]; lut[i + 1] = o[1]; lut[i + 2] = o[2];
   }
