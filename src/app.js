@@ -17,7 +17,7 @@ import { bandColours, bandDeltaE, structureScore, clipping, maskedDeltaE } from 
 import { claudeAvailable, claudeGrade, toJpeg } from './claudegrade.js';
 import { suggestLook } from './engine/suggest.js';
 import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
-import { findBars } from './engine/bars.js';
+import { findBars, findPicture } from './engine/bars.js';
 import { refAirRGB } from './engine/render.js';
 import { dofPlan, personRel } from './engine/dof.js';
 import { initDepth, depthOf, depthInfo, onDepthProgress, prefetchDepth, depthStored } from './depth.js';
@@ -86,15 +86,16 @@ $('refInput').addEventListener('change', async (e) => {
     if (!file.type.startsWith('image/')) throw new Error(`不支援的檔案類型（${file.type || '未知'}），請選擇圖片或影片`);
     const bmp = await loadImage(file);
     if (id !== S.ref.id) return;
-    // bars around the picture (letterbox, or a video player's background in a screenshot) are cut off before any analysis
-    const probe = imageDataOf(bmp, 512), b = findBars(probe), k = bmp.width / probe.width;
+    // bars around the picture (letterbox, or a video player's background in a screenshot) and panels (a colour-palette
+    // strip under a film still, a white frame) are cut off before any analysis
+    const probe = imageDataOf(bmp, 512), b = findPicture(probe), k = bmp.width / probe.width;
     const crop = b.w < probe.width || b.h < probe.height ? { x: Math.round(b.x * k), y: Math.round(b.y * k), w: Math.round(b.w * k), h: Math.round(b.h * k) } : null;
     S.ref = { status: 'ready', id, file, bitmap: bmp, crop, imageData: crop ? refPixels(bmp, crop, 512) : probe };
     const img = $('refPreview');
     img.src = URL.createObjectURL(file); img.hidden = false;
     $('refPipImg').src = img.src; syncRefPip();
-    $('refInfo').textContent = `${file.name}　${bmp.width}×${bmp.height}${crop ? `　已去除邊框，分析範圍 ${crop.w}×${crop.h}` : ''}`;
-    if (crop) log('ref-bars-removed', { crop });
+    $('refInfo').textContent = `${file.name}　${bmp.width}×${bmp.height}${crop ? `　已去除${b.panels ? '色板／邊框' : '邊框'}，分析範圍 ${crop.w}×${crop.h}` : ''}`;
+    if (crop) log('ref-bars-removed', { crop, panels: !!b.panels });
     log('ref-loaded', { name: file.name });
   } catch (err) {
     S.ref = { status: 'error', id };
@@ -640,7 +641,7 @@ function describeLook(k) {
   if (k.prim && !isNeutralPrim(k.prim)) parts.push(`專業調色${S.candMode && S.look.auto ? `（${{ look: '風格', lookStrong: '風格・濃', infer: '推斷風格', natural: '照搬・自然', faithful: '照搬・忠實', bold: '照搬・濃烈' }[S.candMode]}）` : ''}${k.prim.skin ? `、膚色保護 ${Math.round(k.prim.skin * 100)}` : ''}${k.prim.local && (k.prim.localAmt ?? 1) > 0 ? `、局部調色 ${Math.round((k.prim.localAmt ?? 1) * 100)}` : ''}${k.prim.norm && k.prim.norm.amt > 0.02 ? `、LOG 還原 ${Math.round(k.prim.norm.amt * 100)}` : ''}`);
   if (k.glow) parts.push(`柔光 ${Math.round(k.glow * 100)}`);
   if (k.layerMatch && k.layerMatch.on && k.layerMatch.fit) parts.push(`依深度分層匹配 ${Math.round((k.layerMatch.amt ?? 0.8) * 100)}%${k.layerMatch.bgSat ? `、背景飽和度 ${k.layerMatch.bgSat > 0 ? '+' : ''}${Math.round(k.layerMatch.bgSat * 100)}` : ''}`);
-  if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : '點選位置'}、光斑 ${Math.round((k.dof.glow ?? 0.5) * 100)}`);
+  if (k.dof && k.dof.on) parts.push(`對焦（景深）${Math.round((k.dof.amount ?? 0.5) * 100)}、對焦在${k.dof.person ? '人物' : `點選位置（焦點範圍 ${Math.round((k.dof.area ?? 0.35) * 100)}）`}、光斑 ${Math.round((k.dof.glow ?? 0.5) * 100)}`);
   if (k.fringe) parts.push(`色散 ${Math.round(k.fringe * 100)}${(k.fringeFocus ?? 1) < 1 ? `（失焦處 ${Math.round((k.fringeFocus ?? 1) * 100)}）` : ''}`);
   if (k.vignette) parts.push(`暗角 ${k.vignette > 0 ? '+' : ''}${Math.round(k.vignette * 100)}`);
   if (!k.protect) parts.push('不保護材質顏色');
@@ -989,11 +990,12 @@ function syncDof() {
   $('dofAmount').value = Math.round(((d && d.amount) ?? 0.5) * 100); $('dofAmount-v').textContent = $('dofAmount').value;
   $('dofAmount').disabled = !on; $('dofOff').disabled = !on;
   for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range']]) { $(id).value = Math.round(((d && d[k]) ?? 0.5) * 100); $(`${id}-v`).textContent = $(id).value; $(id).disabled = !on; }
+  $('dofArea').value = Math.round(((d && d.area) ?? 0.35) * 100); $('dofArea-v').textContent = $('dofArea').value; $('dofArea').disabled = !on || !!(d && d.person); // (on a person: the focus follows the person)
   $('dofPick').textContent = DOF.picking ? '在預覽上點一下…（再按取消）' : on ? '重新選對焦點' : '選對焦點';
   $('dofPick').setAttribute('aria-pressed', DOF.picking ? 'true' : 'false');
   $('adjCanvas').classList.toggle('picking', DOF.picking);
   const bl = S.look.draft.blur, both = on && bl && bl.on && bl.amount > 0;
-  if (!DOF.loading) $('dofInfo').textContent = on ? `對焦在${d.person ? '人物（人物移動時焦點跟着）' : '點選的位置'}；比它近或遠的地方都會按距離逐漸變模糊，背景的小光點會散開成圓形光斑（光斑亮度、光斑範圍）。${depthInfo() ? `深度計算：${depthInfo().ep === 'gpu' ? '顯示卡' : '處理器'}。` : ''}${both ? '　注意：「背景模糊」也開着，兩者會疊加（先背景模糊、再景深），背景被模糊兩次，背景模糊的光斑會被再糊開；用景深時通常關掉背景模糊、改用這裏的光斑。' : ''}` : '按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。';
+  if (!DOF.loading) $('dofInfo').textContent = on ? `對焦在${d.person ? '人物（人物移動時焦點跟着）' : '點選的位置（焦點範圍：只有點選位置附近清楚，越遠越模糊；100 = 同一距離的地方全部清楚）'}；比它近或遠的地方都會按距離逐漸變模糊，背景的小光點會散開成圓形光斑（光斑亮度、光斑範圍）。${depthInfo() ? `深度計算：${depthInfo().ep === 'gpu' ? '顯示卡' : '處理器'}。` : ''}${both ? '　注意：「背景模糊」也開着，兩者會疊加（先背景模糊、再景深），背景被模糊兩次，背景模糊的光斑會被再糊開；用景深時通常關掉背景模糊、改用這裏的光斑。' : ''}` : '按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。';
 }
 async function repDepth() { // the representative frame's AI depth (cached per frame)
   const key = `${S.video.id}|${S.rep.t}`;
@@ -1013,13 +1015,13 @@ function setFocus(pt) {
   const rel = mh ? personRel(x, y, { person: seg.person, mw: MASK_W, mh }) : null, onPerson = rel !== null;
   const prev = S.look.draft.dof;
   S.look.auto = false;
-  S.look.draft.dof = { ...(prev ? { amount: prev.amount, glow: prev.glow, range: prev.range } : {}), on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
+  S.look.draft.dof = { ...(prev ? { amount: prev.amount, glow: prev.glow, range: prev.range, area: prev.area } : {}), on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
   DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview();
   log('dof-focus', { x: +x.toFixed(3), y: +y.toFixed(3), person: onPerson, rel });
 }
 $('dofPick').onclick = () => { if (!S.rep) return; DOF.picking = !DOF.picking; if (DOF.picking) { stopBlurPainting(); initDepth().catch(() => {}); } syncDof(); };
 $('dofOff').onclick = () => { if (S.look.draft.dof) S.look.draft.dof = { ...S.look.draft.dof, on: false }; DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview(); log('dof-off'); };
-for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range']]) $(id).addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, [k]: e.target.value / 100 }; $(`${id}-v`).textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
+for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range'], ['dofArea', 'area']]) $(id).addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, [k]: e.target.value / 100 }; $(`${id}-v`).textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
 $('dofAmount').addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, amount: e.target.value / 100 }; $('dofAmount-v').textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
 
 function canvasPoint(e) {
@@ -1443,7 +1445,7 @@ buildPro();
   const def = new Map();
   for (const [id, [key, scale]] of Object.entries(ADJ)) def.set($(`adj-${id}`), () => Math.round(DEFAULT_LOOK[key] * scale));
   for (const c of PRO) def.set(c.el, /膚色保護/.test(c.label || '') ? () => (S.look.draft.source === 'reference' ? 100 : 0) : () => Math.round(c.get(neutralPrim()))); // skin protection is on by default for reference grading
-  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0]]) def.set($(id), () => v);
+  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofArea', 35], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0]]) def.set($(id), () => v);
   for (const row of $('adjustCard').querySelectorAll('label.slider, .tone-row, .wheel-row, .curve-row, .hue-row')) {
     const inputs = [...row.querySelectorAll('input[type=range]')].filter((el) => def.has(el));
     if (!inputs.length) continue;
@@ -2392,10 +2394,12 @@ async function askDepthDownload() {
     const off = onDepthProgress((st, m) => { $('depthDlText').textContent = st; if (m && m.total) $('depthDlBar').style.width = `${Math.min(100, m.loaded / m.total * 100)}%`; });
     log('depth-download-allowed');
     try {
-      await prefetchDepth();
-      $('depthDlBar').style.width = '100%'; $('depthDlText').textContent = '已下載並儲存在這部裝置上。';
-      log('depth-downloaded');
-      setTimeout(() => { if (d.open) d.close(); }, 1200);
+      const t0 = performance.now(), st = await prefetchDepth(), secs = (performance.now() - t0) / 1000;
+      const name = { 'runtime-wasm': '執行程式', download: '模型' };
+      const parts = st.map((x) => `${name[x.what] || x.what} ${(x.bytes / 1e6).toFixed(1)} MB ${(x.ms / 1000).toFixed(1)} 秒${x.cached ? '（已儲存）' : `（${(x.bytes / 1e6 / Math.max(0.05, x.ms / 1000)).toFixed(1)} MB/秒${x.parts > 1 ? `，分 ${x.parts} 段同時下載` : ''}）`}`);
+      $('depthDlBar').style.width = '100%'; $('depthDlText').textContent = `已下載並儲存：${parts.join('、')}；共 ${secs.toFixed(1)} 秒。`;
+      log('depth-downloaded', { stats: st, secs: +secs.toFixed(1) });
+      setTimeout(() => { if (d.open) d.close(); }, 6000); // (long enough to read how long it took)
     } catch (err) { $('depthDlText').textContent = `下載失敗：${err.message}（用到時會再試）`; log('depth-download-failed', { message: err.message }); }
     finally { off(); }
   };

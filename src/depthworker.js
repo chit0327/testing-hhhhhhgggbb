@@ -28,29 +28,57 @@ async function cached(url) {
   return null;
 }
 async function store(url, bytes) { try { const c = await caches.open(CACHE); await c.put(url, new Response(bytes, { headers: { 'Content-Type': 'application/octet-stream' } })); } catch { /* (storage full or unavailable: next time it downloads again) */ } }
+const stats = []; // per file: {what, bytes, ms, parts, cached} — shown to the user after downloading (where is it slow?)
+const tick = (what, loaded, total, t0) => progress(what, { loaded, total, rate: loaded / Math.max(0.05, (performance.now() - t0) / 1000) });
+/** a file in parallel byte ranges (4 parts: on a high-latency connection one stream is far below the line's speed); null when the server does not serve ranges */
+async function fetchParallel(url, what) {
+  let total = 0;
+  try {
+    const probe = await fetch(url, { headers: { Range: 'bytes=0-0' } }), cr = probe.headers.get('content-range');
+    if (probe.status === 206 && cr) total = +cr.split('/')[1] || 0;
+    try { await probe.arrayBuffer(); } catch { /* */ }
+  } catch { return null; }
+  if (!total) return null;
+  const N = total > 4e6 ? 4 : 1, size = Math.ceil(total / N), buf = new Uint8Array(total), t0 = performance.now();
+  let loaded = 0, last = 0;
+  await Promise.all(Array.from({ length: N }, async (_, i) => {
+    const a = i * size, b = Math.min(total, a + size) - 1;
+    const r = await fetch(url, { headers: { Range: `bytes=${a}-${b}` } });
+    if (r.status !== 206 || !r.body) throw new Error('range not served');
+    const reader = r.body.getReader(); let o = a;
+    for (;;) { const { done, value } = await reader.read(); if (done) break; buf.set(value, o); o += value.length; loaded += value.length; if (loaded - last > 5e5) { last = loaded; tick(what, loaded, total, t0); } }
+    if (o !== b + 1) throw new Error('part cut short');
+  }));
+  return { bytes: buf, parts: N };
+}
 async function readAll(res, what, totalGuess) {
-  const total = +res.headers.get('content-length') || totalGuess;
+  const total = +res.headers.get('content-length') || totalGuess, t0 = performance.now();
   if (!res.body || !res.body.getReader) return new Uint8Array(await res.arrayBuffer());
   const reader = res.body.getReader(), parts = []; let loaded = 0, last = 0;
-  for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); loaded += value.length; if (loaded - last > 5e5) { last = loaded; progress(what, { loaded, total }); } }
+  for (;;) { const { done, value } = await reader.read(); if (done) break; parts.push(value); loaded += value.length; if (loaded - last > 5e5) { last = loaded; tick(what, loaded, total, t0); } }
   const out = new Uint8Array(loaded); let o = 0; for (const p of parts) { out.set(p, o); o += p.length; }
   return out;
 }
 async function download(url, what, sizeGuess) {
-  const hit = await cached(url);
-  if (hit) { progress(`${what}-cached`); return hit; }
-  let bytes = null;
+  const t0 = performance.now(), hit = await cached(url);
+  if (hit) { progress(`${what}-cached`); stats.push({ what, bytes: hit.length, ms: Math.round(performance.now() - t0), cached: true }); return hit; }
+  let bytes = null, got = 0, parts = 1;
+  const get = async (u, guess) => { // parallel ranges where served, else one stream
+    try { const p = await fetchParallel(u, what); if (p) { parts = p.parts; return p.bytes; } } catch { /* fall back to one stream */ }
+    const r = await fetch(u); if (!r.ok) return null; parts = 1; return readAll(r, what, guess);
+  };
   if (typeof DecompressionStream !== 'undefined') {
     try {
-      const r = await fetch(`${url}.gz`);
-      if (r.ok) { const gz = await readAll(r, what, sizeGuess * 0.6); bytes = new Uint8Array(await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()); }
+      const gz = await get(`${url}.gz`, sizeGuess * 0.6);
+      if (gz) { got = gz.length; bytes = new Uint8Array(await new Response(new Blob([gz]).stream().pipeThrough(new DecompressionStream('gzip'))).arrayBuffer()); }
     } catch { bytes = null; }
   }
   if (!bytes) {
-    const r = await fetch(url);
-    if (!r.ok) throw new Error(what === 'download' ? '找不到 AI 深度模型（請先執行 npm run setup）' : '找不到 AI 執行程式');
-    bytes = await readAll(r, what, sizeGuess);
+    bytes = await get(url, sizeGuess);
+    if (!bytes) throw new Error(what === 'download' ? '找不到 AI 深度模型（請先執行 npm run setup）' : '找不到 AI 執行程式');
+    got = bytes.length;
   }
+  stats.push({ what, bytes: got, ms: Math.round(performance.now() - t0), parts });
   await store(url, bytes);
   return bytes;
 }
@@ -63,7 +91,7 @@ self.onmessage = async (e) => {
       const tryGpu = m.gpu !== false && !!(self.navigator && self.navigator.gpu) && !webkit;
       await download(new URL(`../vendor/ort/ort-wasm-simd-threaded${tryGpu ? '.asyncify' : ''}.wasm`, import.meta.url).href, 'runtime-wasm', tryGpu ? 28.7e6 : 14.8e6);
       await download(MODEL, 'download', 27258801);
-      self.postMessage({ type: 'prefetched', id: m.id });
+      self.postMessage({ type: 'prefetched', id: m.id, stats });
     } else if (m.type === 'init') {
       const t0 = performance.now(), webkit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent) || /iPad|iPhone|iPod/.test(navigator.userAgent);
       const tryGpu = m.gpu !== false && !!(self.navigator && self.navigator.gpu) && !webkit;

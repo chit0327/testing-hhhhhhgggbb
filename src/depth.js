@@ -33,7 +33,7 @@ function startWorker() {
   worker = new Worker(new URL('./depthworker.js', import.meta.url), { type: 'module' });
   worker.onmessage = (e) => {
     const m = e.data;
-    if (m.type === 'progress') { stage = `${STAGES[m.stage] || m.stage}${m.total ? ` ${(m.loaded / 1e6).toFixed(0)} / ${(m.total / 1e6).toFixed(0)} MB` : ''}`; for (const fn of listeners) fn(stage, m); return; }
+    if (m.type === 'progress') { stage = `${STAGES[m.stage] || m.stage}${m.total ? ` ${(m.loaded / 1e6).toFixed(1)} / ${(m.total / 1e6).toFixed(1)} MB${m.rate ? `・${(m.rate / 1e6).toFixed(1)} MB/秒` : ''}` : ''}`; for (const fn of listeners) fn(stage, m); return; }
     const p = pending.get(m.id); if (!p) return; pending.delete(m.id); if (m.info) lastInfo = m.info; m.type === 'error' ? p.reject(new Error(m.message)) : p.resolve(m);
   };
   worker.onerror = (e) => { e.preventDefault && e.preventDefault(); for (const p of pending.values()) p.reject(new Error(`深度模型執行失敗：${e.message || '這個瀏覽器不能執行'}`)); pending.clear(); };
@@ -43,7 +43,7 @@ let prefetching = null;
 export function prefetchDepth({ gpu = globalThis.__depthGpu !== false } = {}) {
   if (prefetching) return prefetching;
   startWorker();
-  prefetching = call({ type: 'prefetch', gpu }, [], 600000, '下載 AI 深度模型').then(() => { stage = ''; }).catch((err) => { prefetching = null; stage = ''; throw err; });
+  prefetching = call({ type: 'prefetch', gpu }, [], 600000, '下載 AI 深度模型').then((m) => { stage = ''; return m.stats || []; }).catch((err) => { prefetching = null; stage = ''; throw err; });
   return prefetching;
 }
 /** start the worker and load the model (once); resolves to its info */

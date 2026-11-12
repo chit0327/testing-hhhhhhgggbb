@@ -27,7 +27,8 @@ export function dofPlan(dof) {
   const amount = clamp01(dof.amount ?? 0.5);
   if (!amount || !Number.isFinite(dof.x) || !Number.isFinite(dof.y)) return null;
   return { amount, x: clamp01(dof.x), y: clamp01(dof.y), person: !!dof.person, rel: Number.isFinite(dof.rel) ? clamp01(dof.rel) : null,
-    glow: Number.isFinite(dof.glow) ? clamp01(dof.glow) : 0.5, range: Number.isFinite(dof.range) ? clamp01(dof.range) : 0.5 };
+    glow: Number.isFinite(dof.glow) ? clamp01(dof.glow) : 0.5, range: Number.isFinite(dof.range) ? clamp01(dof.range) : 0.5,
+    area: dof.person ? 1 : Number.isFinite(dof.area) ? clamp01(dof.area) : 0.35 }; // 焦點範圍: a tap on the background keeps only its surroundings sharp
 }
 /** blur radius in px per unit of (0..1) depth difference, at the frame's size */
 export const dofScale = (plan, w, h) => plan.amount * 0.04 * Math.max(w, h);
@@ -109,7 +110,7 @@ function disc(buf, w, h, R) {
  * range: the brightness where a highlight starts to count as a light (0.8 … 0.2). The boost grows with the layer's blur,
  * so what is in focus is not brightened. Returns {maxRadius} (px) for the record.
  */
-export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }) {
+export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }, spot = null) {
   const gain = 30 * clamp01(bokeh.glow ?? 0.5), lo = 0.8 - 0.6 * clamp01(bokeh.range ?? 0.5);
   const f0 = Math.max(1, Math.round(Math.max(w, h) / 640)), sw = Math.ceil(w / f0), sh = Math.ceil(h / f0), n = sw * sh;
   // the frame (linear light) and its depth on the base grid
@@ -135,6 +136,19 @@ export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }
     for (let q = 0; q < n; q++) I[q] = Math.cbrt(0.2126 * lin[3 * q] + 0.7152 * lin[3 * q + 1] + 0.0722 * lin[3 * q + 2]);
     dg.set(guidedFilter(dg, I, sw, sh, Math.max(1, Math.round(4 * sw / 640)), 1e-3));
   }
+  // 焦點範圍 (spot {x, y, area}: a tap on the background): only the part of the picture around the tapped point stays
+  // sharp — farther from it on screen counts as farther from the focus distance (up to 0.35 of the depth range), so a
+  // wall or a row of buildings at the focus distance blurs away from the tapped corner instead of all staying sharp
+  // (and making a blurred person in front stand out). area 1 = the whole focus plane sharp (a real lens).
+  if (spot && spot.area < 0.99) {
+    const r0 = 0.05 + 0.7 * spot.area, M = Math.max(sw, sh);
+    for (let y = 0; y < sh; y++) for (let x = 0; x < sw; x++) {
+      const d = Math.hypot((x + 0.5 - spot.x * sw) / M, (y + 0.5 - spot.y * sh) / M), t = Math.min(1, Math.max(0, (d - r0) / 0.3)), e = 0.35 * t * t * (3 - 2 * t);
+      if (!e) continue;
+      const q = y * sw + x, off = dg[q] - df;
+      if (Math.abs(off) < e) dg[q] = df + (off > 0 ? e : -e); // (at the focus distance: pushed back, as if farther)
+    }
+  }
   // 光斑: which cells are lights — bright AND much brighter than their surroundings (a lamp, a sparkle), not a large
   // bright surface (a white table, a sunlit wall stays as bright when blurred: boosting it washed it out)
   const pt = new Float32Array(n);
@@ -149,8 +163,11 @@ export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }
   const acc = new Float32Array(n * 4), vis = new Float32Array(n);
   let maxR = 0;
   // slice centres one step apart with one exactly on the focus depth (in focus = no blur at all), covering 0..1
+  // (covering the depth range actually present: 焦點範圍 can push points past 0 or 1 — beyond every layer they were
+  // left out and kept their sharp pixels)
+  let dMin = 0, dMax = 1; for (let q = 0; q < n; q++) { if (dg[q] < dMin) dMin = dg[q]; if (dg[q] > dMax) dMax = dg[q]; }
   const step = 1 / (SLICES - 1), centres = [];
-  for (let k = -Math.ceil(df / step) - 1; df + k * step <= 1 + step; k++) if (df + k * step >= -step) centres.push(df + k * step);
+  for (let k = Math.floor((dMin - df) / step) - 1; df + k * step <= dMax + step; k++) if (df + k * step >= dMin - step) centres.push(df + k * step);
   for (const c of centres) {
     const rPx = Math.abs(c - df) * K, rb = rPx / f0;
     const g = Math.max(1, Math.ceil(rb / 6)), gw = Math.ceil(sw / g), gh = Math.ceil(sh / g), gb = gain * Math.min(1, Math.max(0, (rPx - 1) / 3));
