@@ -915,7 +915,7 @@ function toAnchorGrid(fx, fy) {
 // pointer → position in the picture as 0..1 of its width / height (the canvas is letterboxed by object-fit: contain,
 // and its pixel size changes between the quick and the full-quality preview, so canvas pixels are not stable)
 /** the AI depth of every frame is needed: 對焦（景深） or 依深度分層匹配 */
-function needsDepthFor(look) { return !!(dofPlan(look.dof) || (look.layerMatch && look.layerMatch.on && look.layerMatch.fit)); }
+function needsDepthFor(look) { const d = dofPlan(look.dof); return !!((d && d.mode !== 'tilt') || (look.layerMatch && look.layerMatch.on && look.layerMatch.fit)); } // (移軸 needs no depth model)
 
 // ---- 依深度分層匹配: the background, split by depth into near and far, each matched to the reference's same layer.
 // The fit (worker 'fit-layers') uses the representative frame graded with the current look, its AI person mask and
@@ -984,17 +984,24 @@ $('lmAmt').addEventListener('input', (e) => { const l = S.look.draft.layerMatch;
 // ---- 對焦（景深）: tap the preview to set the focus; the AI depth model (src/depth.js, loaded on first use) gives each
 // frame's depth. On a person (AI mask at the tapped point) the focus follows that person; elsewhere it stays on the
 // depth at the tapped point. The representative frame's depth is kept (repDepth) for the preview.
-const DOF = { picking: false, rep: null, loading: false };
+const DOF = { picking: false, rep: null, loading: false, mode: 'lens' };
+const dofTilt = () => { const d = S.look.draft.dof; return d && d.on ? d.mode === 'tilt' : DOF.mode === 'tilt'; };
 function syncDof() {
   const d = S.look.draft.dof, on = !!(d && d.on);
   $('dofAmount').value = Math.round(((d && d.amount) ?? 0.5) * 100); $('dofAmount-v').textContent = $('dofAmount').value;
   $('dofAmount').disabled = !on; $('dofOff').disabled = !on;
   for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range']]) { $(id).value = Math.round(((d && d[k]) ?? 0.5) * 100); $(`${id}-v`).textContent = $(id).value; $(id).disabled = !on; }
-  $('dofArea').value = Math.round(((d && d.area) ?? 0.35) * 100); $('dofArea-v').textContent = $('dofArea').value; $('dofArea').disabled = !on || !!(d && d.person); // (on a person: the focus follows the person)
-  $('dofPick').textContent = DOF.picking ? '在預覽上點一下…（再按取消）' : on ? '重新選對焦點' : '選對焦點';
+  const tilt = dofTilt();
+  for (const r of document.querySelectorAll('input[name=dofMode]')) r.checked = r.value === (tilt ? 'tilt' : 'lens');
+  $('dofArea').value = Math.round(((d && d.area) ?? (tilt ? 0.3 : 0.35)) * 100); $('dofArea-v').textContent = $('dofArea').value; $('dofArea').disabled = !on || !!(d && d.person); // (on a person: the focus follows the person)
+  $('dofAreaLbl').textContent = tilt ? '　清楚範圍' : '　焦點範圍';
+  $('dofAngleRow').hidden = !tilt; $('dofAngle').disabled = !on; $('dofAngle').value = Math.round(((d && d.angle) || 0) * 45); $('dofAngle-v').textContent = `${$('dofAngle').value}°`;
+  $('dofGrain').disabled = !on; $('dofGrain').value = Math.round(((d && d.grain) ?? 0.5) * 100); $('dofGrain-v').textContent = $('dofGrain').value;
+  $('dofPick').textContent = DOF.picking ? '在預覽上點一下…（再按取消）' : tilt ? (on ? '重新選清楚的位置' : '選清楚的位置') : on ? '重新選對焦點' : '選對焦點';
   $('dofPick').setAttribute('aria-pressed', DOF.picking ? 'true' : 'false');
   $('adjCanvas').classList.toggle('picking', DOF.picking);
   const bl = S.look.draft.blur, both = on && bl && bl.on && bl.amount > 0;
+  if (!DOF.loading && tilt) { $('dofInfo').textContent = on ? `移軸：點選位置的一條橫帶保持清楚（清楚範圍、角度），上下越遠越模糊，像移軸鏡頭拍出的「微縮模型」效果。不需要 AI 深度模型。模糊處噪點：把原片的噪點加回模糊的地方，令模糊部分不會過份平滑。${both ? '　注意：「背景模糊」也開着，兩者會疊加。' : ''}` : '按「選清楚的位置」，再在預覽畫面點一下要保持清楚的高度（例如街道上的人和車）。不需要下載 AI 模型。'; return; }
   if (!DOF.loading) $('dofInfo').textContent = on ? `對焦在${d.person ? '人物（人物移動時焦點跟着）' : '點選的位置（焦點範圍：只有點選位置附近清楚，越遠越模糊；100 = 同一距離的地方全部清楚）'}；比它近或遠的地方都會按距離逐漸變模糊，背景的小光點會散開成圓形光斑（光斑亮度、光斑範圍）。${depthInfo() ? `深度計算：${depthInfo().ep === 'gpu' ? '顯示卡' : '處理器'}。` : ''}${both ? '　注意：「背景模糊」也開着，兩者會疊加（先背景模糊、再景深），背景被模糊兩次，背景模糊的光斑會被再糊開；用景深時通常關掉背景模糊、改用這裏的光斑。' : ''}` : '按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。';
 }
 async function repDepth() { // the representative frame's AI depth (cached per frame)
@@ -1011,17 +1018,30 @@ async function repDepth() { // the representative frame's AI depth (cached per f
 }
 function setFocus(pt) {
   const [x, y] = pt.map((v) => Math.min(1, Math.max(0, v)));
+  if (dofTilt()) { // 移軸: the sharp band goes through the tapped point
+    const prev = S.look.draft.dof && S.look.draft.dof.mode === 'tilt' ? S.look.draft.dof : null;
+    S.look.auto = false;
+    S.look.draft.dof = { on: true, mode: 'tilt', amount: (prev && prev.amount) ?? 0.6, x: +x.toFixed(4), y: +y.toFixed(4), area: (prev && prev.area) ?? 0.3, angle: (prev && prev.angle) || 0, grain: (prev && prev.grain) ?? 0.5, glow: (prev && prev.glow) ?? 0.5, range: (prev && prev.range) ?? 0.5 };
+    DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview();
+    log('dof-focus', { x: +x.toFixed(3), y: +y.toFixed(3), tilt: true });
+    return;
+  }
   const seg = S.rep.seg, mh = seg && seg.person ? seg.person.length / MASK_W : 0;
   const rel = mh ? personRel(x, y, { person: seg.person, mw: MASK_W, mh }) : null, onPerson = rel !== null;
   const prev = S.look.draft.dof;
   S.look.auto = false;
-  S.look.draft.dof = { ...(prev ? { amount: prev.amount, glow: prev.glow, range: prev.range, area: prev.area } : {}), on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
+  S.look.draft.dof = { ...(prev && prev.mode !== 'tilt' ? { amount: prev.amount, glow: prev.glow, range: prev.range, area: prev.area, grain: prev.grain } : prev ? { amount: prev.amount, glow: prev.glow, range: prev.range, grain: prev.grain } : {}), on: true, amount: (prev && prev.amount) ?? 0.5, x: +x.toFixed(4), y: +y.toFixed(4), person: onPerson, ...(onPerson ? { rel: +rel.toFixed(3) } : {}) };
   DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview();
   log('dof-focus', { x: +x.toFixed(3), y: +y.toFixed(3), person: onPerson, rel });
 }
-$('dofPick').onclick = () => { if (!S.rep) return; DOF.picking = !DOF.picking; if (DOF.picking) { stopBlurPainting(); initDepth().catch(() => {}); } syncDof(); };
+$('dofPick').onclick = () => { if (!S.rep) return; DOF.picking = !DOF.picking; if (DOF.picking) { stopBlurPainting(); if (!dofTilt()) initDepth().catch(() => {}); } syncDof(); };
+for (const r of document.querySelectorAll('input[name=dofMode]')) r.addEventListener('change', () => { // switching keeps the picked point
+  DOF.mode = r.value; const d = S.look.draft.dof;
+  if (d && d.on) { S.look.draft.dof = { ...d, mode: r.value, area: undefined, angle: undefined }; setFocus([d.x ?? 0.5, d.y]); log('dof-mode', { mode: r.value }); } else syncDof();
+});
+$('dofAngle').addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, angle: e.target.value / 45 }; $('dofAngle-v').textContent = `${e.target.value}°`; updateAdjState(); scheduleAdjPreview(); });
 $('dofOff').onclick = () => { if (S.look.draft.dof) S.look.draft.dof = { ...S.look.draft.dof, on: false }; DOF.picking = false; syncDof(); updateAdjState(); scheduleAdjPreview(); log('dof-off'); };
-for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range'], ['dofArea', 'area']]) $(id).addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, [k]: e.target.value / 100 }; $(`${id}-v`).textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
+for (const [id, k] of [['dofGlow', 'glow'], ['dofRange', 'range'], ['dofArea', 'area'], ['dofGrain', 'grain']]) $(id).addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, [k]: e.target.value / 100 }; $(`${id}-v`).textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
 $('dofAmount').addEventListener('input', (e) => { const d = S.look.draft.dof; if (!d || !d.on) return; S.look.auto = false; S.look.draft.dof = { ...d, amount: e.target.value / 100 }; $('dofAmount-v').textContent = e.target.value; updateAdjState(); scheduleAdjPreview(); });
 
 function canvasPoint(e) {
@@ -1271,7 +1291,7 @@ $('catMood').addEventListener('toggle', () => renderMoodThumbs());
 
 // ---- 快速微調（四選一）: four variations of the current look side by side; picking one applies it and offers four
 // finer ones around it (like an eye test: "this one or that one"), so the user's eye decides, not a guess
-const PICK = { step: 1, round: 1, run: 0, shownFor: '' };
+const PICK = { step: 1, round: 1, run: 0, done: 0, shownFor: '' };
 function pickVariants(d, st) {
   const c = (v, lo, hi) => Math.min(hi, Math.max(lo, v)), ref = d.source === 'reference' && !moodOnly();
   return [
@@ -1282,35 +1302,42 @@ function pickVariants(d, st) {
       : { id: 'bright', name: '更亮、更清爽', look: { ...d, exposure: c(d.exposure + 0.2 * st, -2, 2), shadows: c(d.shadows + 0.1 * st, -1, 1) } },
   ];
 }
+const pickKey = () => JSON.stringify(S.look.draft) + '|' + PICK.step;
+// The four variations are rendered when 四選一 is opened, after a pick and on 重新開始 / 按目前設定更新 — not after every
+// slider move (four extra renders each time, and the pictures kept changing while adjusting). After a slider move the old
+// four are dimmed with a button to refresh them; a refresh renders off-screen and swaps all four at once (no blank flash).
+function markPicksStale() {
+  const stale = !!PICK.shownFor && PICK.done === PICK.run && PICK.shownFor !== pickKey(); // (not while four new ones are on their way)
+  $('pickGrid').classList.toggle('stale', stale); $('pickRefresh').hidden = !stale;
+}
 async function renderPicks() {
   if (!S.rep || $('adjustCard').hidden || !$('catPick').open) return;
-  const key = JSON.stringify(S.look.draft) + '|' + PICK.step;
-  if (PICK.shownFor === key) return;
+  const key = pickKey();
+  if (PICK.shownFor === key) { markPicksStale(); return; }
   const run = ++PICK.run, src = await previewFrame(320), intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
   await S.grade.ready;
-  const vs = pickVariants(S.look.draft, PICK.step), grid = $('pickGrid');
-  grid.innerHTML = '';
+  const vs = pickVariants(S.look.draft, PICK.step), btns = [];
   for (const v of vs) {
     const b = document.createElement('button'); b.type = 'button'; b.dataset.pick = v.id;
     const cv = document.createElement('canvas'); cv.width = src.width; cv.height = src.height;
     const lab = document.createElement('span'); lab.textContent = v.name;
-    b.append(cv, lab); grid.appendChild(b);
+    b.append(cv, lab); btns.push(b);
     b.onclick = () => { // apply, then four finer variations around it
       S.look.auto = false; S.look.draft = v.look; PICK.step = Math.max(0.25, PICK.step * 0.6); PICK.round++;
       $('pickRound').textContent = `第 ${PICK.round} 輪`;
       log('pick', { id: v.id, round: PICK.round - 1 });
       syncAdjustControls(); scheduleAdjPreview(); renderPicks();
     };
-  }
-  for (const v of vs) {
     const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: v.look, draft: true });
     if (run !== PICK.run) return;
-    const cv = grid.querySelector(`[data-pick="${v.id}"] canvas`); cv.getContext('2d').putImageData(r.imageData, 0, 0);
+    cv.getContext('2d').putImageData(r.imageData, 0, 0);
   }
-  PICK.shownFor = key;
+  $('pickGrid').replaceChildren(...btns);
+  PICK.shownFor = key; PICK.done = run; markPicksStale();
   log('pick-rendered', { round: PICK.round, step: PICK.step });
 }
 $('catPick').addEventListener('toggle', () => renderPicks());
+$('pickRefresh').onclick = () => renderPicks();
 $('pickRestart').onclick = () => { PICK.step = 1; PICK.round = 1; $('pickRound').textContent = '第 1 輪'; renderPicks(); };
 function syncRefMode() { // reference-only controls are hidden without a reference; the moods open instead
   const none = moodOnly();
@@ -1445,7 +1472,7 @@ buildPro();
   const def = new Map();
   for (const [id, [key, scale]] of Object.entries(ADJ)) def.set($(`adj-${id}`), () => Math.round(DEFAULT_LOOK[key] * scale));
   for (const c of PRO) def.set(c.el, /膚色保護/.test(c.label || '') ? () => (S.look.draft.source === 'reference' ? 100 : 0) : () => Math.round(c.get(neutralPrim()))); // skin protection is on by default for reference grading
-  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofArea', 35], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0]]) def.set($(id), () => v);
+  for (const [id, v] of [['blurAmount', BLUR_DEFAULT.amount * 100], ['blurFeather', BLUR_DEFAULT.feather * 100], ['blurBokehGlow', BLUR_DEFAULT.bokehGlow * 100], ['blurBokehRange', BLUR_DEFAULT.bokehRange * 100], ['blurAngle', BLUR_DEFAULT.angle], ['blurTol', 12], ['dofAmount', 50], ['dofArea', 35], ['dofAngle', 0], ['dofGrain', 50], ['dofGlow', 50], ['dofRange', 50], ['lmAmt', 80], ['lmSat', 0]]) def.set($(id), () => v);
   for (const row of $('adjustCard').querySelectorAll('label.slider, .tone-row, .wheel-row, .curve-row, .hue-row')) {
     const inputs = [...row.querySelectorAll('input[type=range]')].filter((el) => def.has(el));
     if (!inputs.length) continue;
@@ -1607,15 +1634,15 @@ async function pumpRenders() {
         const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
         const used = JSON.parse(JSON.stringify(S.look.draft)); // (the settings this picture is made with: logged below, not whatever the sliders say by the time it is back)
         const depth = needsDepthFor(used) ? await repDepth() : null;
-        const r = await engine.render(src, { intent, seg: S.rep.seg, depth, grade: true, look: previewLook(used), draft: job.draft });
+        const r = await engine.render(src, { intent, seg: S.rep.seg, depth, grade: true, look: previewLook(used), draft: job.draft, cacheKey: `${S.video.id}|${S.rep.t}|${S.rep.seg ? 's' : ''}|${depth ? 'd' : ''}` });
         if (seq !== adjSeq) continue;
         const ms = performance.now() - t0;
         adjRendered = r.imageData;
         S.preview = { src, out: r.imageData, w: src.width, h: src.height, draft: job.draft, ms };
         drawAdj();
         $('pvInfo').textContent = `${src.width}×${src.height}・${job.draft ? '快速（17³）' : '完整品質（41³）'}・${Math.round(ms)} ms`;
-        if (job.draft) log('adjust-preview-draft', { w: src.width, ms: Math.round(ms) });
-        else { drawScopes(); log('adjust-preview', { look: used, w: src.width, ms: Math.round(ms) }); setTimeout(renderPicks, 0); } // (四選一 follows the current look, when open)
+        if (job.draft) log('adjust-preview-draft', { w: src.width, ms: Math.round(ms), stages: r.timing });
+        else { drawScopes(); log('adjust-preview', { look: used, w: src.width, ms: Math.round(ms), stages: r.timing }); markPicksStale(); } // (四選一 is not re-rendered on every slider move: it waits for 更新)
       } catch (err) { $('adjState').textContent = `預覽失敗：${err.message}`; }
     }
   } finally { PV.busy = false; }
@@ -1884,7 +1911,8 @@ async function startProcessing() {
     + (res.timing && res.timing.segInfo ? `AI 人物偵測：${res.timing.segInfo.delegate === 'GPU' ? '顯示卡（GPU）' : '處理器（CPU）'}${res.timing.segInfo.cpuMs ? `（實測每格 CPU ${Math.round(res.timing.segInfo.cpuMs)} ms${res.timing.segInfo.gpuMs ? `、GPU ${Math.round(res.timing.segInfo.gpuMs)} ms` : '、GPU 不可用'}）` : ''}。` : '')
     + dofText(res.timing, res.frames)
     + gradeText(res.timing && res.timing.gradeInfo)
-    + (res.timing && res.timing.total ? `處理時間 ${(res.timing.total / 1000).toFixed(1)} 秒。` : '');
+    + (res.timing && res.timing.total ? `處理時間 ${(res.timing.total / 1000).toFixed(1)} 秒。` : '')
+    + timeText(res.timing, res.frames);
     log('processing-done', { frames: res.frames, hash: res.intentHash, size: res.blob.size, audio: res.audio, timing: res.timing });
     setPhase('done');
     updateAdjState();
@@ -2193,6 +2221,22 @@ function dofText(timing, frames = 0) {
   if (!needsDepthFor(S.look.applied || {}) || !i) return '';
   const per = timing && timing.depth && frames ? `，每格約 ${Math.round(timing.depth / frames)} ms` : '';
   return `AI 深度計算：${i.ep === 'gpu' ? '顯示卡' : `處理器${i.why ? `（${i.why}）` : ''}`}${per}。`;
+}
+// 每格時間: where the export's time goes, per frame (ms, averaged). The AI steps run alongside the reading of the next
+// frames, so the parts add up to more than the real time per frame; the largest part is what to make faster.
+const STAGE_NAMES = { masks: '局部遮罩', layers: '膚色／局部層', lut: '色彩表', grade: '調色', 'layers-depth': '分層匹配', blur: '背景模糊', dof: '景深', effects: '效果' };
+function timeText(t, frames) {
+  if (!t || !t.total || !frames) return '';
+  const per = (v) => Math.round(v / frames), parts = [];
+  const how = t.decoder !== 'webcodecs' ? '逐格跳轉' : t.decoderCheck && !t.decoderCheck.ok ? `解碼器的畫面與逐格跳轉不同（差 ${t.decoderCheck.diff}），改用逐格跳轉`
+    : t.decoderFallback ? `解碼器在第 ${t.decoderFallback.at + 1} 格出錯，之後改用逐格跳轉` : '解碼器';
+  parts.push(`讀取影格 ${per(t.grab)} ms（${how}）`);
+  if (t.seg) parts.push(`AI 人物偵測 ${per(t.seg)} ms`);
+  if (t.depth) parts.push(`AI 深度 ${per(t.depth)} ms`);
+  const st = Object.entries(t.worker || {}).filter(([, v]) => v / frames >= 1).map(([k, v]) => `${STAGE_NAMES[k] || k} ${per(v)}`);
+  parts.push(`調色引擎 ${per(t.render)} ms${st.length ? `（${st.join('、')}）` : ''}`);
+  parts.push(`等待調色完成 ${per(t.wait)} ms`, `編碼 ${per(t.encode)} ms`);
+  return `每格時間：實際每格 ${per(t.total)} ms；其中${parts.join('、')}（AI 步驟與讀取同時進行，所以加起來會多於實際時間）。`;
 }
 function gradeText(g) {
   if (!g || !g.mode) return '';

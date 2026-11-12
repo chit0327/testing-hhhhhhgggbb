@@ -46,7 +46,7 @@ function gradeFrame(src, w, h, lut, ev, layers) {
 }
 import { applyFilm, hasFilm } from './engine/film.js';
 import { applyFringe, fringePlan } from './engine/fringe.js';
-import { dofPlan, dofScale, depthRange, normaliseDepth, focusDepth, applyDof } from './engine/dof.js';
+import { dofPlan, dofScale, depthRange, normaliseDepth, focusDepth, applyDof, tiltDepth } from './engine/dof.js';
 import { layerStats, fitLayers, applyLayers } from './engine/layermatch.js';
 const segGrid = (seg) => { const mh = seg && seg.person ? seg.person.length / MASK_W : 0; return Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null; };
 const rawDepth = (d) => (d && d.data ? { data: d.data instanceof Float32Array ? d.data : new Float32Array(d.data), w: d.w, h: d.h } : null);
@@ -67,8 +67,12 @@ function layersFrame(out, w, h, lm, depth, seg, temporal) {
  * grid of this frame {data, w, h}; temporal (a video job): the depth scale and the focus depth are smoothed over the
  * frames, so the focus does not pump when the depth model's estimate of one frame wavers.
  */
-function dofFrame(out, w, h, dof, depth, seg, temporal) {
+function dofFrame(out, w, h, dof, depth, seg, temporal, frame = 0) {
   const plan = dofPlan(dof);
+  if (plan && plan.mode === 'tilt') { // 移軸: a band across the frame, no depth model
+    const r = applyDof(out, w, h, tiltDepth(plan, w, h), 0.5, dofScale(plan, w, h), { glow: plan.glow, range: plan.range }, null, { grain: plan.grain, frame, refine: false });
+    return { focus: 0.5, maxRadius: +r.maxRadius.toFixed(1), tilt: true };
+  }
   if (!plan || !depth || !depth.data) return null;
   const raw = { data: depth.data instanceof Float32Array ? depth.data : new Float32Array(depth.data), w: depth.w, h: depth.h };
   let range = depthRange(raw);
@@ -79,7 +83,7 @@ function dofFrame(out, w, h, dof, depth, seg, temporal) {
   let df = focusDepth(dn, plan, Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null);
   if (prev) df = 0.7 * prev.df + 0.3 * df;
   if (temporal) temporal.dof = { range, df };
-  const r = applyDof(out, w, h, dn, df, dofScale(plan, w, h), { glow: plan.glow, range: plan.range }, plan.person ? null : { x: plan.x, y: plan.y, area: plan.area });
+  const r = applyDof(out, w, h, dn, df, dofScale(plan, w, h), { glow: plan.glow, range: plan.range }, plan.person ? null : { x: plan.x, y: plan.y, area: plan.area }, { grain: plan.grain, frame });
   return { focus: +df.toFixed(3), maxRadius: +r.maxRadius.toFixed(1) };
 }
 // ---- the effects after the grade (朦朧 / 柔光 / 暗角, 膠片 柔化 / 光暈 / 顆粒) on the graphics card (engine/gpufx.js),
@@ -137,6 +141,14 @@ const luts = new Map();      // key: look settings + preserve flag -> LUT (bound
 const jobs = new Map();      // jobId -> {intent, regions, hash, look, temporal}
 const blurSels = new Map();  // selection id -> {layer: {data, w, h} | null, anchor: luma pyramid of the frame it was painted on}
 
+// the preview's kept stages (see 'render'): one entry, keyed by the frame, the intent and the look without its 對焦 and
+// effect settings (those are applied after)
+const PVC = { base: {}, dofSrc: null }; // base: one entry per quality (draft / full), each keyed as below
+function previewKeys(m, look, draft) {
+  const base = look ? { ...look } : null;
+  if (base) { delete base.dof; for (const k of FX_KEYS) delete base[k]; delete base.blur; }
+  return { base: `${m.cacheKey}|${m.w}x${m.h}|${draft ? 1 : 0}|${JSON.stringify(m.intent || null)}|${JSON.stringify(base)}` };
+}
 const fxOf = (look) => (look && FX_KEYS.some((k) => look[k] !== undefined) ? Object.fromEntries(FX_KEYS.map((k) => [k, look[k]])) : null);
 
 // the main LUT carries the background's local adjustment; persons get their own layers (layersFor)
@@ -409,29 +421,48 @@ self.onmessage = (e) => {
       if (!j) throw new Error(`unknown job ${m.jobId}`);
       const T = {}, t0 = performance.now(); let tt = t0; const lap = (k) => { const x = performance.now(); T[k] = (T[k] || 0) + x - tt; tt = x; };
       const src = new Uint8ClampedArray(m.rgba);
-      let ev = null;
-      if (j.regions.length) {
-        const mh = j.intent.maskH, mw = MASK_W;
-        const evidence = { seg: m.seg || null, L: lightnessGrid(src, m.w, m.h, mw, mh) };
-        const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
-        ev = evField(j.regions, masks, mw, mh);
-      }
-      ev = subjectEv(ev, j.look, src, m.w, m.h, m.seg, j.temporal);
-      lap('masks');
+      // preview (one-off render of the representative frame, m.cacheKey names that frame, its masks and depth): the
+      // stages before the spatial effects are kept, so moving a 對焦 / effect slider redoes only those (an exact reuse:
+      // the same input gives the same graded picture). Processing never uses this.
       const draft = !!m.draft && !m.jobId; // drafts only for one-off previews: processing always uses the full LUT
-      // quick preview drops the region layers (skin protection, local grade) while a control moves, like an
-      // editor's fast preview drops costly effects; they return with the full-quality frame
-      const layers = m.grade && !draft ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
-      lap('layers');
-      const lut = m.grade ? lutFor(j.intent, j.look, { draft }) : null;
-      lap('lut');
-      const out = gradeFrame(src, m.w, m.h, lut, ev, layers);
-      lap('grade');
-      if (m.grade && j.look) layersFrame(out, m.w, m.h, j.look.layerMatch, m.depth, m.seg, m.jobId ? j.temporal : null);
-      lap('layers-depth');
+      const pk = !m.jobId && m.cacheKey && m.grade ? previewKeys(m, j.look, draft) : null;
+      let out = null, ev = null, layers = [];
+      const kept = pk && PVC.base[draft ? 'draft' : 'full'];
+      const hit = !!(kept && kept.key === pk.base);
+      // quick preview with 對焦 on and a colour slider moving: 對焦 is applied to the source once (kept while only colours
+      // change) and graded after — an approximation (the full-quality frame 250 ms later blurs the graded picture as
+      // processing does), but the costly blur is not redone for every slider step
+      const dofP = dofPlan(j.look && j.look.dof), dofFirst = !!(!hit && pk && draft && dofP && (m.depth || dofP.mode === 'tilt'));
+      if (hit) { out = kept.out.slice(); ev = kept.ev; layers = kept.layers; lap('kept'); } else {
+        if (j.regions.length) {
+          const mh = j.intent.maskH, mw = MASK_W;
+          const evidence = { seg: m.seg || null, L: lightnessGrid(src, m.w, m.h, mw, mh) };
+          const masks = regionMasks(j.regions, evidence, mw, mh, j.intent.feather, j.temporal);
+          ev = evField(j.regions, masks, mw, mh);
+        }
+        ev = subjectEv(ev, j.look, src, m.w, m.h, m.seg, j.temporal);
+        lap('masks');
+        // quick preview drops the region layers (skin protection, local grade) while a control moves, like an
+        // editor's fast preview drops costly effects; they return with the full-quality frame
+        layers = m.grade && !draft ? layersFor(j.intent, j.look, src, m.w, m.h, m.seg, j.temporal) : [];
+        lap('layers');
+        const lut = m.grade ? lutFor(j.intent, j.look, { draft }) : null;
+        lap('lut');
+        let gsrc = src;
+        if (dofFirst) {
+          const dk = `${m.cacheKey}|${m.w}x${m.h}|${JSON.stringify(j.look.dof)}`;
+          if (!PVC.dofSrc || PVC.dofSrc.key !== dk) { const d = src.slice(); dofFrame(d, m.w, m.h, j.look.dof, m.depth, m.seg, null); PVC.dofSrc = { key: dk, out: d }; }
+          gsrc = PVC.dofSrc.out; lap('dof');
+        }
+        out = gradeFrame(gsrc, m.w, m.h, lut, ev, layers);
+        lap('grade');
+        if (m.grade && j.look) layersFrame(out, m.w, m.h, j.look.layerMatch, m.depth, m.seg, m.jobId ? j.temporal : null);
+        lap('layers-depth');
+        if (pk && !dofFirst) PVC.base[draft ? 'draft' : 'full'] = { key: pk.base, out: out.slice(), ev, layers };
+      }
       const blurInfo = m.grade && j.look ? blurFrame(out, src, m.w, m.h, j.look.blur, m.seg, m.jobId ? j.track : null, m.jobId ? j.noTrack : !!m.noTrack) : null;
       lap('blur');
-      const dofInfo = m.grade && j.look ? dofFrame(out, m.w, m.h, j.look.dof, m.depth, m.seg, m.jobId ? j.temporal : null) : null;
+      const dofInfo = m.grade && j.look && !dofFirst ? dofFrame(out, m.w, m.h, j.look.dof, m.depth, m.seg, m.jobId ? j.temporal : null, m.index || 0) : null;
       const fx = m.grade ? fxOf(j.look) : null;
       lap('dof');
       // after the blur: haze and glow spread over the blurred background too; 膠片質感 last: softness, halation, then grain
@@ -439,7 +470,8 @@ self.onmessage = (e) => {
       if (fx) effectsFrame(out, m.w, m.h, fx, hazePerson(j.look, m.seg, j.temporal), m.index || 0);
       lap('effects');
       const prim = j.look && j.look.prim;
-      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied: !!ev, blur: blurInfo, dof: dofInfo, timing: T,
+      const localApplied = !!ev;
+      self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied, blur: blurInfo, dof: dofInfo, timing: T,
         skinProtected: layers.length > 0 && !!(prim && prim.skin), localGraded: layers.length > 1 }, [out.buffer]);
     }
   } catch (err) {

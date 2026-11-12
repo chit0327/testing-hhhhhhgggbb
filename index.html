@@ -213,6 +213,7 @@
           <div class="cat-body">
             <p class="info">不用自己調滑桿：選四張裏最喜歡的一張，會在它的基礎上再給你四個更細微的選擇。兩三輪就能調到喜歡的感覺；之後仍可用滑桿微調。</p>
             <div class="pick-grid" id="pickGrid"></div>
+            <button type="button" id="pickRefresh" class="pick-refresh" hidden>滑桿已改動：按此按目前設定更新四個選擇</button>
             <div class="row"><span id="pickRound" class="pick-round">第 1 輪</span><button type="button" id="pickRestart">重新開始（大步一點）</button></div>
           </div>
         </details>
@@ -372,9 +373,15 @@
               </div>
             </div>
             <h3>對焦（景深）</h3>
+            <div class="seg-choice" role="radiogroup" aria-label="對焦方式">
+              <label><input type="radio" name="dofMode" value="lens" checked> 真實景深（AI 深度）</label>
+              <label><input type="radio" name="dofMode" value="tilt"> 移軸（微縮）</label>
+            </div>
             <div class="row"><button type="button" id="dofPick" class="primary" aria-pressed="false">選對焦點</button><button type="button" id="dofOff" disabled>關閉</button></div>
             <label class="slider"><span>景深強度</span><input type="range" id="dofAmount" min="0" max="100" value="50" disabled><output id="dofAmount-v">50</output></label>
-            <label class="slider sub"><span>　焦點範圍</span><input type="range" id="dofArea" min="0" max="100" value="35" disabled><output id="dofArea-v">35</output></label>
+            <label class="slider sub"><span id="dofAreaLbl">　焦點範圍</span><input type="range" id="dofArea" min="0" max="100" value="35" disabled><output id="dofArea-v">35</output></label>
+            <label class="slider sub" id="dofAngleRow" hidden><span>　角度</span><input type="range" id="dofAngle" min="-45" max="45" value="0" disabled><output id="dofAngle-v">0°</output></label>
+            <label class="slider sub"><span>　模糊處噪點</span><input type="range" id="dofGrain" min="0" max="100" value="50" disabled><output id="dofGrain-v">50</output></label>
             <label class="slider sub"><span>　光斑亮度</span><input type="range" id="dofGlow" min="0" max="100" value="50" disabled><output id="dofGlow-v">50</output></label>
             <label class="slider sub"><span>　光斑範圍</span><input type="range" id="dofRange" min="0" max="100" value="50" disabled><output id="dofRange-v">50</output></label>
             <p class="info" id="dofInfo">按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>

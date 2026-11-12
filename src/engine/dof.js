@@ -17,18 +17,52 @@
 import { S2L } from './color.js';
 import { rollOff, boxBlur } from './render.js';
 import { guidedFilter } from './masks.js';
+import { hash3 } from './film.js';
 
 const clamp01 = (v) => Math.min(1, Math.max(0, +v || 0));
 const SLICES = 10;
 
-/** dof: {on, amount 0..1, x, y (0..1, the tapped point), person (focus on the person), rel (where on the person)} → plan or null */
+/**
+ * dof: {on, amount 0..1, x, y (0..1, the tapped point), person (focus on the person), rel (where on the person), area,
+ * glow, range, grain, mode, angle} → plan or null.
+ * mode 'lens' (default): from the AI depth. mode 'tilt' (移軸／微縮): no depth model — a band across the frame through
+ * (x, y) at angle (−1..1 = ±45°) stays sharp (its width from area) and the blur grows above and below it, like a
+ * tilted lens plane (the "miniature" look). grain 0..1: 模糊處噪點 — the frame's own noise put back where it was blurred.
+ */
 export function dofPlan(dof) {
   if (!dof || !dof.on) return null;
-  const amount = clamp01(dof.amount ?? 0.5);
-  if (!amount || !Number.isFinite(dof.x) || !Number.isFinite(dof.y)) return null;
-  return { amount, x: clamp01(dof.x), y: clamp01(dof.y), person: !!dof.person, rel: Number.isFinite(dof.rel) ? clamp01(dof.rel) : null,
-    glow: Number.isFinite(dof.glow) ? clamp01(dof.glow) : 0.5, range: Number.isFinite(dof.range) ? clamp01(dof.range) : 0.5,
-    area: dof.person ? 1 : Number.isFinite(dof.area) ? clamp01(dof.area) : 0.35 }; // 焦點範圍: a tap on the background keeps only its surroundings sharp
+  const amount = clamp01(dof.amount ?? 0.5), tilt = dof.mode === 'tilt';
+  if (!amount || !Number.isFinite(dof.y) || (!tilt && !Number.isFinite(dof.x))) return null;
+  const num = (v, d) => (Number.isFinite(v) ? clamp01(v) : d);
+  return { amount, mode: tilt ? 'tilt' : 'lens', x: num(dof.x, 0.5), y: clamp01(dof.y), person: !tilt && !!dof.person, rel: Number.isFinite(dof.rel) ? clamp01(dof.rel) : null,
+    glow: num(dof.glow, 0.5), range: num(dof.range, 0.5), grain: num(dof.grain, 0.5),
+    angle: tilt && Number.isFinite(dof.angle) ? Math.min(1, Math.max(-1, dof.angle)) : 0,
+    area: tilt ? num(dof.area, 0.3) : dof.person ? 1 : num(dof.area, 0.35) }; // 焦點範圍: a tap on the background keeps only its surroundings sharp
+}
+/**
+ * 移軸: the depth grid a tilted focus plane gives (0..1, the focus at 0.5): distance from the line through (x, y) at the
+ * plan's angle, in frame heights; inside the band (width 0.04 + 0.5·area) 0.5, outside it falling 1.5 per frame height.
+ */
+export function tiltDepth(plan, w, h) {
+  const gw = 160, gh = Math.max(2, Math.round(160 * h / w)), d = new Float32Array(gw * gh), a = plan.angle * Math.PI / 4;
+  const ca = Math.cos(a), sa = Math.sin(a), half = (0.04 + 0.5 * plan.area) / 2, ar = w / h;
+  for (let y = 0; y < gh; y++) for (let x = 0; x < gw; x++) {
+    const dx = ((x + 0.5) / gw - plan.x) * ar, dy = (y + 0.5) / gh - plan.y, v = Math.abs(dy * ca + dx * sa); // (positive angle: the band rises to the right)
+    d[y * gw + x] = 0.5 - 1.5 * Math.max(0, v - half);
+  }
+  return { data: d, w: gw, h: gh };
+}
+/** the frame's noise (σ in 8-bit code values of lightness), from each pixel minus the mean of its 4 neighbours: the
+ *  25th percentile of that (flat areas: noise only; edges and texture sit higher) over 0.3186 (|N(0, 1)|'s 25th
+ *  percentile) and √1.25 (the neighbours' mean carries noise too) */
+export function noiseSigma(img, w, h) {
+  const v = [], Y = (p) => 0.299 * img[p] + 0.587 * img[p + 1] + 0.114 * img[p + 2], st = Math.max(1, Math.round(Math.sqrt(w * h / 40000)));
+  for (let y = 1; y < h - 1; y += st) for (let x = 1; x < w - 1; x += st) {
+    const p = (y * w + x) * 4;
+    v.push(Math.abs(Y(p) - (Y(p - 4) + Y(p + 4) + Y(p - 4 * w) + Y(p + 4 * w)) / 4));
+  }
+  v.sort((a, b) => a - b);
+  return v.length ? v[v.length >> 2] / 0.3186 / Math.sqrt(1.25) : 0;
 }
 /** blur radius in px per unit of (0..1) depth difference, at the frame's size */
 export const dofScale = (plan, w, h) => plan.amount * 0.04 * Math.max(w, h);
@@ -110,7 +144,13 @@ function disc(buf, w, h, R) {
  * range: the brightness where a highlight starts to count as a light (0.8 … 0.2). The boost grows with the layer's blur,
  * so what is in focus is not brightened. Returns {maxRadius} (px) for the record.
  */
-export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }, spot = null) {
+export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }, spot = null, { grain = 0, frame = 0, refine = true } = {}) {
+  // 模糊處噪點: a real lens blurs the light before it reaches the sensor, so the sensor's noise is on the blurred parts as
+  // much as on the sharp ones; blurring the finished picture also wipes out its noise, and the blurred areas look
+  // unnaturally clean (plastic, smooth bands) next to the grainy sharp subject. The frame's own noise level is measured
+  // here and fresh noise of that level (at least 0.8 code values; ×2·grain) is added where the blur replaces the
+  // pixels, changing every frame like sensor noise.
+  const nAmp = grain > 0 ? 2 * grain * Math.min(6, Math.max(0.8, noiseSigma(img, w, h))) : 0;
   const gain = 30 * clamp01(bokeh.glow ?? 0.5), lo = 0.8 - 0.6 * clamp01(bokeh.range ?? 0.5);
   const f0 = Math.max(1, Math.round(Math.max(w, h) / 640)), sw = Math.ceil(w / f0), sh = Math.ceil(h / f0), n = sw * sh;
   // the frame (linear light) and its depth on the base grid
@@ -131,7 +171,7 @@ export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }
   // between a sharp subject and the blurred background (seen at a white table's edge against a dark floor). Fitted
   // locally as a linear function of the lightness, the depth edge follows the real edge smoothly. (Radius ~2 depth
   // cells; a wider one printed shadows on the table into the depth.)
-  {
+  if (refine) {
     const I = new Float32Array(n);
     for (let q = 0; q < n; q++) I[q] = Math.cbrt(0.2126 * lin[3 * q] + 0.7152 * lin[3 * q + 1] + 0.0722 * lin[3 * q + 2]);
     dg.set(guidedFilter(dg, I, sw, sh, Math.max(1, Math.round(4 * sw / 640)), 1e-3));
@@ -218,9 +258,13 @@ export function applyDof(img, w, h, dn, df, K, bokeh = { glow: 0.5, range: 0.5 }
       const Y = 0.2126 * bl[0] + 0.7152 * bl[1] + 0.0722 * bl[2]; // boosted lights: rolled off, never clipped
       if (Y > 0.8) { const sc = rollOff(Y) / Y; bl[0] *= sc; bl[1] *= sc; bl[2] *= sc; }
       const mx = Math.max(bl[0], bl[1], bl[2]); if (mx > 1) { const Yn = Math.min(1, Y > 0.8 ? rollOff(Y) : Y), t = (mx - 1) / Math.max(mx - Yn, 1e-6); for (let ch = 0; ch < 3; ch++) bl[ch] += (Yn - bl[ch]) * t; }
+      // (noise: mostly in lightness, a little in colour, as a sensor's looks after the camera's processing; uniform
+      // sums ≈ Gaussian with σ 1)
+      const g = (z) => (hash3(x, y, frame * 4 + z) + hash3(x + 7919, y, frame * 4 + z) + hash3(x, y + 7919, frame * 4 + z) - 1.5) * 2;
+      const nl = nAmp ? nAmp * k * g(0) : 0;
       for (let ch = 0; ch < 3; ch++) {
         const o = S2L[img[p + ch]], m = Math.min(1, Math.max(0, o + (bl[ch] - o) * k));
-        img[p + ch] = 255 * (m <= 0.0031308 ? 12.92 * m : 1.055 * Math.pow(m, 1 / 2.4) - 0.055);
+        img[p + ch] = 255 * (m <= 0.0031308 ? 12.92 * m : 1.055 * Math.pow(m, 1 / 2.4) - 0.055) + (nAmp ? nl + 0.35 * nAmp * k * g(ch + 1) : 0);
       }
     }
   }

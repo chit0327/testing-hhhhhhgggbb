@@ -184,6 +184,11 @@ export async function seek(video, t) {
   throw new Error('瀏覽器沒有回應影片跳轉（逐格讀取影片失敗）。請重新整理頁面再試；如果仍然失敗，請把影片剪短或轉成 1080p。');
 }
 
+function meanDiff(a, b) { // mean |a − b| over a sample of RGB values (a decoder's frame vs the seeking path's)
+  let sum = 0, n = 0;
+  for (let i = 0; i < a.length; i += 4 * 97) { sum += Math.abs(a[i] - b[i]) + Math.abs(a[i + 1] - b[i + 1]) + Math.abs(a[i + 2] - b[i + 2]); n += 3; }
+  return n ? sum / n : 0;
+}
 function isBlank(d) { // every sampled pixel black (or fully transparent): the frame was not decoded yet
   for (let i = 0; i < d.length; i += 4 * 97) if (d[i] > 3 || d[i + 1] > 3 || d[i + 2] > 3) return false;
   return true;
@@ -351,13 +356,15 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
   else { try { audio = await withTimeout(extractAudio(blob, index), 30000, '讀取音訊'); } catch (e) { audio = { skipped: `讀取音訊失敗：${e.message}` }; } }
   let stream = null;
   onStage('開啟解碼器…');
-  // WebKit (iPad / iPhone / Safari): its WebCodecs decoder failed on users' clips ("Decoder failure"), so the proven
-  // seeking path is used there; elsewhere a decoder error mid-clip falls back to seeking (below)
-  if (useStream && blob && index && !WEBKIT) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await withTimeout(openFrameStream(blob, index, { lookahead: low ? 2 : 6 }), 10000, '開啟解碼器'); } catch { stream = null; } }
+  // the decoder reads frames in order (≈ 13 ms a frame here) where seeking decodes from the last key frame for every
+  // frame (≈ 550 ms a frame on a 1280×720 clip: most of the export time). WebKit (iPad / iPhone / Safari) gave
+  // "Decoder failure" on users' clips before, so there its first frame is checked against the seeking path, and any
+  // decoder error, stall or mismatch continues by seeking with the same frames (below)
+  if (useStream && blob && index) { try { const { openFrameStream } = await import('./vdecode.js'); stream = await withTimeout(openFrameStream(blob, index, { lookahead: low ? 2 : 6 }), 10000, '開啟解碼器'); } catch { stream = null; } }
   if (needsSeg && useSegWorker && segPrepare && !low) onStage('載入 AI 人物分割模型…');
   const workers = needsSeg && useSegWorker && segPrepare && !low ? await segWorkers() : null;
   const seekT0 = seekStats.timeouts;
-  timing.decoder = stream ? 'webcodecs' : 'seek'; timing.segWorkers = workers ? workers.length : 0; timing.lowMemory = low;
+  timing.decoder = stream ? 'webcodecs' : 'seek'; timing.webkit = WEBKIT; timing.segWorkers = workers ? workers.length : 0; timing.lowMemory = low;
   if (needsSeg) { try { const { segmenterInfo } = await import('./segment.js'); timing.segInfo = segmenterInfo(); } catch { /* not loaded */ } } // CPU or GPU, as measured on this device
   try { timing.gradeInfo = (await engine.call({ type: 'gpu-info' })).info; } catch { /* (older worker) */ } // the grade: graphics card or processor
   const muxer = new Muxer({ target: new ArrayBufferTarget(), video: { codec: 'avc', width: w, height: h, frameRate: timescaleFor(fps) }, fastStart: 'in-memory', // (the muxer's frameRate is the track timescale)
@@ -411,6 +418,12 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
           try { stream.close(); } catch { /* already closed */ }
           stream = null;
         }
+      }
+      if (img && i === 0 && WEBKIT) { // the decoder's first frame vs the seeking path's (which now fills the canvas)
+        const seekImg = await withTimeout(grabFrame(meta.video, t, w, h, canvas), 60000, `讀取第 ${i + 1} 格影像超過 60 秒沒有回應`);
+        const diff = window.__decoderCheckFail ? 255 : meanDiff(img.data, seekImg.data);
+        timing.decoderCheck = { diff: +diff.toFixed(2), ok: diff <= 8 && !isBlank(img.data) };
+        if (!timing.decoderCheck.ok) { try { stream.close(); } catch { /* closed */ } stream = null; img = seekImg; }
       }
       if (!img) img = await withTimeout(grabFrame(meta.video, t, w, h, canvas), 60000, `讀取第 ${i + 1} 格影像超過 60 秒沒有回應`);
       timing.grab += now() - tt;

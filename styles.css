@@ -247,6 +247,9 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 .pick-grid button:hover, .pick-grid button:focus-visible { border-color: var(--acc); }
 .pick-grid canvas { display: block; width: 100%; height: auto; aspect-ratio: 16 / 9; background: #222; }
 .pick-grid span { display: block; padding: 4px 8px; font-size: 13px; }
+.pick-grid.stale { opacity: 0.45; }
+.pick-refresh { display: block; width: 100%; margin: 0 0 8px; }
+.pick-refresh[hidden] { display: none; }
 .pick-round { color: var(--mut); font-size: 13px; margin-right: auto; align-self: center; }
 
 /* the control panel in three tabs (簡易調色 / 效果 / 專業調色): only the chosen tab's categories show */
