@@ -89,6 +89,7 @@ export const lowMemory = () => (typeof window !== 'undefined' && window.__lowMem
 let workVideo = null;
 
 /** Load a video file into a hidden <video> and measure size, duration and frame rate. */
+const withLimit = (p, ms, msg) => { let t; return Promise.race([p, new Promise((_, rej) => { t = setTimeout(() => rej(new Error(msg)), ms); })]).finally(() => clearTimeout(t)); };
 export async function probeVideo(file) {
   if (workVideo) { workVideo.remove(); URL.revokeObjectURL(workVideo.src); }
   const video = workVideo = document.createElement('video');
@@ -98,7 +99,18 @@ export async function probeVideo(file) {
   video.setAttribute('aria-hidden', 'true');
   document.body.appendChild(video);
   video.src = URL.createObjectURL(file);
-  await once(video, 'loadeddata');
+  // iPhone Safari (saving data / power) may load only the metadata and never a picture until the video plays: waiting
+  // for 'loadeddata' alone left the upload at 載入中 for ever on a phone. So: the metadata (size, duration) is enough to
+  // go on (with a time limit and a clear message), then a short muted play asks for the first picture — up to 5 s,
+  // and the upload carries on even without it (frames are read by seeking later anyway).
+  if (video.readyState < 1) await withLimit(once(video, 'loadedmetadata'), 20000, '20 秒內讀不到影片資料（檔案可能太大，或瀏覽器不支援此格式）');
+  if (video.readyState < 2) {
+    const got = once(video, 'loadeddata').catch(() => {});
+    video.play().catch(() => {});
+    await Promise.race([got, new Promise((res) => setTimeout(res, 5000))]);
+    video.pause();
+    if (video.currentTime > 0) { try { video.currentTime = 0; } catch { /* (not seekable yet) */ } }
+  }
   const info = { video, file, url: video.src, width: video.videoWidth, height: video.videoHeight, duration: video.duration, fps: 30, fpsMeasured: false };
   if (!info.width || !isFinite(info.duration)) throw new Error('無法讀取影片尺寸或時長');
   if ('requestVideoFrameCallback' in video) { // estimate the frame rate from presented-frame media times
