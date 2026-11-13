@@ -93,6 +93,7 @@ self.onmessage = async (e) => {
       await download(MODEL, 'download', 27258801);
       self.postMessage({ type: 'prefetched', id: m.id, stats });
     } else if (m.type === 'init') {
+      if (m.oom) throw new Error('no available backend found. ERR: [wasm] RangeError: Out of memory'); // (tests: as an iPhone short of memory)
       const t0 = performance.now(), webkit = /AppleWebKit/.test(navigator.userAgent) && !/Chrome|Chromium|Edg\//.test(navigator.userAgent) || /iPad|iPhone|iPod/.test(navigator.userAgent);
       const tryGpu = m.gpu !== false && !!(self.navigator && self.navigator.gpu) && !webkit;
       info.runtime = tryGpu ? 'webgpu' : 'wasm';

@@ -38,6 +38,13 @@ function startWorker() {
   };
   worker.onerror = (e) => { e.preventDefault && e.preventDefault(); for (const p of pending.values()) p.reject(new Error(`深度模型執行失敗：${e.message || '這個瀏覽器不能執行'}`)); pending.clear(); };
 }
+const OOM = /out of memory|bad_alloc|RangeError|Array buffer allocation failed/i;
+function restartWorker() { // end the worker (its memory goes back to the system); the next call starts a new one
+  if (!worker) return;
+  worker.terminate(); worker = null; lastInfo = null;
+  for (const p of pending.values()) p.reject(new Error('深度模型已重新啟動'));
+  pending.clear();
+}
 let prefetching = null;
 /** download the model and runtime and keep them (no model in memory yet); resolves when stored */
 export function prefetchDepth({ gpu = globalThis.__depthGpu !== false } = {}) {
@@ -50,7 +57,13 @@ export function prefetchDepth({ gpu = globalThis.__depthGpu !== false } = {}) {
 export function initDepth({ gpu = globalThis.__depthGpu !== false } = {}) {
   if (ready) return ready;
   startWorker();
-  ready = (prefetching || Promise.resolve()).catch(() => {}).then(() => call({ type: 'init', gpu }, [], 300000, '載入 AI 深度模型')) // (a download in progress first: not twice).then((m) => { stage = ''; return m.info; }).catch((err) => { stage = ''; ready = null; throw err; });
+  // (a download in progress first: not twice). Out of memory (a phone or tablet short of memory): the worker is ended,
+  // which gives its memory back, and the model loaded once more in a fresh one before giving up with a clear message
+  const load = () => { startWorker(); return call({ type: 'init', gpu, oom: globalThis.__depthOom > 0 && !!globalThis.__depthOom-- }, [], 300000, '載入 AI 深度模型'); }; // (__depthOom: tests, the next N loads fail as out of memory)
+  ready = (prefetching || Promise.resolve()).catch(() => {}).then(load)
+    .catch((err) => { if (!OOM.test(err.message)) throw err; restartWorker(); return load(); })
+    .then((m) => { stage = ''; return m.info; })
+    .catch((err) => { stage = ''; ready = null; if (OOM.test(err.message)) { restartWorker(); throw new Error(`這部裝置的記憶體不足，載入不到 AI 深度模型。請關閉其他分頁或 App，或重新整理頁面後再試。（${err.message}）`); } throw err; });
   return ready;
 }
 let canvas = null;
