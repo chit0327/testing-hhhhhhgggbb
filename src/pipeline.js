@@ -1,5 +1,6 @@
 // Browser-side video plumbing: probing, exact sequential frame grabbing, the worker client and the
 // full processing job (decode -> segment -> worker render -> WebCodecs encode -> MP4).
+import { measureNorm } from './engine/autonorm.js';
 import { Muxer, ArrayBufferTarget } from '../vendor/mp4-muxer.mjs';
 import { MASK_W } from './engine/intent.js';
 import { extractAudio, muxAudio } from './audio.js';
@@ -281,8 +282,9 @@ export const probeImage = (file) => probeImages([file]);
  * (quality 0.95). Returns {blob, width, height, intentHash, lookHash, jobRegions}; with keepPixels also
  * {imageData, source} (single photos: the wipe compare draws from them).
  */
-export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, needsDepth = false, depthFn = null, maskH, maxSide = 4096, index = 0, keepPixels = true }) {
+export async function processPhoto({ engine, meta, intentJson, look, needsSeg, segmentFn, needsDepth = false, depthFn = null, maskH, maxSide = 4096, index = 0, keepPixels = true, remeasure = false }) {
   const img = await meta.video.frameAt(index, maxSide), w = img.width, h = img.height;
+  if (remeasure && look && look.autoFix) look = { ...look, autoFix: measureNorm(img.data, w, h) }; // (自動校正: each photo of a batch measured on its own)
   const c = canvas2d(w, h); c.getContext('2d').putImageData(img, 0, 0);
   let seg = null;
   if (needsSeg) { const sc = canvas2d(256, Math.max(2, Math.round(256 * h / w))); sc.getContext('2d').drawImage(c, 0, 0, sc.width, sc.height); seg = segmentFn(sc, MASK_W, maskH); }

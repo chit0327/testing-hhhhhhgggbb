@@ -10,6 +10,7 @@ import { EngineClient, probeVideo, probeImages, PHOTO_MAX, grabFrame, fitSize, l
 import { initSegmenter, segment } from './segment.js';
 import { DEFAULT_LOOK, measure, toCube, gradeColour } from './engine/grade.js';
 import { MOODS, MOOD_GROUPS, moodLook } from './engine/moods.js';
+import { measureNorm, normIsNeutral } from './engine/autonorm.js';
 import { featherCells, paintStroke, fillPolygon, combineSelection, labGrid, magicWand, stampSelection, lumaSmall, pyramid, estimateMotion, warpLayer, warpPoint, toN, fromN, IDENTITY, brushRadius } from './engine/blur.js';
 import { waveformData, vectorscopeData, drawWaveform, drawVectorscope, clipShares } from './engine/scopes.js';
 import { neutralPrim, isNeutralPrim, sanitizePrim, compilePrim, curveFn, HUE_ANCHORS, HUE_NAMES, CURVE_X, LOCAL_NAMES } from './engine/primary.js';
@@ -1160,6 +1161,7 @@ const f32of = (b64, n) => { const s = atob(b64), b = new Uint8Array(s.length); f
 function presetSettings(look) {
   const o = {};
   for (const k of PRESET_KEEP) if (look[k] !== undefined && look[k] !== DEFAULT_LOOK[k]) o[k] = look[k];
+  if (look.autoFix) o.autoFix = true;
   const d = look.dof;
   if (d && d.on) { // strengths kept; the tapped point only for 移軸 (a height across the frame, not a thing in the picture)
     const { x, y, person, rel, ...rest } = d;
@@ -1171,7 +1173,7 @@ async function savePreset() {
   if (!S.rep) return;
   $('presetSave').disabled = true; $('presetInfo').textContent = '正在產生設定檔…';
   try {
-    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, look = S.look.draft, b = await engine.bakePreset(look, intent);
+    const intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, look = S.look.draft, b = await engine.bakePreset({ ...look, autoFix: null }, intent); // (自動校正 belongs to this clip: the preset keeps only that it was on, and measures the next clip afresh)
     const name = $('presetName').value.trim() || (look.source === 'preset' && look.presetName) || '我的調色';
     const file = { format: PRESET_FORMAT, version: 1, app: '照樣調色', name, created: new Date().toISOString(), from: describeLook(look),
       lut: { size: b.size, encoding: 'uint16-base64', main: b64of(b.main), layers: Object.fromEntries(Object.entries(b.layers).map(([k, v]) => [k, b64of(v)])) },
@@ -1196,7 +1198,8 @@ async function loadPreset(f) {
     await engine.setPreset(id, N, main, layers);
     const st = j.settings || {}, keep = Object.fromEntries(PRESET_KEEP.filter((k) => st[k] !== undefined).map((k) => [k, st[k]]));
     S.look.auto = false; S.candMode = null;
-    S.look.draft = { ...DEFAULT_LOOK, ...keep, ...(st.dof ? { dof: st.dof } : {}), source: 'preset', presetId: id, presetName: String(j.name || '未命名').slice(0, 40), presetLayers: Object.keys(layers), strength: 1, match: 0 };
+    const autoFix = st.autoFix ? await frameAutoFix() : null;
+    S.look.draft = { ...DEFAULT_LOOK, ...keep, ...(st.dof ? { dof: st.dof } : {}), autoFix, source: 'preset', presetId: id, presetName: String(j.name || '未命名').slice(0, 40), presetLayers: Object.keys(layers), strength: 1, match: 0 };
     for (const el of $('candBox').children) el.classList.remove('chosen');
     $('presetName').value = S.look.draft.presetName;
     $('presetInfo').textContent = `已載入「${S.look.draft.presetName}」${j.from ? `（${j.from}）` : ''}。滑桿可以在這個色調上再微調；「強度」調整設定檔色調的程度。${st.dof && !st.dof.on ? '對焦的強度已恢復，請按「選對焦點」重新點一下。' : ''}`;
@@ -1537,7 +1540,24 @@ function markMood() {
 }
 // 再按一下已選的氛圍 = 取消: back to the look from before the first mood was applied (S.moodPrev is kept while the
 // user switches between moods, and dropped once any other way of setting the look takes over)
-function applyMood(m) {
+// 自動校正 before a mood (autonorm.js): measured once per representative frame; the checkbox is remembered per viewer
+const AUTOFIX = { key: '', val: null };
+try { const v = localStorage.getItem('zy.moodAutoFix'); if (v !== null) $('moodAutoFix').checked = v === '1'; } catch { /* (no storage) */ }
+async function frameAutoFix() {
+  if (!$('moodAutoFix').checked || !S.rep) return null;
+  const key = `${S.video.id}|${S.rep.t}`;
+  if (AUTOFIX.key !== key) { const f = await previewFrame(480), nm = measureNorm(f.data, f.width, f.height); AUTOFIX.key = key; AUTOFIX.val = normIsNeutral(nm) ? null : nm; }
+  return AUTOFIX.val;
+}
+function autoFixText(nm) { // what the correction did, in words
+  if (!nm) return '';
+  const parts = [], lift = nm.g < 0.97 ? '提亮' : nm.g > 1.03 ? '稍為壓暗' : '';
+  if (lift) parts.push(`畫面${lift}`);
+  const [a, b] = nm.cast, big = Math.hypot(a, b) > 0.008;
+  if (big) parts.push(`減少${Math.abs(b) >= Math.abs(a) ? (b > 0 ? '偏黃' : '偏藍') : (a > 0 ? '偏紅' : '偏綠')}`);
+  return parts.length ? `已先自動校正（${parts.join('、')}），` : '';
+}
+async function applyMood(m) {
   if (S.look.draft.source === 'mood' && S.look.draft.mood === m.id && S.moodPrev && S.moodPrev.video === S.video.id) {
     const o = S.moodPrev; S.moodPrev = null;
     S.look.draft = o.draft; S.look.auto = o.auto; S.candMode = o.candMode ?? null;
@@ -1549,20 +1569,21 @@ function applyMood(m) {
   }
   if (S.look.draft.source !== 'mood' || !S.moodPrev || S.moodPrev.video !== S.video.id) S.moodPrev = { video: S.video.id, draft: { ...S.look.draft }, auto: S.look.auto, candMode: S.candMode };
   S.look.auto = false; S.candMode = null;
-  S.look.draft = moodLook(m, { amount: S.look.draft.amount ?? 1, blur: S.look.draft.blur });
+  const autoFix = await frameAutoFix();
+  S.look.draft = moodLook(m, { amount: S.look.draft.amount ?? 1, blur: S.look.draft.blur, autoFix });
   for (const el of $('candBox').children) el.classList.remove('chosen');
-  $('moodInfo').textContent = `已套用「${m.name}」：${m.desc}。下面的滑桿已按這個氛圍設定，可以再微調${moodOnly() ? '' : '；按「恢復自動匹配」可回到參考圖的調色'}。`;
+  $('moodInfo').textContent = `${autoFixText(autoFix)}已套用「${m.name}」：${m.desc}。下面的滑桿已按這個氛圍設定，可以再微調${moodOnly() ? '' : '；按「恢復自動匹配」可回到參考圖的調色'}。`;
   log('mood-chosen', { mood: m.id });
   markMood(); syncAdjustControls(); scheduleAdjPreview();
   if ($('viewPreview').hidden) showView('preview');
 }
 async function renderMoodThumbs() {
   if (!S.rep || $('adjustCard').hidden || !$('catMood').open) return; // collapsed: no worker time spent on thumbnails
-  const run = S.moodRun = (S.moodRun || 0) + 1, key = `${S.video.id}|${S.rep.t}|${S.intent.confirmed ? hashIntent(S.intent.confirmed) : ''}`;
+  const run = S.moodRun = (S.moodRun || 0) + 1, key = `${S.video.id}|${S.rep.t}|${S.intent.confirmed ? hashIntent(S.intent.confirmed) : ''}|${$('moodAutoFix').checked}`;
   if (S.moodThumbsFor === key) return;
-  const src = await previewFrame(240), intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null;
+  const src = await previewFrame(240), intent = S.intent.confirmed ? serializeIntent(S.intent.confirmed) : null, autoFix = await frameAutoFix();
   for (const m of MOODS) {
-    const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: moodLook(m), draft: true });
+    const r = await engine.render(src, { intent, seg: S.rep.seg, grade: true, look: moodLook(m, { autoFix }), draft: true });
     if (run !== S.moodRun) return;
     const c = document.querySelector(`#moodBox .mood[data-mood="${m.id}"] .mood-thumb`);
     c.width = src.width; c.height = src.height; c.getContext('2d').putImageData(r.imageData, 0, 0);
@@ -1571,6 +1592,18 @@ async function renderMoodThumbs() {
   log('mood-thumbs', { n: MOODS.length });
 }
 $('catMood').addEventListener('toggle', () => renderMoodThumbs());
+$('moodAutoFix').addEventListener('change', async () => {
+  try { localStorage.setItem('zy.moodAutoFix', $('moodAutoFix').checked ? '1' : '0'); } catch { /* (no storage) */ }
+  const d = S.look.draft;
+  if (d.source === 'mood' && d.mood) { // the chosen mood follows at once
+    const autoFix = await frameAutoFix(), m = MOODS.find((x) => x.id === d.mood);
+    S.look.draft = { ...S.look.draft, autoFix };
+    if (m) $('moodInfo').textContent = `${autoFixText(autoFix)}已套用「${m.name}」：${m.desc}。${autoFix ? '' : '（未自動校正：按原片的明暗和顏色套用。）'}`;
+    syncAdjustControls(); scheduleAdjPreview();
+  }
+  log('mood-autofix', { on: $('moodAutoFix').checked });
+  renderMoodThumbs();
+});
 
 // ---- 快速微調（四選一）: four variations of the current look side by side; picking one applies it and offers four
 // finer ones around it (like an eye test: "this one or that one"), so the user's eye decides, not a guess
@@ -2558,7 +2591,7 @@ async function processPhotoJob(intent, token, needsSeg, needsDepth = false) {
     for (let i = 0; i < n; i++) { // one after another (in parallel they only compete for the CPU and memory)
       if (token !== S.job.token) return;
       $('progressBar').style.width = `${(i / n) * 100}%`; $('progressText').textContent = `${i} / ${n} 張`;
-      const res = await processPhoto({ engine, meta: m, index: i, keepPixels: false, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, needsDepth, depthFn: depthOf, maskH: intent.maskH, look: S.look.applied });
+      const res = await processPhoto({ engine, meta: m, index: i, keepPixels: false, remeasure: n > 1 && i !== Math.floor(S.rep.t), intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, needsDepth, depthFn: depthOf, maskH: intent.maskH, look: S.look.applied });
       if (res.intentHash !== hashIntent(intent)) throw new Error(`第 ${i + 1} 張：處理引擎收到的設定與確認的設定不一致`);
       let name = `${S.video.files[i].name.replace(/\.[^.]+$/, '')}_graded.jpg`;
       for (let k = 2; names.has(name); k++) name = `${S.video.files[i].name.replace(/\.[^.]+$/, '')}_graded_${k}.jpg`;

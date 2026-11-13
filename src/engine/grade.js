@@ -12,6 +12,7 @@
 import { pairsPlan, pairWarp, warpRGB } from './colorpairs.js';
 import { srgbToOklab, oklabToSrgb } from './color.js';
 import { compilePrim, isNeutralPrim } from './primary.js';
+import { applyNorm } from './autonorm.js';
 
 const SCALE = [1, 2, 2]; // weight chroma a little more than lightness
 
@@ -284,6 +285,7 @@ export const DEFAULT_LOOK = {
   // 人物 / 背景亮度 (stops, AI masks) and 膚色偏向參考圖色調 (skin layer)
   glow: 0, glowRadius: 0.5, glowHue: 60, glowTint: 0, haze: 0, hazeRadius: 0.5, hazeSoft: 0.5, hazeBloom: 0.5, hazeVeil: 0.5, // 柔光, 朦朧 (spatial: applied by the renderer, not the LUT)
   vignette: 0, vignetteSize: 0.5, // 暗角: + darkens / − lightens the edges (spatial)
+  autoFix: null,                // 自動校正 before a mood: {g, gains, …} from autonorm.js measureNorm (null = off)
   prim: null,                   // pro stage (primary.js): wheels, curves, hue curves, skin protection; null = off
 };
 const primCache = new WeakMap(); // look.prim object -> compiled function (single-colour calls outside a bake)
@@ -338,15 +340,17 @@ function adjust(lab, k) {
 export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [0, 0, 0], primFn) {
   const k = { ...DEFAULT_LOOK, ...look };
   if (primFn === undefined && k.prim) { if (!primCache.has(k.prim)) primCache.set(k.prim, compilePrim(k.prim)); primFn = primCache.get(k.prim); }
-  const lab = srgbToOklab(r, g, b, _lab);
-  const L0 = lab[0], a0 = lab[1], b0 = lab[2];
-  let L = L0, a = a0, bb = b0;
+  let lab = srgbToOklab(r, g, b, _lab);
+  const L0 = lab[0], a0 = lab[1], b0 = lab[2]; // (the original: 整體調色強度 0 is the untouched colour, before 自動校正 too)
+  if (k.autoFix) { const c = applyNorm(r, g, b, k.autoFix, _normRGB); r = c[0]; g = c[1]; b = c[2]; lab = srgbToOklab(r, g, b, _lab); } // 自動校正 (autonorm.js), before everything
+  const L1 = lab[0], a1 = lab[1], b1 = lab[2];
+  let L = L1, a = a1, bb = b1;
   if (model && (k.source === 'ai' || k.source === 'preset')) { // (設定檔 .preset: its baked LUT, used as the AI-graded frame's is)
     if (!model.pair) throw new Error(k.source === 'preset' ? '設定檔的調色表尚未載入' : 'AI 調色圖的 LUT 尚未建立');
     const c = lutLookup(model.pair, r, g, b, _pairRGB), t = srgbToOklab(c[0], c[1], c[2], _pairLab);
-    L = L0 + k.strength * (t[0] - L0); a = a0 + k.strength * (t[1] - a0); bb = b0 + k.strength * (t[2] - b0);
+    L = L1 + k.strength * (t[0] - L1); a = a1 + k.strength * (t[1] - a1); bb = b1 + k.strength * (t[2] - b1);
   } else if (model) {
-    const p0 = L0 * SCALE[0], p1 = a0 * SCALE[1], p2 = b0 * SCALE[2];
+    const p0 = L1 * SCALE[0], p1 = a1 * SCALE[1], p2 = b1 * SCALE[2];
     const C = model.centres, W = model.W, M = C.length / 3, s = 2 * model.beta * model.beta;
     let d0 = 0, d1 = 0, d2 = 0;
     for (let i = 0; i < M; i++) {
@@ -354,22 +358,22 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
       const kk = Math.exp(-(dx * dx + dy * dy + dz * dz) / s);
       d0 += kk * W[3 * i]; d1 += kk * W[3 * i + 1]; d2 += kk * W[3 * i + 2];
     }
-    let Ln = L0 + d0 / SCALE[0], an = a0 + d1 / SCALE[1], bn = b0 + d2 / SCALE[2];
+    let Ln = L1 + d0 / SCALE[0], an = a1 + d1 / SCALE[1], bn = b1 + d2 / SCALE[2];
     if (k.match && model.src) {
       // "match" pulls TONE (smoothed, slope-limited lightness curve) and SATURATION LEVEL (chroma spread
       // ratio) towards the reference; colour direction stays with the natural transfer above, so raising it
       // never swings hues (earlier per-channel/cast matching tinted shadows purple with unlike content)
       const S = model.src, R = model.ref;
-      const Ls = model.tone ? interp(L0, model.tone.xs, model.tone.ys) : interp(L0, S.Lq, R.Lq);
+      const Ls = model.tone ? interp(L1, model.tone.xs, model.tone.ys) : interp(L1, S.Lq, R.Lq);
       const kc = Math.min(2, Math.max(0.5, Math.hypot(R.sa, R.sb) / Math.hypot(S.sa, S.sb)));
       Ln += k.match * (Ls - Ln);
       const ck = 1 + k.match * (kc - 1);
       an *= ck; bn *= ck;
     }
-    L = L0 + k.strength * (Ln - L0); a = a0 + k.strength * (an - a0); bb = b0 + k.strength * (bn - b0);
-    const c0 = Math.hypot(a0, b0);
+    L = L1 + k.strength * (Ln - L1); a = a1 + k.strength * (an - a1); bb = b1 + k.strength * (bn - b1);
+    const c0 = Math.hypot(a1, b1);
     if (k.protect && c0 > 0.01) { // material protection: limited hue rotation for clearly coloured surfaces
-      const h0 = Math.atan2(b0, a0), c1 = Math.hypot(a, bb);
+      const h0 = Math.atan2(b1, a1), c1 = Math.hypot(a, bb);
       let dh = Math.atan2(bb, a) - h0;
       dh = Math.atan2(Math.sin(dh), Math.cos(dh));
       const lim = (40 * Math.PI) / 180, wgt = Math.min(1, (c0 - 0.01) / 0.03);
@@ -377,7 +381,7 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
       a = c1 * Math.cos(h); bb = c1 * Math.sin(h);
     }
   }
-  if (k.preserveLuminance) L = L0;
+  if (k.preserveLuminance) L = L1;
   lab[0] = L; lab[1] = a; lab[2] = bb;
   adjust(lab, k);
   if (primFn) { // pro stage on the adjusted colour (display-referred sRGB, like a colour page's primaries)
@@ -392,7 +396,7 @@ export function gradeColour(model, r, g, b, look = {}, out = [0, 0, 0], _lab = [
   return oklabToSrgb(lab[0], lab[1], lab[2], out);
 }
 
-const _pairRGB = [0, 0, 0], _pairLab = [0, 0, 0], _primRGB = [0, 0, 0];
+const _pairRGB = [0, 0, 0], _pairLab = [0, 0, 0], _primRGB = [0, 0, 0], _normRGB = [0, 0, 0];
 /** Trilinear lookup in {size, data} (index ((r*N+g)*N+b)*3). */
 export function lutLookup(lut, r, g, b, out = [0, 0, 0]) {
   const N = lut.size, D = lut.data, n1 = N - 1;
@@ -451,7 +455,7 @@ export function bakeLUT(model, look = {}, N = 33, { shaper = null, memo = null }
   const primFn = isNeutralPrim(k.prim) ? null : compilePrim(k.prim, { memo }); // memo: see compilePrim
   // 點選對應顏色 (colorpairs.js): last, on the graded colour; each pair's video colour is graded by this same function
   const pp = pairsPlan(k.colorPairs), warp = pp ? pairWarp(pp, (r, g, b) => gradeColour(model, r, g, b, look, [0, 0, 0], [0, 0, 0], primFn)) : null, wl = [0, 0, 0], wr = [0, 0, 0];
-  const neutral = !warp && !model && !primFn && !k.preserveLuminance && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
+  const neutral = !warp && !model && !primFn && !k.preserveLuminance && !k.autoFix && ['exposure', 'contrast', 'highlights', 'shadows', 'saturation', 'temperature', 'tint', 'black', 'shadowAmt', 'midAmt', 'hiAmt'].every((key) => !k[key]) && k.white === 1;
   // input value of grid node i: inverse of the shaper (linear between its 256 levels)
   const node = new Float64Array(N);
   for (let i = 0; i < N; i++) {
