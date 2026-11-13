@@ -95,9 +95,11 @@ function dofFrame(out, w, h, dof, depth, seg, temporal, frame = 0) {
   if (prev) range = [0.8 * prev.range[0] + 0.2 * range[0], 0.8 * prev.range[1] + 0.2 * range[1]];
   const dn = normaliseDepth(raw, range);
   const mh = seg && seg.person ? seg.person.length / MASK_W : 0;
-  let df = focusDepth(dn, plan, Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null);
+  // (a video: the tapped figure is followed — where it was in the previous frame is where to look for it now)
+  const at = prev && prev.pt ? { x: prev.pt[0], y: prev.pt[1] } : {};
+  let df = focusDepth(dn, plan, Number.isInteger(mh) && mh > 0 ? { person: seg.person, mw: MASK_W, mh } : null, at);
   if (prev) df = 0.7 * prev.df + 0.3 * df;
-  if (temporal) temporal.dof = { range, df };
+  if (temporal) temporal.dof = { range, df, pt: at.fig ? [at.fig.cx, at.fig.cy] : prev && prev.pt };
   const r = applyDof(out, w, h, dn, df, dofScale(plan, w, h), { glow: plan.glow, range: plan.range }, plan.person ? null : { x: plan.x, y: plan.y, area: plan.area }, { grain: plan.grain, frame });
   return { focus: +df.toFixed(3), maxRadius: +r.maxRadius.toFixed(1) };
 }
@@ -220,7 +222,7 @@ const aiRegion = (kind, mh) => ({ id: `__${kind}`, kind, enabled: true, status: 
  * filter) is not needed here (≈ 1 ms).
  */
 function hazePerson(look, seg, temporal) {
-  if (!look || !(look.haze > 0) || !(look.hazeDepth > 0) || !seg || !seg.person) return null;
+  if (!look || !(look.haze > 0) || !(look.hazeDepth > 0 || look.hazeWhere === 1 || look.hazeWhere === 2) || !seg || !seg.person) return null;
   const mh = seg.person.length / MASK_W;
   if (!Number.isInteger(mh)) return null;
   let m = Float32Array.from(seg.person);

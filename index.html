@@ -386,6 +386,13 @@
             <label class="slider sub"><span>　柔化</span><input type="range" id="adj-hazeSoft" min="0" max="100" value="50"><output id="adj-hazeSoft-v">50</output></label>
             <label class="slider sub"><span>　發光</span><input type="range" id="adj-hazeBloom" min="0" max="100" value="50"><output id="adj-hazeBloom-v">50</output></label>
             <label class="slider sub"><span>　光幕</span><input type="range" id="adj-hazeVeil" min="0" max="100" value="50"><output id="adj-hazeVeil-v">50</output></label>
+            <div class="seg-choice" role="radiogroup" aria-label="朦朧的作用範圍" id="hazeWhereRow">
+              <span class="seg-lbl">作用範圍</span>
+              <label><input type="radio" name="hazeWhere" value="0" checked> 全部</label>
+              <label><input type="radio" name="hazeWhere" value="1"> 只前景（人物）</label>
+              <label><input type="radio" name="hazeWhere" value="2"> 只背景</label>
+            </div>
+            <p class="info" id="hazeWhereInfo" hidden></p>
             <label class="check" id="hazeFromRefRow"><input type="checkbox" id="hazeFromRef"> 霧的顏色取自參考圖（空氣的顏色，例如清晨的淡藍）</label>
             <label class="slider sub"><span>　背景霧更濃</span><input type="range" id="adj-hazeDepth" min="0" max="100" value="0"><output id="adj-hazeDepth-v">0</output></label>
             <h3>光芒顏色</h3>

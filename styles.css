@@ -495,3 +495,5 @@ dialog::backdrop { background: rgba(10, 11, 14, .5); -webkit-backdrop-filter: bl
 /* 復原 / 重做 beside 全部歸零 */
 .action-row { grid-template-columns: auto auto auto 1fr; }
 .hist-btn { min-width: 42px; padding: 6px 0; font-size: 18px; line-height: 1; }
+
+.seg-choice .seg-lbl { color: var(--mut); font-size: 13px; margin-right: 2px; }

@@ -99,7 +99,7 @@ $('refInput').addEventListener('change', async (e) => {
     S.ref = { status: 'ready', id, file, bitmap: bmp, crop, imageData: crop ? refPixels(bmp, crop, 512) : probe };
     const img = $('refPreview');
     img.src = URL.createObjectURL(file); img.hidden = false;
-    $('refPipImg').src = img.src; syncRefPip();
+    setPipSrc(img.src);
     $('refInfo').textContent = `${file.name}　${bmp.width}×${bmp.height}${crop ? `　已去除${b.panels ? '色板／邊框' : '邊框'}，分析範圍 ${crop.w}×${crop.h}` : ''}`;
     if (crop) log('ref-bars-removed', { crop, panels: !!b.panels });
     log('ref-loaded', { name: file.name });
@@ -208,7 +208,7 @@ async function applyRefVideo(id) { // S.refVideo → S.ref (and the pictures)
   for (const u of [R.previewUrl, R.pipUrl]) if (u) URL.revokeObjectURL(u);
   R.previewUrl = URL.createObjectURL(blob); R.pipUrl = URL.createObjectURL(pip);
   $('refPreview').src = R.previewUrl; $('refPreview').hidden = false;
-  $('refPipImg').src = R.pipUrl; syncRefPip();
+  setPipSrc(R.pipUrl);
   $('refTime').value = Math.round(R.t / R.dur * 1000); $('refTime-v').textContent = `${R.t.toFixed(1)} 秒`;
   $('refInfo').textContent = `${R.file.name}　影片 ${R.W}×${R.H}，${R.dur.toFixed(1)} 秒　${note}`;
   log('ref-loaded', { name: R.file.name, video: true, mode: R.mode, frames: R.mode === 'one' ? 1 : R.frames.length, skipped: R.skipped, t: R.mode === 'one' ? +R.t.toFixed(2) : null });
@@ -390,7 +390,7 @@ const segmentRestored = (c, mw, mh) => segment(restoreCanvas(c), mw, mh);
 /** AI segmentation per frame is needed: AI regions, skin protection / local grade, AI background blur, person / skin sliders, haze depth */
 function lookNeedsSeg(look, regs) {
   const ap = look.prim, bl = look.blur;
-  return !!(look.dof && look.dof.on && look.dof.person) || !!(look.layerMatch && look.layerMatch.on) || !!(look.classMatch && look.classMatch.on) || !!(look.source === 'preset' && look.presetLayers && look.presetLayers.length) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && look.hazeDepth > 0));
+  return !!(look.dof && look.dof.on && look.dof.person) || !!(look.layerMatch && look.layerMatch.on) || !!(look.classMatch && look.classMatch.on) || !!(look.source === 'preset' && look.presetLayers && look.presetLayers.length) || regs.some((r) => KINDS[r.kind].source === 'ai') || !!(ap && (ap.skin > 0 || ap.local)) || !!(bl && bl.on && bl.ai) || !!(look.personEv || look.bgEv || look.skinSat || look.skinWarm || look.skinHue || (look.haze > 0 && (look.hazeDepth > 0 || look.hazeWhere === 1 || look.hazeWhere === 2)));
 }
 
 async function runSegmentation() {
@@ -688,7 +688,7 @@ const ADJ = { // control id -> [look key, slider scale, display]
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus', 'dof', 'layerMatch', 'classMatch', 'colorPairs', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'hazeWhere', 'fringe', 'fringeFocus', 'dof', 'layerMatch', 'classMatch', 'colorPairs', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -699,6 +699,7 @@ const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEF
 function syncAdjustControls() {
   syncDof(); syncLm(); syncCm(); syncCp();
   $('hazeFromRef').checked = Array.isArray(S.look.draft.hazeAir);
+  syncHazeWhere();
   $('hazeFromRef').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
   for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
     const v = Math.round(S.look.draft[key] * scale);
@@ -1152,7 +1153,7 @@ for (const [id, k, fmt] of [['cpRange', 'range', (v) => v], ['cpAmt', 'amt', (v)
 // video (focus point, blur selection, layer / class fits, colour pairs' positions) are not kept — the colour pairs and
 // everything else in the grade are inside the LUT already.
 const PRESET_FORMAT = 'zhaoyang-preset';
-const PRESET_KEEP = ['personEv', 'bgEv', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'fringe', 'fringeFocus'];
+const PRESET_KEEP = ['personEv', 'bgEv', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'hazeWhere', 'fringe', 'fringeFocus'];
 const b64of = (f32) => { const u = new Uint16Array(f32.length); for (let i = 0; i < f32.length; i++) u[i] = Math.round(Math.min(1, Math.max(0, f32[i])) * 65535); const b = new Uint8Array(u.buffer); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
 const f32of = (b64, n) => { const s = atob(b64), b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); const u = new Uint16Array(b.buffer); if (u.length !== n) throw new Error('調色表大小不符'); const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = u[i] / 65535; return f; };
 function presetSettings(look) {
@@ -1206,6 +1207,19 @@ async function loadPreset(f) {
 $('presetSave').onclick = () => savePreset();
 $('presetLoad').onclick = () => $('presetInput').click();
 $('presetInput').addEventListener('change', (e) => { const f = e.target.files && e.target.files[0]; e.target.value = ''; if (f) loadPreset(f); });
+// 朦朧的作用範圍: everywhere, only on the people (前景) or only on the background — by the AI person mask (soft edge,
+// following the people from frame to frame, like 背景霧更濃)
+function syncHazeWhere() {
+  const v = S.look.draft.hazeWhere || 0;
+  for (const r of document.querySelectorAll('input[name=hazeWhere]')) r.checked = +r.value === v;
+  $('adj-hazeDepth').closest('label').hidden = v !== 0; // (背景霧更濃 only matters when the haze is everywhere)
+  const info = $('hazeWhereInfo');
+  info.hidden = !v;
+  if (v) info.textContent = !(S.rep && S.rep.seg) ? '需要 AI 人物偵測：確認光暗設定後會自動計算。' : `${v === 1 ? '霧只加在人物上，背景保持清晰。' : '霧只加在背景，人物保持清晰。'}用 AI 人物偵測分開，邊緣柔和過渡；畫面中沒有人時，${v === 1 ? '不會有霧' : '整個畫面都有霧'}。`;
+}
+for (const r of document.querySelectorAll('input[name=hazeWhere]')) r.addEventListener('change', () => {
+  S.look.auto = false; S.look.draft.hazeWhere = +r.value; syncHazeWhere(); updateAdjState(); scheduleAdjPreview(); log('haze-where', { v: +r.value });
+});
 $('lmSuggest').onclick = () => { LM.user = true; $('lmSuggest').hidden = true; $('lmOn').checked = true; S.look.auto = false; log('layers-suggestion-taken'); fitLm(); };
 $('lmOn').addEventListener('change', (e) => {
   $('lmSuggest').hidden = true;
@@ -2047,7 +2061,32 @@ function placeRefPip() {
   $('pvRef').addEventListener('change', () => { syncRefPip(); try { localStorage.setItem('zhaoyang-refpip', $('pvRef').checked ? '1' : '0'); } catch {} });
   try { if (localStorage.getItem('zhaoyang-refpip') === '0') $('pvRef').checked = false; } catch {}
 }
-$('pvBw').addEventListener('change', (e) => { log('bw-check', { on: e.target.checked }); drawAdj(); });
+$('pvBw').addEventListener('change', (e) => { log('bw-check', { on: e.target.checked }); drawAdj(); pipBw(); });
+// the reference picture-in-picture follows 黑白檢查: the same perceived lightness (OKLab L) as the preview, so the
+// values of the reference and the video can be compared side by side; made once per reference picture
+const PIPBW = { for: null, url: null };
+function setPipSrc(url) {
+  const i = $('refPipImg'); i.dataset.colour = url || '';
+  if (url) i.src = url; else i.removeAttribute('src');
+  syncRefPip(); pipBw();
+}
+async function pipBw() {
+  const i = $('refPipImg'), colour = i.dataset.colour;
+  if (!colour) return;
+  if (!$('pvBw').checked) { if (i.src !== colour) i.src = colour; i.dataset.bw = ''; return; }
+  if (PIPBW.for !== colour) {
+    const bm = await createImageBitmap(await (await fetch(colour)).blob()), k = Math.min(1, 720 / Math.max(bm.width, bm.height));
+    const c = canvas2d(Math.round(bm.width * k), Math.round(bm.height * k)), x = c.getContext('2d');
+    x.drawImage(bm, 0, 0, c.width, c.height);
+    const id = x.getImageData(0, 0, c.width, c.height), d = id.data, o = [0, 0, 0];
+    for (let q = 0; q < d.length; q += 4) { srgbToOklab(d[q] / 255, d[q + 1] / 255, d[q + 2] / 255, o); const v = oklabToSrgb(o[0], 0, 0)[0] * 255; d[q] = d[q + 1] = d[q + 2] = v; }
+    x.putImageData(id, 0, 0);
+    const blob = await new Promise((res) => (c.convertToBlob ? c.convertToBlob({ type: 'image/png' }).then(res) : c.toBlob(res, 'image/png')));
+    if (PIPBW.url) URL.revokeObjectURL(PIPBW.url);
+    PIPBW.for = colour; PIPBW.url = URL.createObjectURL(blob);
+  }
+  if ($('pvBw').checked && i.dataset.colour === colour) { i.src = PIPBW.url; i.dataset.bw = '1'; }
+}
 $('pvFast').addEventListener('change', (e) => {
   PV.fast = e.target.checked;
   try { localStorage.setItem('zhaoyang-preview', JSON.stringify({ q: PV.q, fast: PV.fast })); } catch {}
@@ -2363,7 +2402,7 @@ $('refRemove').onclick = () => {
   S.ref = { status: 'empty', id: S.ref.id + 1 };
   if (S.refVideo) { URL.revokeObjectURL(S.refVideo.url); S.refVideo.video.remove(); S.refVideo = null; } $('refVideoBox').hidden = true;
   $('refInput').value = ''; $('refPreview').hidden = true; $('refPreview').removeAttribute('src'); $('refInfo').textContent = '';
-  $('refPipImg').removeAttribute('src'); syncRefPip();
+  setPipSrc(null);
   log('ref-removed');
   assetsChanged('ref');
 };

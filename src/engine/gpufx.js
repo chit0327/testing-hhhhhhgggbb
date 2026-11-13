@@ -70,7 +70,7 @@ void main() {
 // 朦朧 / 柔光 / 暗角 composite (render.js applyEffects, per pixel)
 const FX = HEAD + `
 uniform sampler2D img, gG, gH, gB, hz; uniform ivec2 size, gs; uniform int f, hasG, hasH, hasHz;
-uniform float glow, haze, kSoft, kBloom, kVeil, bk, vig, v0, depth; uniform vec3 veil, tm;
+uniform float glow, haze, kSoft, kBloom, kVeil, bk, vig, v0, depth, hasAir, where; uniform vec3 veil, tm, air;
 vec3 grid(sampler2D t, ivec2 px) { // bilinear, as render.js sampleGrid
   vec2 g = clamp((vec2(px) + 0.5) / float(f) - 0.5, vec2(0.0), vec2(gs - 1));
   ivec2 a = ivec2(floor(g)), b = min(gs - 1, a + 1); vec2 t2 = g - vec2(a);
@@ -86,13 +86,16 @@ void main() {
     vec2 g = clamp((vec2(px) + 0.5) / vec2(size) * vec2(ms) - 0.5, vec2(0.0), vec2(ms - 1));
     ivec2 a = ivec2(floor(g)), b = min(ms - 1, a + 1); vec2 t = g - vec2(a);
     float pr = mix(mix(texelFetch(hz, a, 0).r, texelFetch(hz, ivec2(b.x, a.y), 0).r, t.x), mix(texelFetch(hz, ivec2(a.x, b.y), 0).r, texelFetch(hz, b, 0).r, t.x), t.y);
-    h = min(1.0, haze * (1.0 - 0.85 * depth * pr) * (1.0 + 0.5 * depth * (1.0 - pr)));
+    float wk = where > 1.5 ? 1.0 - pr : where > 0.5 ? pr : 1.0;
+    h = min(1.0, haze * wk * (1.0 - 0.85 * depth * pr) * (1.0 + 0.5 * depth * (1.0 - pr)));
   }
   if (hasH == 1) {
     vec3 bl = grid(gH, px);
     lin += min(1.0, h * kSoft) * (bl - lin);
     bl = grid(gB, px);
-    vec3 add = min(vec3(1.0), h * tm * (kBloom * bk * max(vec3(0.0), bl - 0.6 * lin) + kVeil * veil));
+    vec3 bt = max(vec3(0.0), bl - 0.6 * lin);
+    if (hasAir > 0.5) bt = air * dot(bt, vec3(0.2126, 0.7152, 0.0722));
+    vec3 add = min(vec3(1.0), h * tm * (kBloom * bk * bt + kVeil * veil));
     lin = 1.0 - (1.0 - lin) * (1.0 - add);
   }
   if (hasG == 1) lin += glow * 1.2 * tm * grid(gG, px);
@@ -224,10 +227,10 @@ export function gpuEffects() {
       const G = plan.gridG ? grid(0, plan.gridG, 'gG') : null, H = plan.gridH ? grid(1, plan.gridH, 'gH') : null, Bm = plan.gridB ? grid(2, plan.gridB, 'gB') : null;
       const { veil, bk } = Bm ? veilOf(plan, Bm) : { veil: [0, 0, 0], bk: 1 };
       const dummy = targets.get('gG') || targets.get('gH') || target('one', 'f', 1, 1);
-      const hz = plan.depth ? upload('hz', 'f', hazeMap.w, hazeMap.h, rgba(hazeMap.data, hazeMap.w * hazeMap.h, 1)) : dummy;
+      const hz = plan.depth || plan.where ? upload('hz', 'f', hazeMap.w, hazeMap.h, rgba(hazeMap.data, hazeMap.w * hazeMap.h, 1)) : dummy;
       pass('FX', { img: cur, gG: G ? targets.get('gG') : dummy, gH: H ? targets.get('gH') : dummy, gB: Bm ? targets.get('gB') : dummy, hz }, {
-        size: I2(w, h), gs: I2(sw, sh), f: I(f), hasG: I(G ? 1 : 0), hasH: I(H ? 1 : 0), hasHz: I(plan.depth ? 1 : 0),
-        glow: plan.glow, haze: plan.haze, kSoft: plan.kSoft, kBloom: plan.kBloom, kVeil: plan.kVeil, bk, vig: plan.vig, v0: 0.75 - 0.5 * plan.vigSize, depth: plan.depth, veil, tm: plan.tm,
+        size: I2(w, h), gs: I2(sw, sh), f: I(f), hasG: I(G ? 1 : 0), hasH: I(H ? 1 : 0), hasHz: I(plan.depth || plan.where ? 1 : 0),
+        glow: plan.glow, haze: plan.haze, kSoft: plan.kSoft, kBloom: plan.kBloom, kVeil: plan.kVeil, bk, vig: plan.vig, v0: 0.75 - 0.5 * plan.vigSize, depth: plan.depth, veil, tm: plan.tm, hasAir: plan.air ? 1 : 0, air: plan.air || [1, 1, 1], where: plan.where || 0,
       }, other); swap();
     }
     if (film) {

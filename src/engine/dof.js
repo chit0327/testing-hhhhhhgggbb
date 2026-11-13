@@ -81,20 +81,51 @@ export function normaliseDepth(depth, [lo, hi]) {
 
 const median = (a) => { if (!a.length) return null; a.sort((x, y) => x - y); return a[a.length >> 1]; };
 /**
- * the focus depth (0..1). On the person (seg {person: grid, mw, mh}): the median depth of the band of the person at the
- * tapped height (plan.rel: 0 = top of the person, 1 = bottom; ±8 % of the person's height) — a tap on the face keeps the
- * face in focus as the person moves (the whole body's median was nearer than the face: the lower body is closer to the
- * camera). Elsewhere: the median around the tapped point.
+ * the people of a person mask as separate figures (connected parts of mask ≥ 0.5 on its grid, 8-neighbours); the one at
+ * (fx, fy) 0..1 — or, when the point is not on anyone, the nearest one (its centre within a fifth of the frame) — as
+ * {cells: Set, top, bot (grid rows), cx, cy (centre 0..1)} or null. A focus on "the person" used to mean every person in
+ * the frame: with a big figure close to the camera, the tapped face further back went out of focus.
  */
-export function focusDepth(dn, plan, seg = null) {
+export function figureAt(seg, fx, fy) {
+  const { person, mw, mh } = seg, lab = new Int32Array(mw * mh).fill(-1), figs = [];
+  for (let i = 0; i < mw * mh; i++) {
+    if (lab[i] >= 0 || !(person[i] >= 0.5)) continue;
+    const st = [i], cells = []; lab[i] = figs.length;
+    while (st.length) {
+      const q = st.pop(), x = q % mw, y = (q / mw) | 0; cells.push(q);
+      for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+        const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= mw || ny >= mh) continue;
+        const r = ny * mw + nx; if (lab[r] < 0 && person[r] >= 0.5) { lab[r] = figs.length; st.push(r); }
+      }
+    }
+    let sx = 0, sy = 0, top = mh, bot = -1; for (const q of cells) { const y = (q / mw) | 0; sx += q % mw; sy += y; if (y < top) top = y; if (y > bot) bot = y; }
+    figs.push({ cells: new Set(cells), top, bot, cx: (sx / cells.length + 0.5) / mw, cy: (sy / cells.length + 0.5) / mh, n: cells.length });
+  }
+  if (!figs.length) return null;
+  const gx = Math.min(mw - 1, Math.max(0, Math.floor(fx * mw))), gy = Math.min(mh - 1, Math.max(0, Math.floor(fy * mh))), hit = lab[gy * mw + gx];
+  if (hit >= 0 && figs[hit].n >= 4) return figs[hit];
+  let best = null, bd = 0.2; // (not on anyone: the nearest figure, if close)
+  for (const f of figs) { if (f.n < 4) continue; const d = Math.hypot(f.cx - fx, f.cy - fy); if (d < bd) { bd = d; best = f; } }
+  return best;
+}
+/**
+ * the focus depth (0..1). On a person (seg {person: grid, mw, mh}): the tapped figure only (figureAt; in a video the
+ * caller passes where that figure was in the previous frame, so the focus follows them), the median depth of the band
+ * of that figure at the tapped height (plan.rel: 0 = top of the figure, 1 = bottom; ±8 % of its height) — a tap on the
+ * face keeps the face in focus (the whole body's median was nearer than the face: the lower body is closer). Elsewhere:
+ * the median around the tapped point. Returns the depth; at.fig gets the figure used (for following it).
+ */
+export function focusDepth(dn, plan, seg = null, at = null) {
   const { data, w, h } = dn;
   if (plan.person && seg && seg.person) {
-    const { person, mw, mh } = seg, at = (x, y) => person[Math.min(mh - 1, Math.floor((y + 0.5) / h * mh)) * mw + Math.min(mw - 1, Math.floor((x + 0.5) / w * mw))];
-    let top = -1, bot = -1;
-    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (at(x, y) >= 0.6) { if (top < 0) top = y; bot = y; break; }
-    if (top >= 0) {
-      const rel = Number.isFinite(plan.rel) ? plan.rel : 0.15, c = top + rel * (bot - top), band = Math.max(1, 0.08 * (bot - top)), v = [];
-      for (let y = Math.max(0, Math.floor(c - band)); y <= Math.min(h - 1, Math.ceil(c + band)); y++) for (let x = 0; x < w; x++) if (at(x, y) >= 0.6) v.push(data[y * w + x]);
+    const { mw, mh } = seg, ax = at && Number.isFinite(at.x) ? at.x : plan.x, ay = at && Number.isFinite(at.y) ? at.y : plan.y, fig = figureAt(seg, ax, ay);
+    if (fig) {
+      if (at) at.fig = fig;
+      const rel = Number.isFinite(plan.rel) ? plan.rel : 0.15, c = fig.top + rel * (fig.bot - fig.top), band = Math.max(0.5, 0.08 * (fig.bot - fig.top)), v = [];
+      for (let y = 0; y < h; y++) {
+        const gy = Math.min(mh - 1, Math.floor((y + 0.5) / h * mh)); if (Math.abs(gy - c) > band + 0.5) continue;
+        for (let x = 0; x < w; x++) { const gx = Math.min(mw - 1, Math.floor((x + 0.5) / w * mw)); if (fig.cells.has(gy * mw + gx)) v.push(data[y * w + x]); }
+      }
       if (v.length >= 4) return median(v);
     }
   }
@@ -105,14 +136,13 @@ export function focusDepth(dn, plan, seg = null) {
   return median(v) ?? 0.5;
 }
 
-/** where on the person a tap at (x, y) is: 0 = the top of the person, 1 = the bottom (seg as focusDepth's); null if not on one */
+/** where on the person a tap at (x, y) is: 0 = the top of THAT figure, 1 = its bottom (seg as focusDepth's); null if not on one */
 export function personRel(x, y, seg) {
   if (!seg || !seg.person) return null;
   const { person, mw, mh } = seg, gx = Math.min(mw - 1, Math.floor(x * mw)), gy = Math.min(mh - 1, Math.floor(y * mh));
   if (!(person[gy * mw + gx] >= 0.5)) return null;
-  let top = -1, bot = -1;
-  for (let r = 0; r < mh; r++) for (let c = 0; c < mw; c++) if (person[r * mw + c] >= 0.6) { if (top < 0) top = r; bot = r; break; }
-  return top < 0 || bot <= top ? 0.15 : Math.min(1, Math.max(0, (gy - top) / (bot - top)));
+  const fig = figureAt(seg, x, y);
+  return !fig || fig.bot <= fig.top ? 0.15 : Math.min(1, Math.max(0, (gy - fig.top) / (fig.bot - fig.top)));
 }
 
 /** round-aperture blur of a premultiplied [r, g, b, a] grid, radius R cells (row chords from prefix sums), normalised by area */
