@@ -685,10 +685,11 @@ const ADJ = { // control id -> [look key, slider scale, display]
   vignette: ['vignette', 100, (v) => `${v > 0 ? '+' : ''}${v}`], vignetteSize: ['vignetteSize', 100, (v) => `${v}`],
   hazeDepth: ['hazeDepth', 100, (v) => `${v}`],
   fringe: ['fringe', 100, (v) => `${v}`], fringeFocus: ['fringeFocus', 100, (v) => `${v}`],
+  lensBlur: ['lensBlur', 100, (v) => `${v}`], lensBlurSize: ['lensBlurSize', 100, (v) => `${v}`], stepTrail: ['stepTrail', 100, (v) => `${v}`],
   filmGrain: ['filmGrain', 100, (v) => `${v}`], filmGrainSize: ['filmGrainSize', 100, (v) => `${v}`], halation: ['halation', 100, (v) => `${v}`], filmSoft: ['filmSoft', 100, (v) => `${v}`],
 };
 // settings that belong to the user's finishing, not to a colour source: kept when the source replaces the look
-const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'hazeWhere', 'fringe', 'fringeFocus', 'dof', 'layerMatch', 'classMatch', 'colorPairs', 'blur'];
+const KEEP = ['amount', 'follow', 'gradMap', 'personEv', 'bgEv', 'skinFollow', 'skinSat', 'skinWarm', 'skinHue', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'hazeWhere', 'fringe', 'fringeFocus', 'lensBlur', 'lensBlurSize', 'lensBlurType', 'lensBlurX', 'lensBlurY', 'stepTrail', 'stepHold', 'dof', 'layerMatch', 'classMatch', 'colorPairs', 'blur'];
 const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEFAULT_LOOK[k]]));
 // hue sliders show the colour they add (OKLab hue at a mid lightness, so the gradient matches the effect)
 {
@@ -699,7 +700,7 @@ const kept = () => Object.fromEntries(KEEP.map((k) => [k, S.look.draft[k] ?? DEF
 function syncAdjustControls() {
   syncDof(); syncLm(); syncCm(); syncCp();
   $('hazeFromRef').checked = Array.isArray(S.look.draft.hazeAir);
-  syncHazeWhere();
+  syncHazeWhere(); syncMotion();
   $('hazeFromRef').disabled = !(S.ref.status === 'ready' && S.ref.imageData);
   for (const [id, [key, scale, fmt]] of Object.entries(ADJ)) {
     const v = Math.round(S.look.draft[key] * scale);
@@ -1153,7 +1154,7 @@ for (const [id, k, fmt] of [['cpRange', 'range', (v) => v], ['cpAmt', 'amt', (v)
 // video (focus point, blur selection, layer / class fits, colour pairs' positions) are not kept — the colour pairs and
 // everything else in the grade are inside the LUT already.
 const PRESET_FORMAT = 'zhaoyang-preset';
-const PRESET_KEEP = ['personEv', 'bgEv', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'hazeWhere', 'fringe', 'fringeFocus'];
+const PRESET_KEEP = ['personEv', 'bgEv', 'glow', 'glowRadius', 'glowHue', 'glowTint', 'haze', 'hazeRadius', 'hazeSoft', 'hazeBloom', 'hazeVeil', 'vignette', 'vignetteSize', 'filmGrain', 'filmGrainSize', 'halation', 'filmSoft', 'hazeAir', 'hazeDepth', 'hazeWhere', 'fringe', 'fringeFocus', 'lensBlur', 'lensBlurSize', 'lensBlurType', 'lensBlurX', 'lensBlurY', 'stepTrail', 'stepHold'];
 const b64of = (f32) => { const u = new Uint16Array(f32.length); for (let i = 0; i < f32.length; i++) u[i] = Math.round(Math.min(1, Math.max(0, f32[i])) * 65535); const b = new Uint8Array(u.buffer); let s = ''; for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000)); return btoa(s); };
 const f32of = (b64, n) => { const s = atob(b64), b = new Uint8Array(s.length); for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i); const u = new Uint16Array(b.buffer); if (u.length !== n) throw new Error('調色表大小不符'); const f = new Float32Array(n); for (let i = 0; i < n; i++) f[i] = u[i] / 65535; return f; };
 function presetSettings(look) {
@@ -1220,6 +1221,25 @@ function syncHazeWhere() {
 for (const r of document.querySelectorAll('input[name=hazeWhere]')) r.addEventListener('change', () => {
   S.look.auto = false; S.look.draft.hazeWhere = +r.value; syncHazeWhere(); updateAdjState(); scheduleAdjPreview(); log('haze-where', { v: +r.value });
 });
+// ---- 鏡頭邊緣模糊 / 抽格拖影 (engine/motion.js): direction and step choices, the sharp centre picked on the preview
+const LENS = { picking: false };
+function syncMotion() {
+  const d = S.look.draft;
+  for (const r of document.querySelectorAll('input[name=lensBlurType]')) r.checked = r.value === (d.lensBlurType === 'swirl' ? 'swirl' : 'zoom');
+  for (const r of document.querySelectorAll('input[name=stepHold]')) r.checked = +r.value === Math.max(1, Math.round(d.stepHold || 1));
+  $('lensPick').textContent = LENS.picking ? '在預覽上點一下…（再按取消）' : '選清楚的中心';
+  $('adjCanvas').classList.toggle('picking', LENS.picking || DOF.picking);
+}
+function setLensCentre(pt) {
+  const [x, y] = pt.map((v) => Math.min(1, Math.max(0, v)));
+  S.look.auto = false; S.look.draft.lensBlurX = +x.toFixed(4); S.look.draft.lensBlurY = +y.toFixed(4);
+  if (!(S.look.draft.lensBlur > 0)) { S.look.draft.lensBlur = 0.5; syncAdjustControls(); }
+  LENS.picking = false; syncMotion(); updateAdjState(); scheduleAdjPreview(); log('lens-centre', { x, y });
+}
+$('lensPick').onclick = () => { if (!S.rep) return; LENS.picking = !LENS.picking; if (LENS.picking) { DOF.picking = false; CP.step = null; stopBlurPainting(); } syncMotion(); };
+$('lensCentre').onclick = () => { S.look.auto = false; S.look.draft.lensBlurX = 0.5; S.look.draft.lensBlurY = 0.5; LENS.picking = false; syncMotion(); updateAdjState(); scheduleAdjPreview(); };
+for (const r of document.querySelectorAll('input[name=lensBlurType]')) r.addEventListener('change', () => { S.look.auto = false; S.look.draft.lensBlurType = r.value; updateAdjState(); scheduleAdjPreview(); });
+for (const r of document.querySelectorAll('input[name=stepHold]')) r.addEventListener('change', () => { S.look.auto = false; S.look.draft.stepHold = +r.value; updateAdjState(); scheduleAdjPreview(); });
 $('lmSuggest').onclick = () => { LM.user = true; $('lmSuggest').hidden = true; $('lmOn').checked = true; S.look.auto = false; log('layers-suggestion-taken'); fitLm(); };
 $('lmOn').addEventListener('change', (e) => {
   $('lmSuggest').hidden = true;
@@ -1343,6 +1363,7 @@ async function commitSelection() {
   };
   cv.addEventListener('pointerdown', (e) => {
     if (DOF.picking && S.rep) { e.preventDefault(); setFocus(canvasPoint(e)); return; } // 對焦（景深）: the tap is the focus
+    if (LENS.picking && S.rep) { e.preventDefault(); setLensCentre(canvasPoint(e)); return; } // 鏡頭邊緣模糊: the sharp centre
     if (CP.step === 'src' && S.rep) { e.preventDefault(); cpPickSource(canvasPoint(e)); return; } // 點選對應顏色: the video's colour
     if (!blurEditing() || !S.rep) return;
     e.preventDefault(); try { cv.setPointerCapture(e.pointerId); } catch { /* (no capture: painting still works while the pointer stays on the picture) */ }
@@ -1514,7 +1535,19 @@ function markMood() {
   const id = S.look.draft.source === 'mood' ? S.look.draft.mood : null;
   for (const b of document.querySelectorAll('#moodBox .mood')) b.setAttribute('aria-pressed', String(b.dataset.mood === id));
 }
+// 再按一下已選的氛圍 = 取消: back to the look from before the first mood was applied (S.moodPrev is kept while the
+// user switches between moods, and dropped once any other way of setting the look takes over)
 function applyMood(m) {
+  if (S.look.draft.source === 'mood' && S.look.draft.mood === m.id && S.moodPrev && S.moodPrev.video === S.video.id) {
+    const o = S.moodPrev; S.moodPrev = null;
+    S.look.draft = o.draft; S.look.auto = o.auto; S.candMode = o.candMode ?? null;
+    for (const el of $('candBox').children) el.classList.toggle('chosen', !!S.candMode && el.dataset.mode === S.candMode);
+    $('moodInfo').textContent = `已取消「${m.name}」，回到套用前的調色。`;
+    log('mood-cleared', { mood: m.id });
+    markMood(); syncAdjustControls(); scheduleAdjPreview();
+    return;
+  }
+  if (S.look.draft.source !== 'mood' || !S.moodPrev || S.moodPrev.video !== S.video.id) S.moodPrev = { video: S.video.id, draft: { ...S.look.draft }, auto: S.look.auto, candMode: S.candMode };
   S.look.auto = false; S.candMode = null;
   S.look.draft = moodLook(m, { amount: S.look.draft.amount ?? 1, blur: S.look.draft.blur });
   for (const el of $('candBox').children) el.classList.remove('chosen');
@@ -1932,7 +1965,7 @@ async function videoFrame() {
     }
     const depth = needsDepthFor(look) ? await depthOf(c, w, h) : null;
     await S.grade.ready;
-    const r = await engine.render(src, { intent, seg, depth, grade: true, look, draft: false });
+    const r = await engine.render(src, { intent, seg, depth, grade: true, look, draft: false, stream: PLAY.on ? { index: Math.round(t * (m.fps || 30)) } : null }); // (抽格拖影 follows the playing frames)
     if ((!PLAY.on && PLAY.viewT === null) || $('adjustCard').hidden) return;
     const ms = performance.now() - t0;
     S.preview = { src, out: r.imageData, w, h, draft: false, ms, t }; // (the split compares this frame, original | graded)

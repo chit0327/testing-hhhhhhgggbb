@@ -176,7 +176,7 @@
           <div class="cat-body">
             <p class="info" id="moodLead">不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。</p>
             <div id="moodBox"></div>
-            <p class="info" id="moodInfo">每張小圖是你的畫面套用該氛圍的效果；下面的色條是常見顏色（膚色、天空、樹葉、紅、白、灰、暗部）套用前（上方細條）和套用後的顏色。</p>
+            <p class="info" id="moodInfo">每張小圖是你的畫面套用該氛圍的效果；下面的色條是常見顏色（膚色、天空、樹葉、紅、白、灰、暗部）套用前（上方細條）和套用後的顏色。已選的氛圍再按一下，就會取消，回到套用前的樣子。</p>
           </div>
         </details>
 
@@ -421,6 +421,26 @@
             <label class="slider"><span>色散</span><input type="range" id="adj-fringe" min="0" max="100" value="0"><output id="adj-fringe-v">0</output></label>
             <label class="slider sub"><span>　只在失焦處</span><input type="range" id="adj-fringeFocus" min="0" max="100" value="100"><output id="adj-fringeFocus-v">100</output></label>
             <p class="info">像鏡頭的色差：邊緣出現紅／青色的分離，越近畫面四周越明顯。「只在失焦處」100 時只加在對焦以外（模糊）的地方，清楚的主體保持乾淨；0 時整個畫面都有，像普通鏡頭。</p>
+            <h3>鏡頭邊緣模糊</h3>
+            <label class="slider"><span>邊緣模糊</span><input type="range" id="adj-lensBlur" min="0" max="100" value="0"><output id="adj-lensBlur-v">0</output></label>
+            <label class="slider sub"><span>　清楚範圍</span><input type="range" id="adj-lensBlurSize" min="0" max="100" value="40"><output id="adj-lensBlurSize-v">40</output></label>
+            <div class="seg-choice" role="radiogroup" aria-label="邊緣模糊的方向">
+              <span class="seg-lbl">方向</span>
+              <label><input type="radio" name="lensBlurType" value="zoom" checked> 放射（向外拉）</label>
+              <label><input type="radio" name="lensBlurType" value="swirl"> 旋轉（舊鏡頭）</label>
+            </div>
+            <div class="row"><button type="button" id="lensPick">選清楚的中心</button><button type="button" id="lensCentre">回到畫面中央</button></div>
+            <p class="info" id="lensInfo">畫面中間保持清楚，四周向外拉扯或旋轉地模糊，像手持移動時用特殊鏡頭拍攝（燈光會拉成光線）。</p>
+            <h3>抽格拖影（慢快門）</h3>
+            <label class="slider"><span>拖影</span><input type="range" id="adj-stepTrail" min="0" max="100" value="0"><output id="adj-stepTrail-v">0</output></label>
+            <div class="seg-choice" role="radiogroup" aria-label="抽格">
+              <span class="seg-lbl">抽格</span>
+              <label><input type="radio" name="stepHold" value="1" checked> 不抽格</label>
+              <label><input type="radio" name="stepHold" value="2"> 每 2 格</label>
+              <label><input type="radio" name="stepHold" value="3"> 每 3 格</label>
+              <label><input type="radio" name="stepHold" value="4"> 每 4 格</label>
+            </div>
+            <p class="info" id="stepInfo">像王家衛電影的慢快門加抽格：動的東西留下拖影，畫面每幾格才更新一次，有一頓一頓的節奏。需要連續的畫面，所以只在「播放」預覽和匯出的影片看到，停在一格時不會顯示。</p>
             <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
             <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
             <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。「霧的顏色取自參考圖」令光幕用參考圖空氣的顏色（例如清晨淡藍），而不是原片本身的光色（陽光下會是暖黃）。「背景霧更濃」用 AI 偵測人物：人物的霧變淡、背景的霧變濃，像遠處隔了更多空氣（只分人物和背景兩層，不是按真正的距離）。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>

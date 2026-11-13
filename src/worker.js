@@ -46,6 +46,8 @@ function gradeFrame(src, w, h, lut, ev, layers) {
 }
 import { applyFilm, hasFilm } from './engine/film.js';
 import { applyFringe, fringePlan } from './engine/fringe.js';
+import { applyLensBlur, lensPlan, stepFrame, stepPlan } from './engine/motion.js';
+const playStep = {}; // 抽格拖影 during the preview's playback (a job keeps its own in its temporal state)
 import { dofPlan, dofScale, depthRange, normaliseDepth, focusDepth, applyDof, tiltDepth } from './engine/dof.js';
 import { layerStats, fitLayers, applyLayers, statsBy, fitBy, applyBy } from './engine/layermatch.js';
 import { classGrid, classSampler, classShares, CLASSES } from './engine/classes.js';
@@ -551,10 +553,16 @@ self.onmessage = (e) => {
       const dofInfo = m.grade && j.look && !dofFirst ? dofFrame(out, m.w, m.h, j.look.dof, m.depth, m.seg, m.jobId ? j.temporal : null, m.index || 0) : null;
       const fx = m.grade ? fxOf(j.look) : null;
       lap('dof');
+      if (fx && lensPlan(fx)) { applyLensBlur(out, m.w, m.h, fx); lap('lens'); } // 鏡頭邊緣模糊 (a lens effect: before the light effects)
       // after the blur: haze and glow spread over the blurred background too; 膠片質感 last: softness, halation, then grain
       // (its pattern follows the frame number)
       if (fx) effectsFrame(out, m.w, m.h, fx, hazePerson(j.look, m.seg, j.temporal), m.index || 0);
       lap('effects');
+      // 抽格拖影: last, on the finished picture (a slow shutter / step printing records everything), over consecutive frames
+      if (fx && stepPlan(fx)) {
+        const st = m.jobId ? (j.temporal.step = j.temporal.step || {}) : m.stream ? playStep : null;
+        if (st && stepFrame(out, m.w, m.h, fx, st, m.jobId ? m.index : m.stream.index)) lap('step');
+      }
       const prim = j.look && j.look.prim;
       const localApplied = !!ev;
       self.postMessage({ type: 'rendered', id: m.id, jobId: m.jobId, index: m.index, rgba: out.buffer, w: m.w, h: m.h, intentHash: j.hash, localApplied, blur: blurInfo, dof: dofInfo, timing: T,
