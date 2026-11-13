@@ -1557,12 +1557,27 @@ function autoFixText(nm) { // what the correction did, in words
   if (big) parts.push(`減少${Math.abs(b) >= Math.abs(a) ? (b > 0 ? '偏黃' : '偏藍') : (a > 0 ? '偏紅' : '偏綠')}`);
   return parts.length ? `已先自動校正（${parts.join('、')}），` : '';
 }
+// Changing or cancelling a mood replaces only what the mood itself set. The user's own changes are kept: the effects and
+// other non-colour settings (KEEP) that differ from what the old mood (or the plain default) gave, the colour sliders as
+// offsets from the old mood (曝光 +0.2 on mood A is +0.2 on mood B), three-way hues and the pro stage when edited.
+const MOOD_NUM = { exposure: [-2, 2], contrast: [-1, 1], highlights: [-1, 1], shadows: [-1, 1], saturation: [-1, 1], temperature: [-1, 1], tint: [-1, 1], black: [0, 0.4], white: [0.7, 1], shadowAmt: [0, 1], midAmt: [0, 1], hiAmt: [0, 1] };
+const sameVal = (a, b) => JSON.stringify(a ?? null) === JSON.stringify(b ?? null);
+function moodCarry(cur, base) {
+  const was = cur.source === 'mood' && MOODS.find((x) => x.id === cur.mood), from = was ? moodLook(was) : DEFAULT_LOOK, out = { ...base };
+  for (const k of KEEP) if (!sameVal(cur[k], from[k])) out[k] = cur[k];
+  if (was) {
+    for (const [k, [lo, hi]] of Object.entries(MOOD_NUM)) { const d = (cur[k] ?? DEFAULT_LOOK[k]) - (from[k] ?? DEFAULT_LOOK[k]); if (Math.abs(d) > 1e-9) out[k] = Math.round(1e4 * Math.min(hi, Math.max(lo, (base[k] ?? DEFAULT_LOOK[k]) + d))) / 1e4; }
+    for (const k of ['shadowHue', 'midHue', 'hiHue']) if (!sameVal(cur[k], from[k])) out[k] = cur[k];
+    if (!sameVal(cur.prim, from.prim)) out.prim = cur.prim;
+  }
+  return out;
+}
 async function applyMood(m) {
   if (S.look.draft.source === 'mood' && S.look.draft.mood === m.id && S.moodPrev && S.moodPrev.video === S.video.id) {
     const o = S.moodPrev; S.moodPrev = null;
-    S.look.draft = o.draft; S.look.auto = o.auto; S.candMode = o.candMode ?? null;
+    S.look.draft = moodCarry(S.look.draft, o.draft); S.look.auto = o.auto; S.candMode = o.candMode ?? null;
     for (const el of $('candBox').children) el.classList.toggle('chosen', !!S.candMode && el.dataset.mode === S.candMode);
-    $('moodInfo').textContent = `已取消「${m.name}」，回到套用前的調色。`;
+    $('moodInfo').textContent = `已取消「${m.name}」，回到套用前的調色；你自己加的效果和調整保留。`;
     log('mood-cleared', { mood: m.id });
     markMood(); syncAdjustControls(); scheduleAdjPreview();
     return;
@@ -1570,7 +1585,7 @@ async function applyMood(m) {
   if (S.look.draft.source !== 'mood' || !S.moodPrev || S.moodPrev.video !== S.video.id) S.moodPrev = { video: S.video.id, draft: { ...S.look.draft }, auto: S.look.auto, candMode: S.candMode };
   S.look.auto = false; S.candMode = null;
   const autoFix = await frameAutoFix();
-  S.look.draft = moodLook(m, { amount: S.look.draft.amount ?? 1, blur: S.look.draft.blur, autoFix });
+  S.look.draft = moodCarry(S.look.draft, moodLook(m, { autoFix }));
   for (const el of $('candBox').children) el.classList.remove('chosen');
   $('moodInfo').textContent = `${autoFixText(autoFix)}已套用「${m.name}」：${m.desc}。下面的滑桿已按這個氛圍設定，可以再微調${moodOnly() ? '' : '；按「恢復自動匹配」可回到參考圖的調色'}。`;
   log('mood-chosen', { mood: m.id });
