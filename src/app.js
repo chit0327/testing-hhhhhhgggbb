@@ -21,7 +21,7 @@ import { measureFilm, FILM_KEYS, FILM_DEFAULT } from './engine/film.js';
 import { findBars, findPicture } from './engine/bars.js';
 import { refAirRGB } from './engine/render.js';
 import { dofPlan, personRel } from './engine/dof.js';
-import { initDepth, depthOf, depthInfo, onDepthProgress, prefetchDepth, depthStored } from './depth.js';
+import { initDepth, depthOf, depthInfo, onDepthProgress, prefetchDepth, depthStored, depthOnProcessor, depthLoaded } from './depth.js';
 import { zipStore } from './zip.js';
 import { oklabToSrgb, srgbToOklab } from './engine/color.js';
 
@@ -768,12 +768,18 @@ document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
   if (k === 'z' && !e.shiftKey) { e.preventDefault(); histGo(-1); } else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); histGo(1); }
 });
+// before exporting a video: the options that need the AI depth of the frames make it slower — say which, and how much
+function depthHint(look) {
+  if (isPhoto() || !needsDepthFor(look)) return '';
+  const d = dofPlan(look.dof), on = [look.layerMatch && look.layerMatch.on && '分層匹配', look.classMatch && look.classMatch.on && '同類別匹配', d && d.mode !== 'tilt' && '對焦（景深）'].filter(Boolean);
+  return `開了${on.join('、')}：匯出時要用 AI 計算畫面深度，${depthOnProcessor() || (depthInfo() && depthInfo().ep === 'cpu') ? `這部裝置只能用處理器計算，匯出會慢幾倍${d && d.mode !== 'tilt' ? '' : '（每 3 格計算一次以加快）'}` : '匯出會較慢'}；不需要時可以先關掉。`;
+}
 function updateAdjState() {
   histNote();
   const dirty = !S.look.applied || JSON.stringify(S.look.applied) !== JSON.stringify(S.look.draft);
   $('adjState').textContent = !S.intent.confirmed ? '確認光暗設定後即可處理影片。'
     : upToDate() ? `${isPhoto() ? '照片' : '影片'}已使用目前的調整：按「${$('exportBtn').textContent}」直接下載。`
-    : `按「${$('exportBtn').textContent}」會先匹配顏色和效果，完成後${needsTapToSave() ? '按「下載」儲存' : '自動下載'}。`;
+    : `按「${$('exportBtn').textContent}」會先匹配顏色和效果，完成後${needsTapToSave() ? '按「下載」儲存' : '自動下載'}。${depthHint(S.look.draft)}`;
   $('adjApply').disabled = !S.intent.confirmed || S.phase === 'processing';
   $('exportBtn').disabled = $('adjApply').disabled;
   $('tabResult').disabled = $('tabWipe').disabled = $('adjApply').disabled; // (no result yet: asks to match first)
@@ -992,12 +998,31 @@ const LM = { busy: false, refDepth: null, user: null, timer: null, suggestedFor:
  * mask (an export took ~40 % longer here), and a picture that changed by itself seconds after it appeared raced with
  * exporting. Once per reference and representative frame; not after the user switched it by hand.
  */
-function scheduleLmAuto() {
+// The background suggestions (分層 / 同類別匹配) need the AI depth model. They wait until the matching's visible work is
+// done (the full preview and the candidate pictures: they slowed it down, competing for the processor), and where the
+// model runs on the processor only (iPhone / iPad: one thread, several seconds) they are not run unless the model is
+// already loaded — the user can still switch either on by hand.
+const suggestKey = () => `${S.ref.id}|${S.video.id}|${S.rep && S.rep.t}`;
+function suggestReady(started) {
+  const shown = S.preview && !S.preview.draft && S.candDone === suggestKey();
+  return shown || Date.now() - started > 30000; // (never wait for ever: candidates not rendered)
+}
+function suggestSkipped(el) {
+  if (!depthOnProcessor() || depthLoaded()) return false;
+  const note = '（這部裝置的 AI 深度只能用處理器計算、較慢，所以不會自動檢查是否需要；需要時可以直接勾選。）';
+  if (!$(el).textContent.includes(note)) $(el).textContent += note;
+  return true;
+}
+function scheduleLmAuto(started = Date.now()) {
   clearTimeout(LM.timer);
   if (LM.user !== null || !S.rep || !(S.ref.status === 'ready' && S.ref.imageData) || (S.look.draft.layerMatch && S.look.draft.layerMatch.on)) return;
-  const key = `${S.ref.id}|${S.video.id}|${S.rep.t}`;
+  const key = suggestKey();
   if (LM.suggestedFor === key) return;
-  LM.timer = setTimeout(() => { if (!LM.busy) { LM.suggestedFor = key; fitLm({ auto: true }); } }, 400);
+  LM.timer = setTimeout(() => {
+    if (!suggestReady(started)) { scheduleLmAuto(started); return; }
+    if (suggestSkipped('lmInfo')) { LM.suggestedFor = key; log('layers-suggest-skipped', { why: 'processor' }); return; }
+    if (!LM.busy) { LM.suggestedFor = key; fitLm({ auto: true }); }
+  }, 400);
 }
 const lmWorth = (fit) => ['near', 'far'].some((k) => { const f = fit && fit[k]; if (!f) return false; const vivid = f.cs ? f.cr[3] / Math.max(f.cs[3], 1e-4) : 1; return Math.abs(f.dL) >= 0.04 || f.k <= 0.8 || f.k >= 1.25 || vivid <= 0.8; });
 function syncLm() {
@@ -1044,12 +1069,16 @@ const CM_NAMES = { sky: '天空', plants: '植物', rest: '建築地面' };
 // in common it is close to the whole-picture grade (it was suggested for 10 of 11 test pairs that way)
 const cmWorth = (fit) => ['sky', 'plants'].some((k) => { const f = fit && fit[k]; if (!f) return false; const vivid = f.cs ? f.cr[3] / Math.max(f.cs[3], 1e-4) : 1; return Math.abs(f.dL) >= 0.04 || f.k <= 0.8 || f.k >= 1.25 || vivid <= 0.8 || Math.hypot(f.da, f.db) >= 0.012; });
 const cmText = (r) => ['sky', 'plants', 'rest'].map((k) => `${CM_NAMES[k]}：${r.fit[k] ? fmtAdj(r.fit[k]) + `${Math.hypot(r.fit[k].da, r.fit[k].db) >= 0.006 ? '、色調移向參考' : ''}` : (r.shares.src[k] < 0.04 ? '影片沒有' : '參考圖沒有') + '，不調整'}`).join('；');
-function scheduleCmAuto() {
+function scheduleCmAuto(started = Date.now()) {
   clearTimeout(CM.timer);
   if (CM.user !== null || !S.rep || !(S.ref.status === 'ready' && S.ref.imageData) || (S.look.draft.classMatch && S.look.draft.classMatch.on)) return;
-  const key = `${S.ref.id}|${S.video.id}|${S.rep.t}`;
+  const key = suggestKey();
   if (CM.suggestedFor === key) return;
-  CM.timer = setTimeout(() => { if (!CM.busy && !LM.busy) { CM.suggestedFor = key; fitCm({ auto: true }); } else { CM.suggestedFor = ''; scheduleCmAuto(); } }, 900);
+  CM.timer = setTimeout(() => {
+    if (!suggestReady(started)) { scheduleCmAuto(started); return; }
+    if (suggestSkipped('cmInfo')) { CM.suggestedFor = key; log('classes-suggest-skipped', { why: 'processor' }); return; }
+    if (!CM.busy && !LM.busy) { CM.suggestedFor = key; fitCm({ auto: true }); } else { CM.suggestedFor = ''; scheduleCmAuto(started); }
+  }, 900);
 }
 function syncCm() {
   const c = S.look.draft.classMatch, on = !!(c && c.on);
@@ -1727,7 +1756,7 @@ async function renderCands() {
   const lr = S.grade.cands[0] && S.grade.cands[0].localReport;
   const localTxt = lr ? `局部調色：${['skin', 'background'].filter((k) => lr[k] && lr[k].adj && (lr[k].adj.a || lr[k].adj.b)).map((k) => LOCAL_NAMES[k]).join('、') || '參考圖或影片缺少可對應的區域，未使用'}（頭髮、衣服保持整體調色）。` : '';
   $('candInfo').textContent = `${restore}${localTxt}原片與參考圖色差 ΔE ${ref0.toFixed(1)}。ΔE 越小越接近參考圖的明暗色調（「照搬」三個會追求接近參考圖的顏色分佈，ΔE 通常較小，但結果會隨畫面內容變化）；結構保留 1.000 代表構圖與紋理完全未變；膚色變化是和原片相比（LOG 還原和局部調色會刻意把膚色調向參考圖的自然膚色，所以不是越小越好，請以畫面判斷）。`;
-  S.candResults = results;
+  S.candResults = results; S.candDone = suggestKey();
   log('candidates-rendered', { results, original: ref0 });
 }
 
@@ -2236,6 +2265,11 @@ async function startProcessing() {
   // 對焦（景深）: the AI depth of every frame
   const needsDepth = needsDepthFor(S.look.applied);
   if (needsDepth) { $('progressText').textContent = '載入 AI 深度模型（約 27 MB，只在第一次）…'; try { await initDepth(); } catch { /* (the processing below reports it as its error) */ } }
+  // a phone (the depth model on the processor only, the slowest step): for 分層／同類別匹配 alone the depth of every 3rd
+  // frame (soft regions of the background; the person taken out of it, pipeline.js); with 對焦 every frame
+  const di = depthInfo(), slowDepth = depthOnProcessor() || !!(di && di.ep === 'cpu'); // (a computer whose graphics card the model could not use: as slow)
+  const dp = dofPlan(S.look.applied.dof), depthEvery = window.__depthEvery || (needsDepth && slowDepth && !(dp && dp.mode !== 'tilt') ? 3 : 1); // (__depthEvery: tests; 對焦 needs the person's own depth in every frame)
+  if (needsDepth) log('depth-every', { n: depthEvery });
   if (token !== S.job.token) return;
   if (isPhoto()) { $('progressBar').style.width = '0'; $('progressText').textContent = '處理照片中…'; return processPhotoJob(intent, token, needsSeg, needsDepth); }
   // while processing, only the hidden work video decodes the source: the upload preview and the comparison
@@ -2246,7 +2280,7 @@ async function startProcessing() {
   await primeVideo(S.video.meta.video); // (iPad: the decoder back to the work video, should another video have taken it)
   try {
     const res = await processVideo({
-      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH, needsDepth, depthFn: depthOf,
+      engine, meta: S.video.meta, intentJson: serializeIntent(intent), needsSeg, segmentFn: segmentRestored, segPrepare: (c) => restoreCanvas(c), maskH: intent.maskH, needsDepth, depthFn: depthOf, depthEvery,
       look: S.look.applied, isCancelled: () => token !== S.job.token, keepFrames: window.__keepFrames || [], stream: !window.__noStream, segWorker: !window.__noSegWorker,
       onStage: (text) => { if (token === S.job.token) { $('progressText').textContent = text; log('processing-stage', { text }); } },
       onProgress: ({ done, total, elapsed }) => {
@@ -2575,8 +2609,9 @@ function syncKindLabels() { // wording and controls that only make sense for one
 function dofText(timing, frames = 0) {
   const i = depthInfo();
   if (!needsDepthFor(S.look.applied || {}) || !i) return '';
-  const per = timing && timing.depth && frames ? `，每格約 ${Math.round(timing.depth / frames)} ms` : '';
-  return `AI 深度計算：${i.ep === 'gpu' ? '顯示卡' : `處理器${i.why ? `（${i.why}）` : ''}`}${per}。`;
+  const nd = (timing && timing.depthFrames) || frames, per = timing && timing.depth && nd ? `，${timing.depthEvery > 1 ? '每次' : '每格'}約 ${Math.round(timing.depth / nd)} ms` : '';
+  const every = timing && timing.depthEvery > 1 ? `，每 ${timing.depthEvery} 格計算一次（這部裝置只能用處理器，較慢；中間的格沿用上一次的深度）` : '';
+  return `AI 深度計算：${i.ep === 'gpu' ? '顯示卡' : `處理器${i.why ? `（${i.why}）` : ''}`}${per}${every}。`;
 }
 // 每格時間: where the export's time goes, per frame (ms, averaged). The AI steps run alongside the reading of the next
 // frames, so the parts add up to more than the real time per frame; the largest part is what to make faster.

@@ -15,7 +15,7 @@
 // purple sign towards the cast; the greys hardly move) and colour strength at each brightness (a hazy distance has
 // nearly grey brights: ×0.3…1.2 per band). Layers smaller than
 // 5 % of either picture are left alone. fit = raw (strength 1); the strength is applied when rendering.
-import { srgbToOklab, oklabToSrgb } from './color.js';
+import { srgbToOklab, oklabToSrgb, S2L, l2sFast } from './color.js';
 
 export const LAYERS = ['near', 'far'];
 const LB = [0.3, 0.45, 0.6, 0.75]; // lightness bands (edges) for colour strength by brightness
@@ -47,6 +47,34 @@ export function layerSampler(dn, seg) {
     out[0] = p; out[1] = (1 - p) * near; out[2] = (1 - p) * (1 - near);
     return out;
   };
+}
+
+/**
+ * The depth of the background only: where the AI person mask (person grid mw wide) covers the depth grid, the depth is
+ * filled in from the surrounding background (layer by layer inwards). For a depth reused over a few frames (a phone):
+ * a person who moved left their old outline marked "near" in the background, and 分層匹配 darkened it — a ghost of the
+ * head. 分層／同類別匹配 leave people out anyway, so they only need the background's depth. depth {data, w, h} → a new one.
+ */
+export function backgroundDepth(depth, person, mw) {
+  const { w, h } = depth, mh = person.length / mw, d = Float32Array.from(depth.data), hole = new Uint8Array(w * h);
+  let left = 0;
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (gridAt(person, mw, mh, (x + 0.5) / w, (y + 0.5) / h) > 0.2) { hole[y * w + x] = 1; left++; }
+  if (!left || left === w * h) return { data: d, w, h };
+  for (let i = 0, grow = Array.from(hole); i < w * h; i++) if (!hole[i] && ((i % w > 0 && grow[i - 1]) || (i % w < w - 1 && grow[i + 1]) || (i >= w && grow[i - w]) || (i < w * (h - 1) && grow[i + w]))) { hole[i] = 1; left++; } // (one cell more: the depth model's soft edge)
+  let todo = []; for (let i = 0; i < w * h; i++) if (hole[i]) todo.push(i);
+  while (todo.length) {
+    const fill = [], rest = [];
+    for (const i of todo) {
+      const x = i % w; let s = 0, n = 0;
+      if (x > 0 && !hole[i - 1]) { s += d[i - 1]; n++; } if (x < w - 1 && !hole[i + 1]) { s += d[i + 1]; n++; }
+      if (i >= w && !hole[i - w]) { s += d[i - w]; n++; } if (i < w * (h - 1) && !hole[i + w]) { s += d[i + w]; n++; }
+      if (n) fill.push(i, s / n); else rest.push(i);
+    }
+    if (!fill.length) break;
+    for (let k = 0; k < fill.length; k += 2) { d[fill[k]] = fill[k + 1]; hole[fill[k]] = 0; }
+    todo = rest;
+  }
+  return { data: d, w, h };
 }
 
 /** per layer: share, mean L, spread of L, tint (a, b of the less colourful half), mean chroma. rgba w×h. */
@@ -141,7 +169,78 @@ export function applyLayers(img, w, h, dn, seg, fit, amt = 1, bgSat = 0) {
  * the class's cast, rising from its 75th) are content — a green sign, a red bicycle — and keep their colour strength;
  * only the greyer bulk is matched, and no colour loses more than 30 % of its strength. Without it a pale sea-side reference's 「建築地面」 took a green forest sign to a third of its colour.
  */
+// The change a layer makes to a colour (at full weight) depends on the colour only, and the layers' changes add up
+// (each is weighted by where the pixel is). So each layer's change is worked out once on a 33³ grid of colours and read
+// per pixel by trilinear interpolation, instead of the curve maths per pixel per layer: 640 → ~115 ms a 1280×720 frame
+// here (this ran on every exported frame; a phone took much longer). Output vs the per-pixel version: see layermatch.test.js.
+const DN = 33, IX = Float32Array.from({ length: 256 }, (_, v) => (v * (DN - 1)) / 255);
+const deltaCache = new WeakMap(); // fit layer object → {plain, vivid} tables
+function layerDelta(f, lab, keepVivid, out) { // what the per-pixel version added at t = 1
+  out[0] = (f.m + (lab[0] - f.m) * f.k + f.dL) - lab[0];
+  const ea = lab[1] - f.ma, eb = lab[2] - f.mb, D = Math.hypot(ea, eb);
+  let g = chromaGain(f, D), g2 = bandGain(f, lab[0]); // (towards / away from the layer's cast; colour strength at this brightness)
+  if (keepVivid && f.cs) { // (from the class's most colourful quarter up: kept; and never below ×0.7 — a big sign is a quarter of its class)
+    const v = smooth(f.cs[2], Math.max(f.cs[2] + 0.01, f.cs[3] * 1.4), D); g += (1 - g) * v; g2 += (1 - g2) * v;
+    g = Math.max(0.7, g); g2 = Math.max(0.7, g2);
+  }
+  const na = lab[1] + ea * (g - 1), nb = lab[2] + eb * (g - 1);
+  out[1] = f.da + na * g2 - lab[1]; out[2] = f.db + nb * g2 - lab[2];
+  return out;
+}
+function deltaTable(f, keepVivid) {
+  let c = deltaCache.get(f); if (!c) deltaCache.set(f, c = {});
+  const k = keepVivid ? 'vivid' : 'plain';
+  if (c[k]) return c[k];
+  const T = new Float32Array(DN * DN * DN * 3), lab = [0, 0, 0], d = [0, 0, 0];
+  for (let r = 0; r < DN; r++) for (let g = 0; g < DN; g++) for (let b = 0; b < DN; b++) {
+    srgbToOklab(r / (DN - 1), g / (DN - 1), b / (DN - 1), lab); layerDelta(f, lab, keepVivid, d);
+    const q = 3 * ((r * DN + g) * DN + b); T[q] = d[0]; T[q + 1] = d[1]; T[q + 2] = d[2];
+  }
+  return (c[k] = T);
+}
+function addDelta(T, x, y, z, t, acc) { // trilinear in the table at grid coordinates (x, y, z) = (r, g, b), × t, into acc
+  const x0 = Math.min(DN - 2, x | 0), y0 = Math.min(DN - 2, y | 0), z0 = Math.min(DN - 2, z | 0), fx = x - x0, fy = y - y0, fz = z - z0;
+  const o = 3 * ((x0 * DN + y0) * DN + z0), sz = 3, sy = 3 * DN, sx = 3 * DN * DN;
+  const w000 = (1 - fx) * (1 - fy) * (1 - fz) * t, w001 = (1 - fx) * (1 - fy) * fz * t, w010 = (1 - fx) * fy * (1 - fz) * t, w011 = (1 - fx) * fy * fz * t;
+  const w100 = fx * (1 - fy) * (1 - fz) * t, w101 = fx * (1 - fy) * fz * t, w110 = fx * fy * (1 - fz) * t, w111 = fx * fy * fz * t;
+  for (let c = 0; c < 3; c++) {
+    const q = o + c;
+    acc[c] += w000 * T[q] + w001 * T[q + sz] + w010 * T[q + sy] + w011 * T[q + sy + sz] + w100 * T[q + sx] + w101 * T[q + sx + sz] + w110 * T[q + sx + sy] + w111 * T[q + sx + sy + sz];
+  }
+}
+const _lin = [0, 0, 0];
+function toSrgb(L, a, b, out) { // oklabToSrgb with the table-based gamma (the same gamut handling: less colour, same lightness)
+  const lin = (aa, bb) => {
+    const l1 = L + 0.3963377774 * aa + 0.2158037573 * bb, m1 = L - 0.1055613458 * aa - 0.0638541728 * bb, s1 = L - 0.0894841775 * aa - 1.2914855480 * bb, l = l1 * l1 * l1, m = m1 * m1 * m1, s = s1 * s1 * s1; // (x·x·x: ** is a general power, slow)
+    _lin[0] = 4.0767416621 * l - 3.3077115913 * m + 0.2309699292 * s; _lin[1] = -1.2684380046 * l + 2.6097574011 * m - 0.3413193965 * s; _lin[2] = -0.0041960863 * l - 0.7034186147 * m + 1.7076147010 * s;
+    return _lin[0] >= -1e-4 && _lin[0] <= 1.0001 && _lin[1] >= -1e-4 && _lin[1] <= 1.0001 && _lin[2] >= -1e-4 && _lin[2] <= 1.0001;
+  };
+  if (!lin(a, b)) { let lo = 0, hi = 1; for (let k = 0; k < 12; k++) { const mid = (lo + hi) / 2; if (lin(a * mid, b * mid)) lo = mid; else hi = mid; } lin(a * lo, b * lo); }
+  out[0] = l2sFast(_lin[0]); out[1] = l2sFast(_lin[1]); out[2] = l2sFast(_lin[2]);
+  return out;
+}
 export function applyBy(img, w, h, at, keys, fit, amt = 1, bgSat = 0, { keepVivid = false } = {}) {
+  const A = keys.map((k) => fit && fit[k]), extra = 1 + Math.max(-1, Math.min(0.5, bgSat || 0)); // 背景飽和度: by hand, on top of the fit
+  if (!((amt > 0 && A.some(Boolean)) || extra !== 1)) return img;
+  const T = A.map((f) => (f && amt > 0 ? deltaTable(f, keepVivid) : null));
+  const wts = new Array(keys.length + 1).fill(0), rgb = [0, 0, 0], acc = [0, 0, 0];
+  for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+    at((x + 0.5) / w, (y + 0.5) / h, wts);
+    if (wts[0] > 0.995) continue; // (a person)
+    const p = 4 * (y * w + x), R = img[p], G = img[p + 1], B = img[p + 2], lr = S2L[R], lg = S2L[G], lb = S2L[B];
+    const l_ = Math.cbrt(0.4122214708 * lr + 0.5363325363 * lg + 0.0514459929 * lb), m_ = Math.cbrt(0.2119034982 * lr + 0.6806995451 * lg + 0.1073969566 * lb), s_ = Math.cbrt(0.0883024619 * lr + 0.2817188376 * lg + 0.6299787005 * lb);
+    acc[0] = 0.2104542553 * l_ + 0.7936177850 * m_ - 0.0040720468 * s_; acc[1] = 1.9779984951 * l_ - 2.4285922050 * m_ + 0.4505937099 * s_; acc[2] = 0.0259040371 * l_ + 0.7827717662 * m_ - 0.8086757660 * s_;
+    for (let i = 0; i < T.length; i++) { const t = wts[i + 1] * amt; if (T[i] && t > 0) addDelta(T[i], IX[R], IX[G], IX[B], t, acc); }
+    let L = acc[0], a = acc[1], b = acc[2];
+    if (extra !== 1) { let bg = 0; for (let i = 1; i < wts.length; i++) bg += wts[i]; const k = 1 + (extra - 1) * Math.min(1, bg); a *= k; b *= k; } // (last: the fit pulls colours towards the layer's cast, it must not put back what was taken out by hand)
+    L = Math.min(1, Math.max(0, L));
+    toSrgb(L, a, b, rgb); // (out of the screen's colours: less colour, same lightness — clipping each channel changed the lightness)
+    img[p] = rgb[0] * 255; img[p + 1] = rgb[1] * 255; img[p + 2] = rgb[2] * 255;
+  }
+  return img;
+}
+/** the per-pixel version (before the tables), kept for the tests: the same result within interpolation error */
+export function applyByExact(img, w, h, at, keys, fit, amt = 1, bgSat = 0, { keepVivid = false } = {}) {
   const A = keys.map((k) => fit && fit[k]), extra = 1 + Math.max(-1, Math.min(0.5, bgSat || 0)); // 背景飽和度: by hand, on top of the fit
   if (!((amt > 0 && A.some(Boolean)) || extra !== 1)) return img;
   const wts = new Array(keys.length + 1).fill(0), lab = [0, 0, 0], rgb = [0, 0, 0];

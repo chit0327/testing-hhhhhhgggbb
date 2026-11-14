@@ -1,6 +1,7 @@
 // Browser-side video plumbing: probing, exact sequential frame grabbing, the worker client and the
 // full processing job (decode -> segment -> worker render -> WebCodecs encode -> MP4).
 import { measureNorm } from './engine/autonorm.js';
+import { backgroundDepth } from './engine/layermatch.js';
 import { Muxer, ArrayBufferTarget } from '../vendor/mp4-muxer.mjs';
 import { MASK_W } from './engine/intent.js';
 import { extractAudio, muxAudio } from './audio.js';
@@ -354,7 +355,7 @@ async function segWorkers() {
 const IN_FLIGHT = 4, IN_FLIGHT_LOW = 2;
 // a stage that stops answering ends the job with a message instead of 正在處理 forever
 const withTimeout = (p, ms, what) => { let timer; return Promise.race([p, new Promise((_, rej) => { timer = setTimeout(() => rej(new Error(`${what}，處理已停止。請重新整理頁面再試。`)), ms); })]).finally(() => clearTimeout(timer)); };
-export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, needsDepth = false, depthFn = null, segPrepare = null, maskH, maxSide = 1280, onProgress, onStage = () => {}, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
+export async function processVideo({ engine, meta, intentJson, look, needsSeg, segmentFn, needsDepth = false, depthFn = null, depthEvery = 1, segPrepare = null, maskH, maxSide = 1280, onProgress, onStage = () => {}, isCancelled, keepFrames = [], stream: useStream = true, segWorker: useSegWorker = true }) {
   const kept = {}, blurTrack = { frames: 0, lost: 0, chained: 0 };
   // where the time goes (ms, summed over frames): grab = decode + draw + read the frame (main thread), seg = AI
   // segmentation (in its workers, overlapped), render = grading in the render worker (its own split in .worker),
@@ -421,6 +422,7 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
     done++;
     onProgress && onProgress({ done, total: n, elapsed: (now() - t0) / 1000, preview: job.i % 10 === 0 ? r.imageData : null });
   };
+  let lastDepP = null; timing.depthEvery = depthEvery;
   try {
     for (let i = 0; i < n; i++) {
       if (isCancelled && isCancelled()) throw new Error('已取消');
@@ -458,7 +460,18 @@ export async function processVideo({ engine, meta, intentJson, look, needsSeg, s
         } else { tt = now(); segP = Promise.resolve(segmentFn(segCanvas, MASK_W, maskH)); timing.seg += now() - tt; }
       }
       // 對焦（景深）: this frame's AI depth (read from the canvas now, estimated in the depth worker meanwhile)
-      const depP = needsDepth && depthFn ? depthFn(canvas, w, h).then((d) => { timing.depth += d.ms || 0; return d; }) : Promise.resolve(null);
+      // depthEvery > 1 (a phone: the model on the processor, the slowest step): computed on every n-th frame, the frames
+      // between use the last one (depth changes little in a frame or two; 分層／同類別匹配 use it as soft regions)
+      let depP = Promise.resolve(null);
+      if (needsDepth && depthFn) {
+        if (!lastDepP || i % depthEvery === 0) {
+          const dp = depthFn(canvas, w, h).then((d) => { timing.depth += d.ms || 0; timing.depthFrames = (timing.depthFrames || 0) + 1; return d; });
+          // reused: the background's depth only (the person's outline would stay behind as a "near" ghost when they move)
+          lastDepP = depthEvery > 1 ? Promise.all([dp, segP]).then(([d, seg]) => (seg && seg.person ? { ...d, ...backgroundDepth(d, seg.person, MASK_W) } : d)) : dp;
+          lastDepP.catch(() => {});
+        }
+        depP = lastDepP;
+      }
       // post to the render worker in frame order (after this frame's masks and depth and the previous frame's post)
       const step = posted.then(() => Promise.all([segP, depP])).then(([seg, depth]) => ({ r: engine.render(img, { jobId, index: i, seg, depth, grade: true }, { give: !keepFrames.includes(i) }) }));
       posted = step.then(() => {}, () => {});

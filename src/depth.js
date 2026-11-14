@@ -15,6 +15,12 @@ export function depthSize(w, h) {
 }
 export const depthInfo = () => lastInfo;
 export const depthLoaded = () => !!worker && !!lastInfo;
+/** the model runs on the processor here (Safari / iPhone / iPad, or no WebGPU): slow, one thread — not worth loading
+ *  just for a background suggestion */
+export function depthOnProcessor() {
+  const ua = (globalThis.navigator && navigator.userAgent) || '', webkit = (/AppleWebKit/.test(ua) && !/Chrome|Chromium|Edg\//.test(ua)) || /iPad|iPhone|iPod/.test(ua);
+  return webkit || !(globalThis.navigator && navigator.gpu) || globalThis.__depthGpu === false;
+}
 
 function call(msg, transfer = [], ms = 0, what = '') { // ms: give up after (a worker that died or hangs must not leave the page waiting)
   return new Promise((resolve, reject) => {
