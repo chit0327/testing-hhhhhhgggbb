@@ -259,7 +259,16 @@ button.reset:hover, button.reset:focus-visible { color: var(--acc); border-color
 .panel-tabs button:focus-visible { outline: 2px solid var(--acc); outline-offset: 2px; }
 #adjustCard[data-tab="simple"] > details:not([data-group="simple"]),
 #adjustCard[data-tab="fx"] > details:not([data-group="fx"]),
-#adjustCard[data-tab="pro"] > details:not([data-group="pro"]) { display: none; }
+#adjustCard[data-tab="out"] > details:not([data-group="out"]),
+#adjustCard:not([data-tab="simple"]) > .panel-group { display: none; }
+/* a small heading between groups of categories (專業調色) */
+.panel-group { margin: 16px 4px 6px; font-size: 12px; font-weight: 650; letter-spacing: .06em; color: var(--mut); }
+/* 進階匹配: a suggestion inside (分層／同類別匹配) shows on the closed category */
+.cat-badge { margin: 0 auto 0 8px; padding: 1px 8px; border-radius: 999px; font-size: 12px; font-weight: 600; background: var(--acc); color: #fff; }
+.cat-badge[hidden] { display: none; }
+/* a category inside another (快速微調 inside 基本調整): a lighter box */
+.cat .sub-cat { margin: 14px 0 4px; box-shadow: none; border: 1px solid var(--line); background: transparent; }
+.cat .sub-cat > summary { padding: 9px 12px; font-size: 13.5px; }
 
 /* dark theme: not flat black — a soft gradient behind the page, and the header / panel let it show through */
 .top, .panel, .panel-actions { background: var(--glass, var(--card)); }

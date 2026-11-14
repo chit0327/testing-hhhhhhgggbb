@@ -1111,6 +1111,9 @@ async function fitCm({ auto = false } = {}) {
   } catch (err) { $('cmInfo').textContent = `不能同類別匹配：${err.message}`; if (!auto) S.look.draft.classMatch = null; syncCm(); }
   finally { CM.busy = false; }
 }
+// the suggestions live in 進階匹配, closed by default: a badge on its title says one is waiting
+const advBadge = () => { $('advBadge').hidden = $('lmSuggest').hidden && $('cmSuggest').hidden; };
+for (const id of ['lmSuggest', 'cmSuggest']) new MutationObserver(advBadge).observe($(id), { attributes: true, attributeFilter: ['hidden'] });
 $('cmSuggest').onclick = () => { CM.user = true; $('cmSuggest').hidden = true; $('cmOn').checked = true; S.look.auto = false; log('classes-suggestion-taken'); fitCm(); };
 $('cmOn').addEventListener('change', (e) => {
   $('cmSuggest').hidden = true; S.look.auto = false; CM.user = e.target.checked;
@@ -1696,12 +1699,12 @@ async function renderPicks() {
   PICK.shownFor = key; PICK.done = run; markPicksStale();
   log('pick-rendered', { round: PICK.round, step: PICK.step });
 }
-$('catPick').addEventListener('toggle', () => renderPicks());
+$('catPick').addEventListener('toggle', () => { if ($('catPick').open) $('catTone').open = true; renderPicks(); }); // (inside 基本調整: opening it opens that too)
 $('pickRefresh').onclick = () => renderPicks();
 $('pickRestart').onclick = () => { PICK.step = 1; PICK.round = 1; $('pickRound').textContent = '第 1 輪'; renderPicks(); };
 function syncRefMode() { // reference-only controls are hidden without a reference; the moods open instead
   const none = moodOnly();
-  $('catMatch').hidden = none;
+  $('catMatch').hidden = none; $('catAdv').hidden = none;
   $('catMood').open = none || $('catMood').open;
   $('moodLead').textContent = none ? '沒有參考圖片時，可以直接選一種氛圍；之後仍可用下面的滑桿微調。' : '不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。';
 }
@@ -1810,7 +1813,7 @@ function buildPro() {
     root.appendChild(row);
   });
   root = $('proSat');
-  h4('專業調色');
+  h4('整體飽和度（專業調色層）');
   const row = document.createElement('div'); row.className = 'hue-row';
   row.appendChild(document.createElement('span'));
   proSlider(row, { min: -100, max: 100, value: 0, label: '整體飽和度', get: (p) => p.sat * 100, set: (p, v) => { p.sat = v / 100; } });

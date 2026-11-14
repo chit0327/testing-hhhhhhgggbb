@@ -159,28 +159,11 @@
 
       <div id="adjustCard" data-tab="simple" hidden>
         <div class="panel-tabs" role="tablist" aria-label="調色分類">
-          <button type="button" role="tab" data-tab="simple" aria-selected="true">簡易調色</button>
+          <button type="button" role="tab" data-tab="simple" aria-selected="true">調色</button>
           <button type="button" role="tab" data-tab="fx" aria-selected="false">效果</button>
-          <button type="button" role="tab" data-tab="pro" aria-selected="false">專業調色</button>
+          <button type="button" role="tab" data-tab="out" aria-selected="false">輸出</button>
         </div>
-        <details class="cat" id="catPreset" data-group="simple">
-          <summary>設定檔（.preset）</summary>
-          <div class="cat-body">
-            <label class="preset-name"><span>名稱</span><input type="text" id="presetName" maxlength="40" placeholder="例如：日系淡藍"></label>
-            <div class="row"><button type="button" id="presetSave" class="primary">儲存設定檔</button><button type="button" id="presetLoad">載入設定檔</button><input type="file" id="presetInput" class="sr-only"></div>
-            <p class="info" id="presetInfo">把現在的色調和效果存成一個 .preset 檔；下次載入就能把同一個色調和效果套用到其他影片或照片，不需要原本的參考圖。對焦點、背景模糊選區和分層／同類別匹配只適用於原本的影片，不會保存。</p>
-          </div>
-        </details>
-        <details class="cat" id="catMood" data-group="simple">
-          <summary>氛圍色調</summary>
-          <div class="cat-body">
-            <p class="info" id="moodLead">不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。</p>
-            <label class="check"><input type="checkbox" id="moodAutoFix" checked> 先自動校正明暗和白平衡</label>
-            <div id="moodBox"></div>
-            <p class="info" id="moodInfo">每張小圖是你的畫面套用該氛圍的效果；下面的色條是常見顏色（膚色、天空、樹葉、紅、白、灰、暗部）套用前（上方細條）和套用後的顏色。已選的氛圍再按一下，就會取消，回到套用前的樣子。「先自動校正」會先把太暗的畫面提亮、去掉部分偏色（例如室內黃燈），再套氛圍，令同一個氛圍在不同的片上效果較一致；只校正一部分，黃昏的暖光等原有氣氛會保留。批量照片會逐張校正。</p>
-          </div>
-        </details>
-
+        <!-- 調色 -->
         <details class="cat" id="catMatch" data-group="simple" open>
           <summary>參考匹配</summary>
           <div class="cat-body">
@@ -194,53 +177,53 @@
             <h3>跟隨參考圖程度</h3>
             <label class="slider"><span>跟隨參考圖</span><input type="range" id="adj-follow" min="0" max="100" value="0"><output id="adj-follow-v">0%</output></label>
             <p class="info">0% 是上面選的候選本身（「風格」為了穩定，對不確定的明暗和冷暖只套用一部分）。往右拉，明暗和冷暖會逐步完整跟隨參考圖：例如參考圖較暗、亮部偏暖金色、暗部偏青，結果也會跟着變。參考圖是強烈風格、而你想更像它時使用；太高時，參考圖本身場景的光線（例如夕陽）也會被當成調色套上。</p>
-            <h3>漸層映射</h3>
-            <label class="slider"><span>漸層映射</span><input type="range" id="adj-gradMap" min="0" max="100" value="0"><output id="adj-gradMap-v">0%</output></label>
-            <canvas id="gradStrip" width="320" height="14" aria-label="參考圖的漸層（暗 → 亮）"></canvas>
-            <p class="info">像畫畫先定黑白關係再上色：保留畫面每個位置的明暗，把顏色往參考圖在同一亮度的顏色拉近（上面的色帶是參考圖由暗到亮的顏色）。能讓整個畫面的顏色更統一；太高時，同樣亮度的物件會變成同一種顏色。皮膚有膚色保護時不受影響。</p>
-            <h3>依深度分層匹配</h3>
-            <label class="check"><input type="checkbox" id="lmOn"> 背景按遠近分層匹配參考圖（遠景、近景）</label>
-            <label class="slider sub"><span>　強度</span><input type="range" id="lmAmt" min="0" max="100" value="80" disabled><output id="lmAmt-v">80%</output></label>
-            <label class="slider sub"><span>　背景飽和度</span><input type="range" id="lmSat" min="-100" max="50" value="0" disabled><output id="lmSat-v">0</output></label>
-            <button type="button" id="lmSuggest" class="primary" hidden>建議開啟：按一下套用分層匹配</button>
-            <p class="info" id="lmInfo">整體調色是用整張參考圖的顏色；這裏用 AI 深度把背景分成近景和遠景，各自往參考圖同一層的亮度、對比、色調和濃淡靠近（例如參考圖遠處較亮、較朦朧）。人物不受影響（保持整體調色和膚色保護）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
-            <h3>同類別匹配</h3>
-            <label class="check"><input type="checkbox" id="cmOn"> 天空、植物、建築地面分別匹配參考圖</label>
-            <label class="slider sub"><span>　強度</span><input type="range" id="cmAmt" min="0" max="150" value="80" disabled><output id="cmAmt-v">80%</output></label>
-            <button type="button" id="cmSuggest" class="primary" hidden>建議開啟：按一下套用同類別匹配</button>
-            <p class="info" id="cmInfo">把背景分成天空、植物和建築地面（牆、路面、物件），各自往參考圖裏同一類的亮度、對比、色調和濃淡靠近：影片的天空對照參考圖的天空，樹對照樹，牆對照牆，而不是全部用整張參考圖的平均。天空用 AI 深度判斷（最遠處），第一次使用會下載 AI 深度模型（約 27 MB）；人物不受影響。</p>
-            <h3>點選對應顏色</h3>
-            <canvas id="cpRef" class="cp-ref" width="320" height="180" aria-label="參考圖：點想要的顏色"></canvas>
-            <div class="row"><button type="button" id="cpAdd" class="primary">新增一對顏色</button><button type="button" id="cpClear" disabled>全部清除</button></div>
-            <div class="cp-list" id="cpList"></div>
-            <label class="slider sub"><span>　影響範圍</span><input type="range" id="cpRange" min="0" max="100" value="50" disabled><output id="cpRange-v">50</output></label>
-            <label class="slider sub"><span>　強度</span><input type="range" id="cpAmt" min="0" max="100" value="100" disabled><output id="cpAmt-v">100%</output></label>
-            <p class="info" id="cpInfo">自己指定哪裏要像參考圖：按「新增一對顏色」，先在上面的參考圖點想要的顏色（例如天空），再在預覽畫面點影片中對應的地方，影片那個顏色就會變成參考圖的顏色，相近的顏色一起柔和地跟着變。可以加最多 6 對。</p>
             <div class="row">
               <button type="button" id="adjSuggest">恢復自動匹配</button>
               <button type="button" id="claudeGrade" class="primary" hidden>Claude 看圖自動調色</button>
               <button type="button" id="claudeStop" hidden>停止</button>
             </div>
-            <p class="info" id="suggestInfo">素材載入後會自動依參考圖設定下面的控制項。</p>
             <p class="info" id="claudeInfo"></p>
             <div class="row" id="tweakRow" hidden>
               <input type="text" id="tweakText" class="grow" placeholder="用文字微調，例如：暖一點、膚色更自然、暗部不要太黑">
               <button type="button" id="tweakBtn">照文字微調</button>
             </div>
-            <h3>參考色彩</h3>
-            <label class="slider"><span>接近參考程度</span><input type="range" id="adj-match" min="0" max="100" value="50"><output id="adj-match-v">50%</output></label>
-            <label class="slider"><span>參考色彩強度</span><input type="range" id="adj-strength" min="0" max="100" value="100"><output id="adj-strength-v">100%</output></label>
-            <label class="check"><input type="checkbox" id="adj-protect" checked> 保護材質顏色（避免草地、皮膚等被染成別的顏色）</label>
           </div>
         </details>
 
-        <details class="cat" id="catPick" data-group="simple">
-          <summary>快速微調（四選一）</summary>
+        <details class="cat" id="catMood" data-group="simple">
+          <summary>氛圍色調</summary>
           <div class="cat-body">
-            <p class="info">不用自己調滑桿：選四張裏最喜歡的一張，會在它的基礎上再給你四個更細微的選擇。兩三輪就能調到喜歡的感覺；之後仍可用滑桿微調。</p>
-            <div class="pick-grid" id="pickGrid"></div>
-            <button type="button" id="pickRefresh" class="pick-refresh" hidden>滑桿已改動：按此按目前設定更新四個選擇</button>
-            <div class="row"><span id="pickRound" class="pick-round">第 1 輪</span><button type="button" id="pickRestart">重新開始（大步一點）</button></div>
+            <p class="info" id="moodLead">不想跟參考圖？也可以直接選一種氛圍（會取代參考圖的調色）。</p>
+            <label class="check"><input type="checkbox" id="moodAutoFix" checked> 先自動校正明暗和白平衡</label>
+            <div id="moodBox"></div>
+            <p class="info" id="moodInfo">每張小圖是你的畫面套用該氛圍的效果；下面的色條是常見顏色（膚色、天空、樹葉、紅、白、灰、暗部）套用前（上方細條）和套用後的顏色。已選的氛圍再按一下，就會取消，回到套用前的樣子。「先自動校正」會先把太暗的畫面提亮、去掉部分偏色（例如室內黃燈），再套氛圍，令同一個氛圍在不同的片上效果較一致；只校正一部分，黃昏的暖光等原有氣氛會保留。批量照片會逐張校正。</p>
+          </div>
+        </details>
+
+        <details class="cat" id="catTone" data-group="simple">
+          <summary>基本調整（曝光、對比、色溫、飽和度）</summary>
+          <div class="cat-body">
+            <h3>曝光與亮度</h3>
+            <label class="slider"><span>曝光</span><input type="range" id="adj-exposure" min="-200" max="200" value="0"><output id="adj-exposure-v">0</output></label>
+            <label class="slider"><span>對比</span><input type="range" id="adj-contrast" min="-100" max="100" value="0"><output id="adj-contrast-v">0</output></label>
+            <label class="slider"><span>高光</span><input type="range" id="adj-highlights" min="-100" max="100" value="0"><output id="adj-highlights-v">0</output></label>
+            <label class="slider"><span>陰影</span><input type="range" id="adj-shadows" min="-100" max="100" value="0"><output id="adj-shadows-v">0</output></label>
+            <label class="slider"><span>黑位提亮</span><input type="range" id="adj-black" min="0" max="40" value="0"><output id="adj-black-v">0</output></label>
+            <label class="slider"><span>白位</span><input type="range" id="adj-white" min="70" max="100" value="100"><output id="adj-white-v">100</output></label>
+            <h3>色溫、色調與飽和度</h3>
+            <label class="slider"><span>飽和度</span><input type="range" id="adj-saturation" min="-100" max="100" value="0"><output id="adj-saturation-v">0</output></label>
+            <label class="slider"><span>色溫</span><input type="range" id="adj-temperature" min="-100" max="100" value="0"><output id="adj-temperature-v">0</output></label>
+            <label class="slider"><span>色調</span><input type="range" id="adj-tint" min="-100" max="100" value="0"><output id="adj-tint-v">0</output></label>
+            <p class="info">按每一行右邊的 ↺ 可以把該項還原（在滑桿上按兩下也可以）。</p>
+            <details class="cat sub-cat" id="catPick">
+              <summary>快速微調（四選一）</summary>
+              <div class="cat-body">
+              <p class="info">不用自己調滑桿：選四張裏最喜歡的一張，會在它的基礎上再給你四個更細微的選擇。兩三輪就能調到喜歡的感覺；之後仍可用滑桿微調。</p>
+              <div class="pick-grid" id="pickGrid"></div>
+              <button type="button" id="pickRefresh" class="pick-refresh" hidden>滑桿已改動：按此按目前設定更新四個選擇</button>
+              <div class="row"><span id="pickRound" class="pick-round">第 1 輪</span><button type="button" id="pickRestart">重新開始（大步一點）</button></div>
+              </div>
+            </details>
           </div>
         </details>
 
@@ -257,30 +240,42 @@
           </div>
         </details>
 
-        <details class="cat" id="catTone" data-group="pro">
-          <summary>曝光與亮度</summary>
+        <details class="cat" id="catAdv" data-group="simple">
+          <summary>進階匹配<span class="cat-badge" id="advBadge" hidden>有建議</span></summary>
           <div class="cat-body">
-            <label class="slider"><span>曝光</span><input type="range" id="adj-exposure" min="-200" max="200" value="0"><output id="adj-exposure-v">0</output></label>
-            <label class="slider"><span>對比</span><input type="range" id="adj-contrast" min="-100" max="100" value="0"><output id="adj-contrast-v">0</output></label>
-            <label class="slider"><span>高光</span><input type="range" id="adj-highlights" min="-100" max="100" value="0"><output id="adj-highlights-v">0</output></label>
-            <label class="slider"><span>陰影</span><input type="range" id="adj-shadows" min="-100" max="100" value="0"><output id="adj-shadows-v">0</output></label>
-            <label class="slider"><span>黑位提亮</span><input type="range" id="adj-black" min="0" max="40" value="0"><output id="adj-black-v">0</output></label>
-            <label class="slider"><span>白位</span><input type="range" id="adj-white" min="70" max="100" value="100"><output id="adj-white-v">100</output></label>
-            <p class="info">按每一行右邊的 ↺ 可以把該項還原（在滑桿上按兩下也可以）。</p>
+            <p class="info">較少用、針對個別情況的匹配：天空對天空、按遠近分層、指定顏色對應、漸層映射，以及參考色彩的細部設定。</p>
+            <h3>同類別匹配</h3>
+            <label class="check"><input type="checkbox" id="cmOn"> 天空、植物、建築地面分別匹配參考圖</label>
+            <label class="slider sub"><span>　強度</span><input type="range" id="cmAmt" min="0" max="150" value="80" disabled><output id="cmAmt-v">80%</output></label>
+            <button type="button" id="cmSuggest" class="primary" hidden>建議開啟：按一下套用同類別匹配</button>
+            <p class="info" id="cmInfo">把背景分成天空、植物和建築地面（牆、路面、物件），各自往參考圖裏同一類的亮度、對比、色調和濃淡靠近：影片的天空對照參考圖的天空，樹對照樹，牆對照牆，而不是全部用整張參考圖的平均。天空用 AI 深度判斷（最遠處），第一次使用會下載 AI 深度模型（約 27 MB）；人物不受影響。</p>
+            <h3>依深度分層匹配</h3>
+            <label class="check"><input type="checkbox" id="lmOn"> 背景按遠近分層匹配參考圖（遠景、近景）</label>
+            <label class="slider sub"><span>　強度</span><input type="range" id="lmAmt" min="0" max="100" value="80" disabled><output id="lmAmt-v">80%</output></label>
+            <label class="slider sub"><span>　背景飽和度</span><input type="range" id="lmSat" min="-100" max="50" value="0" disabled><output id="lmSat-v">0</output></label>
+            <button type="button" id="lmSuggest" class="primary" hidden>建議開啟：按一下套用分層匹配</button>
+            <p class="info" id="lmInfo">整體調色是用整張參考圖的顏色；這裏用 AI 深度把背景分成近景和遠景，各自往參考圖同一層的亮度、對比、色調和濃淡靠近（例如參考圖遠處較亮、較朦朧）。人物不受影響（保持整體調色和膚色保護）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
+            <h3>點選對應顏色</h3>
+            <canvas id="cpRef" class="cp-ref" width="320" height="180" aria-label="參考圖：點想要的顏色"></canvas>
+            <div class="row"><button type="button" id="cpAdd" class="primary">新增一對顏色</button><button type="button" id="cpClear" disabled>全部清除</button></div>
+            <div class="cp-list" id="cpList"></div>
+            <label class="slider sub"><span>　影響範圍</span><input type="range" id="cpRange" min="0" max="100" value="50" disabled><output id="cpRange-v">50</output></label>
+            <label class="slider sub"><span>　強度</span><input type="range" id="cpAmt" min="0" max="100" value="100" disabled><output id="cpAmt-v">100%</output></label>
+            <p class="info" id="cpInfo">自己指定哪裏要像參考圖：按「新增一對顏色」，先在上面的參考圖點想要的顏色（例如天空），再在預覽畫面點影片中對應的地方，影片那個顏色就會變成參考圖的顏色，相近的顏色一起柔和地跟着變。可以加最多 6 對。</p>
+            <p class="info" id="suggestInfo">素材載入後會自動依參考圖設定下面的控制項。</p>
+            <h3>漸層映射</h3>
+            <label class="slider"><span>漸層映射</span><input type="range" id="adj-gradMap" min="0" max="100" value="0"><output id="adj-gradMap-v">0%</output></label>
+            <canvas id="gradStrip" width="320" height="14" aria-label="參考圖的漸層（暗 → 亮）"></canvas>
+            <p class="info">像畫畫先定黑白關係再上色：保留畫面每個位置的明暗，把顏色往參考圖在同一亮度的顏色拉近（上面的色帶是參考圖由暗到亮的顏色）。能讓整個畫面的顏色更統一；太高時，同樣亮度的物件會變成同一種顏色。皮膚有膚色保護時不受影響。</p>
+            <h3>參考色彩</h3>
+            <label class="slider"><span>接近參考程度</span><input type="range" id="adj-match" min="0" max="100" value="50"><output id="adj-match-v">50%</output></label>
+            <label class="slider"><span>參考色彩強度</span><input type="range" id="adj-strength" min="0" max="100" value="100"><output id="adj-strength-v">100%</output></label>
+            <label class="check"><input type="checkbox" id="adj-protect" checked> 保護材質顏色（避免草地、皮膚等被染成別的顏色）</label>
           </div>
         </details>
 
-        <details class="cat" id="catColour" data-group="simple">
-          <summary>色溫、色調與飽和度</summary>
-          <div class="cat-body">
-            <label class="slider"><span>飽和度</span><input type="range" id="adj-saturation" min="-100" max="100" value="0"><output id="adj-saturation-v">0</output></label>
-            <label class="slider"><span>色溫</span><input type="range" id="adj-temperature" min="-100" max="100" value="0"><output id="adj-temperature-v">0</output></label>
-            <label class="slider"><span>色調</span><input type="range" id="adj-tint" min="-100" max="100" value="0"><output id="adj-tint-v">0</output></label>
-            <div id="proSat"></div>
-          </div>
-        </details>
-
-        <details class="cat" id="catZones" data-group="pro">
+        <p class="panel-group" data-group="simple">專業調色</p>
+        <details class="cat" id="catZones" data-group="simple">
           <summary>陰影、中間調與高光</summary>
           <div class="cat-body">
             <h3>分區色調</h3>
@@ -292,7 +287,7 @@
           </div>
         </details>
 
-        <details class="cat" id="catCurves" data-group="pro">
+        <details class="cat" id="catCurves" data-group="simple">
           <summary>色彩曲線</summary>
           <div class="cat-body">
             <div class="curve-editor">
@@ -307,10 +302,11 @@
               <p class="info">上下拖動 0%、25%、50%、75%、100% 五個控制點（橫向位置固定，這是調色引擎的曲線結構）。也可以先點一個控制點，再用鍵盤上下鍵微調。背景是目前畫面的亮度分佈。</p>
             </div>
             <div class="pro" id="proCurves"></div>
+            <div class="pro" id="proSat"></div>
           </div>
         </details>
 
-        <details class="cat" id="catLocal" data-group="fx">
+        <details class="cat" id="catLocal" data-group="simple">
           <summary>局部調色及遮罩</summary>
           <div class="cat-body">
             <p class="info">AI 遮罩（人物、皮膚、背景）與局部曝光在「光暗設定」裏確認和修改。</p>
@@ -319,9 +315,31 @@
           </div>
         </details>
 
-        <details class="cat" id="catBlur" data-group="fx">
-          <summary>背景模糊</summary>
+        <details class="cat scopes" id="scopes" data-group="simple">
+          <summary>示波器</summary>
           <div class="cat-body">
+            <div class="scope-bar">
+              <label>類型 <select id="scopeKind">
+                <option value="luma">波形圖（亮度）</option>
+                <option value="parade">RGB 分量圖</option>
+                <option value="vector">向量圖</option>
+              </select></label>
+              <label class="check-inline"><input type="checkbox" id="scopeOrig"> 左邊改看原片</label>
+            </div>
+            <div class="scope-pair">
+              <figure><canvas id="scopeMain" width="320" height="180"></canvas><figcaption id="scopeMainCap">目前結果</figcaption></figure>
+              <figure><canvas id="scopeRef" width="320" height="180"></canvas><figcaption>參考圖（中央 70%）</figcaption></figure>
+            </div>
+            <p class="info" id="scopeInfo"></p>
+            <p class="info">波形圖：橫向是畫面位置，縱向是亮度 0–100%；貼到 100% 的平線代表過曝，貼到 0% 代表死黑。RGB 分量圖：三者在亮部高低不同就是偏色。向量圖：離中心越遠越飽和；橙色線是膚色線。</p>
+          </div>
+        </details>
+
+        <!-- 效果 -->
+        <details class="cat" id="catBlur" data-group="fx">
+          <summary>模糊與對焦</summary>
+          <div class="cat-body">
+            <h3>背景模糊</h3>
             <label class="check"><input type="checkbox" id="blurOn"> 開啟模糊</label>
             <h3>選取要模糊的範圍</h3>
             <label class="check"><input type="checkbox" id="blurAi" checked> AI 自動偵測背景</label>
@@ -367,11 +385,34 @@
               <p class="info">光斑亮度：亮點散開成光斑後有多亮（0 = 不加亮，光斑和其他地方一樣淡）。光斑範圍：多亮的地方才會變成光斑，數值越大，較暗的亮點也會變成光斑。</p>
             </div>
             <p class="info" id="blurInfo"></p>
+            <h3>對焦（景深）</h3>
+            <div class="seg-choice" role="radiogroup" aria-label="對焦方式">
+              <label><input type="radio" name="dofMode" value="lens" checked> 真實景深（AI 深度）</label>
+              <label><input type="radio" name="dofMode" value="tilt"> 移軸（微縮）</label>
+            </div>
+            <div class="row"><button type="button" id="dofPick" class="primary" aria-pressed="false">選對焦點</button><button type="button" id="dofOff" disabled>關閉</button></div>
+            <label class="slider"><span>景深強度</span><input type="range" id="dofAmount" min="0" max="100" value="50" disabled><output id="dofAmount-v">50</output></label>
+            <label class="slider sub"><span id="dofAreaLbl">　焦點範圍</span><input type="range" id="dofArea" min="0" max="100" value="35" disabled><output id="dofArea-v">35</output></label>
+            <label class="slider sub" id="dofAngleRow" hidden><span>　角度</span><input type="range" id="dofAngle" min="-45" max="45" value="0" disabled><output id="dofAngle-v">0°</output></label>
+            <label class="slider sub"><span>　模糊處噪點</span><input type="range" id="dofGrain" min="0" max="100" value="50" disabled><output id="dofGrain-v">50</output></label>
+            <label class="slider sub"><span>　光斑亮度</span><input type="range" id="dofGlow" min="0" max="100" value="50" disabled><output id="dofGlow-v">50</output></label>
+            <label class="slider sub"><span>　光斑範圍</span><input type="range" id="dofRange" min="0" max="100" value="50" disabled><output id="dofRange-v">50</output></label>
+            <p class="info" id="dofInfo">按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
+            <h3>鏡頭邊緣模糊</h3>
+            <label class="slider"><span>邊緣模糊</span><input type="range" id="adj-lensBlur" min="0" max="100" value="0"><output id="adj-lensBlur-v">0</output></label>
+            <label class="slider sub"><span>　清楚範圍</span><input type="range" id="adj-lensBlurSize" min="0" max="100" value="40"><output id="adj-lensBlurSize-v">40</output></label>
+            <div class="seg-choice" role="radiogroup" aria-label="邊緣模糊的方向">
+              <span class="seg-lbl">方向</span>
+              <label><input type="radio" name="lensBlurType" value="zoom" checked> 放射（向外拉）</label>
+              <label><input type="radio" name="lensBlurType" value="swirl"> 旋轉（舊鏡頭）</label>
+            </div>
+            <div class="row"><button type="button" id="lensPick">選清楚的中心</button><button type="button" id="lensCentre">回到畫面中央</button></div>
+            <p class="info" id="lensInfo">畫面中間保持清楚，四周向外拉扯或旋轉地模糊，像手持移動時用特殊鏡頭拍攝（燈光會拉成光線）。</p>
           </div>
         </details>
 
         <details class="cat" id="catFx" data-group="fx">
-          <summary>柔光、朦朧與暗角</summary>
+          <summary>光與霧（柔光、朦朧、暗角、柔化）</summary>
           <div class="cat-body">
             <h3>朦朧預設</h3>
             <div class="row haze-presets" role="group" aria-label="朦朧預設">
@@ -405,33 +446,29 @@
                 <button type="button" class="reset" id="glowWheelReset" title="重設「光芒顏色」" aria-label="重設「光芒顏色」">↺</button>
               </div>
             </div>
-            <h3>對焦（景深）</h3>
-            <div class="seg-choice" role="radiogroup" aria-label="對焦方式">
-              <label><input type="radio" name="dofMode" value="lens" checked> 真實景深（AI 深度）</label>
-              <label><input type="radio" name="dofMode" value="tilt"> 移軸（微縮）</label>
-            </div>
-            <div class="row"><button type="button" id="dofPick" class="primary" aria-pressed="false">選對焦點</button><button type="button" id="dofOff" disabled>關閉</button></div>
-            <label class="slider"><span>景深強度</span><input type="range" id="dofAmount" min="0" max="100" value="50" disabled><output id="dofAmount-v">50</output></label>
-            <label class="slider sub"><span id="dofAreaLbl">　焦點範圍</span><input type="range" id="dofArea" min="0" max="100" value="35" disabled><output id="dofArea-v">35</output></label>
-            <label class="slider sub" id="dofAngleRow" hidden><span>　角度</span><input type="range" id="dofAngle" min="-45" max="45" value="0" disabled><output id="dofAngle-v">0°</output></label>
-            <label class="slider sub"><span>　模糊處噪點</span><input type="range" id="dofGrain" min="0" max="100" value="50" disabled><output id="dofGrain-v">50</output></label>
-            <label class="slider sub"><span>　光斑亮度</span><input type="range" id="dofGlow" min="0" max="100" value="50" disabled><output id="dofGlow-v">50</output></label>
-            <label class="slider sub"><span>　光斑範圍</span><input type="range" id="dofRange" min="0" max="100" value="50" disabled><output id="dofRange-v">50</output></label>
-            <p class="info" id="dofInfo">按「選對焦點」，再在預覽畫面點一下要清楚的地方（例如人的臉）。第一次使用會下載 AI 深度模型（約 27 MB）。</p>
+            <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
+            <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
+            <h3>柔化與光暈（膠片）</h3>
+            <label class="slider"><span>柔化</span><input type="range" id="adj-filmSoft" min="0" max="100" value="0"><output id="adj-filmSoft-v">0</output></label>
+            <label class="slider"><span>光暈</span><input type="range" id="adj-halation" min="0" max="100" value="0"><output id="adj-halation-v">0</output></label>
+            <p class="info">柔化讓畫面不像數碼那麼銳利；光暈是亮部邊緣滲出的一圈橙紅色光。「膠片與鏡頭」的「自動匹配參考圖」也會設定這兩項。</p>
+            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。「霧的顏色取自參考圖」令光幕用參考圖空氣的顏色（例如清晨淡藍），而不是原片本身的光色（陽光下會是暖黃）。「背景霧更濃」用 AI 偵測人物：人物的霧變淡、背景的霧變濃，像遠處隔了更多空氣（只分人物和背景兩層，不是按真正的距離）。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
+          </div>
+        </details>
+
+        <details class="cat" id="catFilm" data-group="fx">
+          <summary>膠片與鏡頭（顆粒、色散、拖影）</summary>
+          <div class="cat-body">
+            <h3>膠片模板</h3>
+            <div class="row"><button type="button" id="filmAuto" class="primary">自動匹配參考圖</button><button type="button" id="filmOff">關閉</button></div>
+            <p class="info" id="filmInfo">按「自動匹配參考圖」：依參考圖有多「膠片」（暗部像蒙了一層霧、對比低）自動設定顆粒，以及「光與霧」裏的光暈和柔化；沒有參考圖時套用一般的膠片設定。之後可以用滑桿微調。</p>
+            <label class="slider"><span>膠片顆粒</span><input type="range" id="adj-filmGrain" min="0" max="100" value="0"><output id="adj-filmGrain-v">0</output></label>
+            <label class="slider"><span>顆粒大小</span><input type="range" id="adj-filmGrainSize" min="0" max="100" value="50"><output id="adj-filmGrainSize-v">50</output></label>
+            <p class="info">膠片顆粒每一格都不同（像真的膠片），中間調最明顯（光暈和柔化在「光與霧」）。這幾項不改變顏色，也不受「整體調色強度」影響。顏色部分（霧黑、偏冷）請用參考圖的自動調色和「跟隨參考圖」。</p>
             <h3>色散（RGB 分離）</h3>
             <label class="slider"><span>色散</span><input type="range" id="adj-fringe" min="0" max="100" value="0"><output id="adj-fringe-v">0</output></label>
             <label class="slider sub"><span>　只在失焦處</span><input type="range" id="adj-fringeFocus" min="0" max="100" value="100"><output id="adj-fringeFocus-v">100</output></label>
             <p class="info">像鏡頭的色差：邊緣出現紅／青色的分離，越近畫面四周越明顯。「只在失焦處」100 時只加在對焦以外（模糊）的地方，清楚的主體保持乾淨；0 時整個畫面都有，像普通鏡頭。</p>
-            <h3>鏡頭邊緣模糊</h3>
-            <label class="slider"><span>邊緣模糊</span><input type="range" id="adj-lensBlur" min="0" max="100" value="0"><output id="adj-lensBlur-v">0</output></label>
-            <label class="slider sub"><span>　清楚範圍</span><input type="range" id="adj-lensBlurSize" min="0" max="100" value="40"><output id="adj-lensBlurSize-v">40</output></label>
-            <div class="seg-choice" role="radiogroup" aria-label="邊緣模糊的方向">
-              <span class="seg-lbl">方向</span>
-              <label><input type="radio" name="lensBlurType" value="zoom" checked> 放射（向外拉）</label>
-              <label><input type="radio" name="lensBlurType" value="swirl"> 旋轉（舊鏡頭）</label>
-            </div>
-            <div class="row"><button type="button" id="lensPick">選清楚的中心</button><button type="button" id="lensCentre">回到畫面中央</button></div>
-            <p class="info" id="lensInfo">畫面中間保持清楚，四周向外拉扯或旋轉地模糊，像手持移動時用特殊鏡頭拍攝（燈光會拉成光線）。</p>
             <h3>抽格拖影（慢快門）</h3>
             <label class="slider"><span>拖影</span><input type="range" id="adj-stepTrail" min="0" max="100" value="0"><output id="adj-stepTrail-v">0</output></label>
             <div class="seg-choice" role="radiogroup" aria-label="抽格">
@@ -442,47 +479,20 @@
               <label><input type="radio" name="stepHold" value="4"> 每 4 格</label>
             </div>
             <p class="info" id="stepInfo">像王家衛電影的慢快門加抽格：動的東西留下拖影，畫面每幾格才更新一次，有一頓一頓的節奏。需要連續的畫面，所以只在「播放」預覽和匯出的影片看到，停在一格時不會顯示。</p>
-            <label class="slider"><span>暗角</span><input type="range" id="adj-vignette" min="-100" max="100" value="0"><output id="adj-vignette-v">0</output></label>
-            <label class="slider"><span>暗角範圍</span><input type="range" id="adj-vignetteSize" min="0" max="100" value="50"><output id="adj-vignetteSize-v">50</output></label>
-            <p class="info">柔光只讓亮部向外擴散；朦朧夢幻是陽光下柔焦濾鏡的夢幻光感，由三部分組成，可以分開調：「柔化」讓細節變柔；「發光」讓亮部的光溢到較暗的周圍（例如白衣服的光溢到背景）；「光幕」用畫面本身光線的顏色把暗部提亮（陽光場景會是暖暖的，不是灰霧）。三項預設 50，0 是關掉該部分，100 是加倍。「霧的顏色取自參考圖」令光幕用參考圖空氣的顏色（例如清晨淡藍），而不是原片本身的光色（陽光下會是暖黃）。「背景霧更濃」用 AI 偵測人物：人物的霧變淡、背景的霧變濃，像遠處隔了更多空氣（只分人物和背景兩層，不是按真正的距離）。範圍越大光暈越闊。暗角正值壓暗四周、負值提亮四周。這幾項不受「整體調色強度」影響。</p>
           </div>
         </details>
 
-        <details class="cat" id="catFilm" data-group="fx">
-          <summary>膠片質感</summary>
+        <!-- 輸出 -->
+        <details class="cat" id="catPreset" data-group="out">
+          <summary>設定檔（.preset）</summary>
           <div class="cat-body">
-            <h3>膠片模板</h3>
-            <div class="row"><button type="button" id="filmAuto" class="primary">自動匹配參考圖</button><button type="button" id="filmOff">關閉</button></div>
-            <p class="info" id="filmInfo">按「自動匹配參考圖」：依參考圖有多「膠片」（暗部像蒙了一層霧、對比低）自動設定下面的顆粒、光暈和柔化；沒有參考圖時套用一般的膠片設定。之後可以用滑桿微調。</p>
-            <label class="slider"><span>膠片顆粒</span><input type="range" id="adj-filmGrain" min="0" max="100" value="0"><output id="adj-filmGrain-v">0</output></label>
-            <label class="slider"><span>顆粒大小</span><input type="range" id="adj-filmGrainSize" min="0" max="100" value="50"><output id="adj-filmGrainSize-v">50</output></label>
-            <label class="slider"><span>光暈</span><input type="range" id="adj-halation" min="0" max="100" value="0"><output id="adj-halation-v">0</output></label>
-            <label class="slider"><span>柔化</span><input type="range" id="adj-filmSoft" min="0" max="100" value="0"><output id="adj-filmSoft-v">0</output></label>
-            <p class="info">膠片顆粒每一格都不同（像真的膠片），中間調最明顯；光暈是亮部邊緣滲出的一圈橙紅色光（膠片的特徵）；柔化讓畫面不像數碼那麼銳利。這幾項不改變顏色，也不受「整體調色強度」影響。顏色部分（霧黑、偏冷）請用參考圖的自動調色和「跟隨參考圖」。</p>
+            <label class="preset-name"><span>名稱</span><input type="text" id="presetName" maxlength="40" placeholder="例如：日系淡藍"></label>
+            <div class="row"><button type="button" id="presetSave" class="primary">儲存設定檔</button><button type="button" id="presetLoad">載入設定檔</button><input type="file" id="presetInput" class="sr-only"></div>
+            <p class="info" id="presetInfo">把現在的色調和效果存成一個 .preset 檔；下次載入就能把同一個色調和效果套用到其他影片或照片，不需要原本的參考圖。對焦點、背景模糊選區和分層／同類別匹配只適用於原本的影片，不會保存。</p>
           </div>
         </details>
 
-        <details class="cat scopes" id="scopes" data-group="pro">
-          <summary>示波器</summary>
-          <div class="cat-body">
-            <div class="scope-bar">
-              <label>類型 <select id="scopeKind">
-                <option value="luma">波形圖（亮度）</option>
-                <option value="parade">RGB 分量圖</option>
-                <option value="vector">向量圖</option>
-              </select></label>
-              <label class="check-inline"><input type="checkbox" id="scopeOrig"> 左邊改看原片</label>
-            </div>
-            <div class="scope-pair">
-              <figure><canvas id="scopeMain" width="320" height="180"></canvas><figcaption id="scopeMainCap">目前結果</figcaption></figure>
-              <figure><canvas id="scopeRef" width="320" height="180"></canvas><figcaption>參考圖（中央 70%）</figcaption></figure>
-            </div>
-            <p class="info" id="scopeInfo"></p>
-            <p class="info">波形圖：橫向是畫面位置，縱向是亮度 0–100%；貼到 100% 的平線代表過曝，貼到 0% 代表死黑。RGB 分量圖：三者在亮部高低不同就是偏色。向量圖：離中心越遠越飽和；橙色線是膚色線。</p>
-          </div>
-        </details>
-
-        <details class="cat" id="catExport" data-group="fx">
+        <details class="cat" id="catExport" data-group="out">
           <summary>匯出設定</summary>
           <div class="cat-body">
             <h3 id="exportKindTitle">影片</h3>
